@@ -81,16 +81,33 @@ acre, and a block costs more per cell than a dense row.
 
 ## The picture
 
-`demo/` with `?test`: a scripted 15 s session (a hiker into the shallows and out, two stones,
-spore rain, a landing splash) on the demo's four-acre map, rendered from a fixed camera under
-boxel and under dense, then compared.
+The 900-frame fixture runs a hiker, impacts, spore rain and eight drifting river pods for
+15 simulated seconds. Both engines receive the same events. The verifier compares all
+1,048,576 cells of each field at the final tick, including the uniform rain sheet, and reads
+RGB pixels from the final WebGL framebuffer.
 
-| | |
-|---|---|
-| PSNR, boxel vs dense | 74.3 dB |
-| pixels more than 2 levels apart | 0.006% (grass-blade edges, moved by sub-tolerance wetness and trampling) |
-| cells stepped over the session | 126 M boxel, 1 416 M dense |
-| field memory at the end | 2.9 MB boxel, 25.2 MB dense |
+In desktop Chrome at 896 × 504, with the night setting and the river camera:
+
+| Measurement | Boxel | Dense |
+|---|---:|---:|
+| Cells stepped | 127,331,072 | 1,415,577,600 |
+| Field storage reported at the final tick | 2,977,536 bytes | 25,165,824 bytes |
+| Maximum absolute error vs dense (glow, moisture, wear) | 0.001653, 0.000262, 0 | reference |
+
+The final images measured 60.39 dB PSNR. At least one RGB channel differed by more than two
+levels in 0.150% of pixels. The largest channel difference was 22 out of 255. The simulation's
+1/255 tolerance applies to field values before texture quantization, shading and tone mapping.
+
+To repeat, open `/demo/?test`, set the viewport to 896 × 504 CSS pixels at device scale 1,
+then run this in the browser console after the engine loads:
+
+```js
+__game.setNight(1);
+await __game.verify('river');
+```
+
+The reported session timer covers the simulation loop. Texture upload, rendering and readback
+occur outside that timer. Field storage excludes the renderer and the rest of the browser.
 
 ## Same bits everywhere
 

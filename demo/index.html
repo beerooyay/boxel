@@ -68,7 +68,7 @@ body { background: var(--void); color: var(--ink); font-family: var(--body); ove
 #pad button[aria-pressed="true"] { border-color: var(--spore); color: var(--spore); }
 #pad button.throw { border-color: rgba(95, 242, 224, 0.5); color: var(--glow); }
 
-#stick { position: fixed; z-index: 9; left: max(18px, env(safe-area-inset-left, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 22px); width: 120px; height: 120px; border-radius: 50%; border: 1px solid var(--edge); background: rgba(14, 16, 32, 0.35); display: none; }
+#stick { pointer-events: none; position: fixed; z-index: 9; left: max(18px, env(safe-area-inset-left, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 22px); width: 120px; height: 120px; border-radius: 50%; border: 1px solid var(--edge); background: rgba(14, 16, 32, 0.35); display: none; }
 #stick i { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%; background: rgba(95, 242, 224, 0.25); border: 1px solid rgba(95, 242, 224, 0.5); }
 body.touch #stick { display: block; }
 html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display: none !important; }
@@ -107,7 +107,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 <div id="intro">
   <div class="card">
     <h1>T<span>A</span>RNISHED<br>PROMISE</h1>
-    <p>Four acres of shore on Tarn, under a ringed giant. The moss and the lake remember you: every step wakes light that spreads and fades, wet feet darken the sand, trails wear in and heal. Underneath is boxel, an engine that makes a promise about all of it: no cell is ever more than 1/255 from computing the whole world, while it computes almost none of it.</p>
+    <p>Follow the glowing river into Tarn’s lake, or take the winding trail up the western hill for a view of the three giants. Footsteps wake the moss, wet feet darken the sand, and drifting pods leave light in the current. Press M to compare the boxel fields with a dense simulation.</p>
     <div class="keys" id="keys">
       <b>WASD</b><span>walk · Shift to run</span>
       <b>mouse</b><span>look (click to capture)</span>

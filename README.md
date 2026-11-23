@@ -78,13 +78,13 @@ hundred thousand cells apart cost what two events cost.
 
 ## The demo: Tarnished Promise
 
-Four acres of lake shore on the planet Tarn, under an amber ringed giant and its moon. Every
-step wakes light in the moss that spreads and fades, wet feet darken the sand, trails wear in
-and heal, and a stone thrown in the lake lights the water. All of it is three boxel fields,
-drawn by a hand-written WebGL2 renderer, on phones too. One key switches to computing every
-cell of the map, the reference the promise is about, so you can watch the cost change and the
-picture not change. Over a scripted session the two render 74 dB apart (PSNR), while boxel
-steps a tenth of the cells and holds an eighth of the memory.
+Tarn is a four-acre lakeshore beneath an amber giant, a rose giant and an ocean world with
+crossed rings. A river carries glowing pods down to the lake. A winding trail climbs the
+western hill to a 26 m lookout. Walk, wade or throw a glowstone to disturb the glow, moisture
+and wear fields. Press **N** for night and **M** to restart the fields under the other engine.
+
+The browser renderer uses WebGL2 and the Rust field engine compiled to WebAssembly.
+The [river comparison](docs/results.md#the-picture) includes a repeatable full-map field check.
 
 ```sh
 cargo build --release --target wasm32-unknown-unknown -p boxel-ffi
@@ -117,6 +117,9 @@ whatever it draws with.
   [`ffi/boxel.h`](ffi/boxel.h). Upload `boxel_block_data` into a texture region per block.
 - **The web**: [`ffi/boxel.js`](ffi/boxel.js) over the wasm build, about 60 KB. The demo is the
   example.
+- **Bevy** can step one field per entity in `FixedUpdate` with the optional
+  [Boxel plugin](integrations/bevy/src/lib.rs). Match the fixed clock to the field spec.
+  Run its example as a doctest with `cargo test --manifest-path integrations/bevy/Cargo.toml`.
 
 Fields compose. Each one has its own spread and fade, so footprints, wetness, heat, scent and
 fog of war are the same three calls with different numbers.
@@ -130,6 +133,7 @@ fog of war are the same three calls with different numbers.
 | `ffi/` | the C ABI, its header, and the JavaScript binding |
 | `bench/` | every number in `docs/results.md`, and the wasm replay |
 | `demo/` | Tarnished Promise |
+| `integrations/bevy/` | standalone Bevy ECS adapter |
 | `docs/` | [the certificate](docs/certificate.md), [results](docs/results.md) |
 
 ```sh
