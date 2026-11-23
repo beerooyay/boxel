@@ -1,6 +1,36 @@
+// Azimuth is measured from north toward east. The sky shaders and inspection cameras share these positions.
+function skyDirection(azimuth, elevation) {
+  const az = azimuth * Math.PI / 180, el = elevation * Math.PI / 180;
+  return [Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)];
+}
+export const skyBodies = {
+  amber: skyDirection(13, 26),
+  rose: skyDirection(-141, 40),
+  ocean: skyDirection(112, 34),
+  ice: skyDirection(-59, 49),
+};
+const glslDirection = v => `vec3(${v.map(x => x.toFixed(9)).join(', ')})`;
+
 // Project each distant body into its own tangent plane. A visible ring fragment must be
 // closer to the viewer than the spherical surface at that pixel.
 export const companionWorlds = `
+// Every body's visible hemisphere uses the same world-space stellar illumination.
+// Low, cool fill keeps the material visible on the night side without moving the terminator.
+vec3 bodyLight(vec3 albedo, vec3 normal, float viewCos, float atmosphere) {
+  float incidence = dot(normal, uStarDir);
+  float direct = max(incidence, 0.);
+  float rim = pow(1. - clamp(viewCos, 0., 1.), 4.) * smoothstep(-0.02, 0.32, incidence);
+  return albedo * (vec3(0.014, 0.019, 0.031) + 1.20 * direct)
+       + atmosphere * (albedo + 0.12) * rim;
+}
+
+// Ring coordinates are in planet radii. Trace toward the star from the particle
+// to tell whether the globe lies between it and the light.
+float ringSun(vec3 position) {
+  float along = dot(position, uStarDir);
+  float miss = length(position - min(0., along) * uStarDir);
+  return mix(0.09, 1., smoothstep(0.96, 1.04, miss));
+}
 vec3 roseClouds(vec3 n) {
   vec2 p = n.xy;
   vec2 storm = (p - vec2(-0.22, -0.20)) * vec2(0.76, 1.35);
@@ -22,14 +52,14 @@ vec3 oceanGround(vec3 n) {
   return mix(sea, soil, smoothstep(0.47, 0.51, land));
 }
 
-vec3 ringLayer(vec3 sky, vec2 q, float surfaceZ, vec3 tint) {
+vec3 ringLayer(vec3 sky, vec2 q, float surfaceZ, vec3 tint, vec3 planeXY, vec3 axis) {
   const float tilt = 0.24;
   float radius = length(vec2(q.x, q.y / tilt));
   float coverage = smoothstep(1.27, 1.32, radius) * (1. - smoothstep(1.94, 2., radius));
   float gap = smoothstep(1.61, 1.65, radius) * (1. - smoothstep(1.69, 1.72, radius));
   float depth = -q.y * sqrt(1. - tilt * tilt) / tilt;
   float grain = 0.74 + 0.15 * sin(radius * 62.) + 0.09 * sin(radius * 117.);
-  return mix(sky, tint * grain, coverage * (1. - 0.85 * gap) * step(surfaceZ, depth) * 0.76);
+  return mix(sky, tint * grain * ringSun(planeXY - depth * axis), coverage * (1. - 0.85 * gap) * step(surfaceZ, depth) * 0.76);
 }
 
 vec3 companion(vec3 d, vec3 sky, vec3 axis, float radius, bool ocean) {
@@ -41,9 +71,9 @@ vec3 companion(vec3 d, vec3 sky, vec3 axis, float radius, bool ocean) {
   if (r2 < 1.) {
     surfaceZ = sqrt(1. - r2);
     vec3 n = vec3(q, surfaceZ);
-    float light = smoothstep(-0.51, 0.75, dot(right * n.x + up * n.y - axis * n.z, uStarDir));
+    vec3 normal = right * n.x + up * n.y - axis * n.z;
     vec3 surface = ocean ? oceanGround(n) : roseClouds(n);
-    sky = surface * (0.15 + 0.80 * light) + surface * 0.12 * pow(1. - n.z, 3.);
+    sky = bodyLight(surface, normal, n.z, 0.08);
   }
   if (ocean && r2 < 4.1) {
     vec2 r = mat2(0.98, -0.20, 0.20, 0.98) * q;
@@ -51,13 +81,15 @@ vec3 companion(vec3 d, vec3 sky, vec3 axis, float radius, bool ocean) {
     // Paint the farther of the two ring planes first at their crossings.
     bool horizontalFirst = r.y > v.y;
     vec3 silver = vec3(0.54, 0.63, 0.72), copper = vec3(0.62, 0.45, 0.38);
-    sky = ringLayer(sky, horizontalFirst ? r : v, surfaceZ, horizontalFirst ? silver : copper);
-    sky = ringLayer(sky, horizontalFirst ? v : r, surfaceZ, horizontalFirst ? copper : silver);
+    vec3 planeXY = right * q.x + up * q.y;
+    sky = ringLayer(sky, horizontalFirst ? r : v, surfaceZ, horizontalFirst ? silver : copper, planeXY, axis);
+    sky = ringLayer(sky, horizontalFirst ? v : r, surfaceZ, horizontalFirst ? copper : silver, planeXY, axis);
   }
   return sky;
 }
+const vec3 ICE_DIR = ${glslDirection(skyBodies.ice)};
 vec3 companions(vec3 d, vec3 sky) {
-  sky = companion(d, sky, normalize(vec3(-0.49, 0.50, -0.86)), 0.198, false);
-  return companion(d, sky, normalize(vec3(0.87, 0.69, -0.53)), 0.143, true);
+  sky = companion(d, sky, ${glslDirection(skyBodies.rose)}, 0.198, false);
+  return companion(d, sky, ${glslDirection(skyBodies.ocean)}, 0.143, true);
 }
 `;

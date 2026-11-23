@@ -94,8 +94,8 @@ In desktop Chrome at 896 × 504, with the night setting and the river camera:
 | Field storage reported at the final tick | 2,977,536 bytes | 25,165,824 bytes |
 | Maximum absolute error vs dense (glow, moisture, wear) | 0.001653, 0.000262, 0 | reference |
 
-The final images measured 60.39 dB PSNR. At least one RGB channel differed by more than two
-levels in 0.150% of pixels. The largest channel difference was 22 out of 255. The simulation's
+The final images measured 60.26 dB PSNR. At least one RGB channel differed by more than two
+levels in 0.152% of pixels. The largest channel difference was 22 out of 255. The simulation's
 1/255 tolerance applies to field values before texture quantization, shading and tone mapping.
 
 To repeat, open `/demo/?test`, set the viewport to 896 × 504 CSS pixels at device scale 1,

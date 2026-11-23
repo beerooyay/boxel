@@ -9,7 +9,7 @@
 // re-uploads exactly the blocks the engine holds, clearing the ones it lets go.
 
 import { summit, trail, terrainHeight, trailCover, riverX, waterLevel } from './landmarks.js';
-import { companionWorlds } from './worlds.js';
+import { companionWorlds, skyBodies } from './worlds.js';
 import { load } from '../ffi/boxel.js';
 
 const HALF = 64;                                          // the map runs 128 m a side, centred on the origin
@@ -62,8 +62,15 @@ function H(x, z) {
   if (o > 0) { const rg = ridged(x * 0.055 + 4, z * 0.055 - 2); h += o * (2 + 7 * rg + 1.2 * Math.round(rg * 4) / 4) * t; }
   const e = Math.hypot(x, z * 1.05);
   h += sm(40, 76, e) * (4 + 8 * fbm(x * 0.04 + 9, z * 0.04 + 2));
-  const m = sm(84, 520, e);
-  if (m > 0) h += m * m * (18 + 115 * ridged(x * 0.0035 + 2, z * 0.0035 - 4)) + sm(84, 170, e) * 6 * fbm(x * 0.02, z * 0.02);
+  // Sample the same mountain profile at twice the distance travelled beyond the square map.
+  // A ridge previously 200 m past the boundary now rises 100 m past it, at its original height.
+  const edgeDistance = Math.max(Math.abs(x), Math.abs(z));
+  const scale = edgeDistance > HALF ? 2 - HALF / edgeDistance : 1;
+  const range = e * scale, m = sm(84, 520, range);
+  if (m > 0) {
+    const mx = x * scale, mz = z * scale;
+    h += m * m * (18 + 115 * ridged(mx * 0.0035 + 2, mz * 0.0035 - 4)) + sm(84, 170, range) * 6 * fbm(mx * 0.02, mz * 0.02);
+  }
   return terrainHeight(x, z, h);
 }
 function normalAt(x, z, e = 0.15) {
@@ -274,6 +281,8 @@ vec3 skyColor(vec3 d){
     float band = smoothstep(1.32 * R, 1.38 * R, rr) * (1. - smoothstep(2.2 * R, 2.28 * R, rr)) * (1. - 0.6 * smoothstep(1.7 * R, 1.75 * R, rr) * (1. - smoothstep(1.8 * R, 1.85 * R, rr)));
     float aa = clamp(1. - fwidth(rr) * 90., 0., 1.);
     vec3 ring = vec3(0.78, 0.84, 0.95) * band * mix(0.55, 0.55 + 0.45 * sin(rr * 95.) * sin(rr * 31.), aa) * 0.42;
+    float ringDepth = -rq.y * sqrt(1. - 0.2 * 0.2) / 0.2;
+    ring *= ringSun((q.x * T + q.y * B - ringDepth * P) / R);
     float pr = length(q);
     if (pr < R) {
       vec3 nw = normalize(q.x / R * T + q.y / R * B - sqrt(max(0., 1. - pr * pr / (R * R))) * P);
@@ -289,32 +298,36 @@ vec3 skyColor(vec3 d){
       pc = mix(pc, vec3(0.50, 0.22, 0.14), smoothstep(0.75, 0.95, abs(sin(lat * 7. + 1.3))) * 0.45);
       pc = mix(pc, vec3(0.92, 0.42, 0.28), smoothstep(0.03, 0.012, rs) * 0.6);
       pc = mix(pc, vec3(0.34, 0.1, 0.06), smoothstep(0.009, 0.0, rs) * 0.6);
-      float lit = smoothstep(-0.15 - 0.55 * uNight, 0.35, dot(nw, uStarDir));
-      c = pc * (lit * 1.1 + 0.02) + (rq.y > 0. ? vec3(0.) : ring);
-      c += vec3(0.95, 0.72, 0.5) * pow(1. - abs(dot(nw, P)), 3.) * 0.28 * (lit + 0.1);
+      float viewCos = max(0., -dot(nw, P));
+      c = bodyLight(pc, nw, viewCos, 0.12) + step(R * viewCos, ringDepth) * ring;
     } else {
-      c += ring + vec3(0.6, 0.42, 0.28) * exp(-(pr - R) * 95.) * 0.065;
+      c += ring + vec3(0.6, 0.42, 0.28) * exp(-(pr - R) * 95.) * 0.065 * max(dot(normalize(q.x * T + q.y * B), uStarDir), 0.);
     }
     // its moon, on an orbit in the ring plane just past the rings, hidden while it passes behind
     float ph = uTime * 0.045;
     vec2 mo = vec2(cos(ph), sin(ph) * 0.2) * R * 3.1, mq = vec2(mo.x * cos(tilt) - mo.y * sin(tilt), mo.x * sin(tilt) + mo.y * cos(tilt));
-    float Rm = R * 0.13; vec2 dm = q - mq; float rm = length(dm);
-    if (rm < Rm && !(mo.y > 0. && length(mq) < R)) {
-      vec3 nm = normalize(dm.x / Rm * T + dm.y / Rm * B - sqrt(max(0., 1. - rm * rm / (Rm * Rm))) * P);
+    vec3 M = normalize(P + mq.x * T + mq.y * B);
+    vec3 MT = normalize(cross(M, vec3(0., 1., 0.))), MB = cross(MT, M);
+    vec2 dm = vec2(dot(d, MT), dot(d, MB)) / dot(d, M);
+    float Rm = R * 0.13, rm = length(dm);
+    if (rm < Rm && !(mo.y > 0. && pr < R)) {
+      vec2 disc = dm / Rm;
+      float viewCos = sqrt(max(0., 1. - dot(disc, disc)));
+      vec3 nm = disc.x * MT + disc.y * MB - viewCos * M;
       vec3 mc = vec3(0.66, 0.64, 0.72) * (0.7 + 0.3 * vnoise(dm * 900.) + 0.12 * vnoise(dm * 3000.));
-      c = mc * (smoothstep(-0.15, 0.35, dot(nm, uStarDir)) * 1.05 + 0.025);
+      c = bodyLight(mc, nm, viewCos, 0.);
     }
   }
   // a small ice world low over the far ridge, pale and faintly banded, with a thin bright limb
-  vec3 S = normalize(vec3(0.78, 0.2, -0.6)), ST = normalize(cross(S, vec3(0., 1., 0.))), SB = cross(ST, S);
+  vec3 S = ICE_DIR, ST = normalize(cross(S, vec3(0., 1., 0.))), SB = cross(ST, S);
   float ds = dot(d, S);
   if (ds > 0.99) {
     vec2 sq = vec2(dot(d, ST), dot(d, SB)) / ds; float Rs = 0.042, sr = length(sq);
     if (sr < Rs) {
       vec3 ns = normalize(sq.x / Rs * ST + sq.y / Rs * SB - sqrt(max(0., 1. - sr * sr / (Rs * Rs))) * S);
       vec3 ic = mix(vec3(0.18, 0.30, 0.41), vec3(0.45, 0.58, 0.63), 0.5 + 0.5 * sin(dot(ns, SB) * 22. + fbm3(ns.xy * 9. + ns.z) * 4.5));
-      c = ic * (smoothstep(-0.1, 0.4, dot(ns, uStarDir)) * 1.1 + 0.03) + vec3(0.30, 0.45, 0.60) * pow(1. - abs(dot(ns, S)), 4.) * 0.12;
-    } else c += vec3(0.4, 0.6, 0.85) * exp(-(sr - Rs) * 180.) * 0.035;
+      c = bodyLight(ic, ns, -dot(ns, S), 0.06);
+    }
   }
   c = companions(d, c);
   // clouds: soft wisps drifting downwind, lit warm on the star's side, silver-blue under the giant at night
@@ -807,7 +820,7 @@ function terrainNear() {
   return { path, pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
 }
 function terrainFar() {
-  const R = 110, A = 200, pos = [], nor = [], idx = [], edge = NEAR.half - 0.5;
+  const R = 150, A = 256, pos = [], nor = [], idx = [], edge = NEAR.half - 0.5;
   for (let j = 0; j <= R; j++) {
     const r = 72 * Math.pow(1500 / 72, j / R);
     for (let i = 0; i <= A; i++) {
@@ -1259,7 +1272,7 @@ void main(){
   vec3 c = texture(tMap, vUv).rgb * 4.;
   c += (texture(tMap, vUv + uTexel * vec2(1., 0.)).rgb + texture(tMap, vUv + uTexel * vec2(-1., 0.)).rgb + texture(tMap, vUv + uTexel * vec2(0., 1.)).rgb + texture(tMap, vUv + uTexel * vec2(0., -1.)).rgb) * 2.;
   c += texture(tMap, vUv + uTexel * vec2(1., 1.)).rgb + texture(tMap, vUv + uTexel * vec2(-1., 1.)).rgb + texture(tMap, vUv + uTexel * vec2(1., -1.)).rgb + texture(tMap, vUv + uTexel * vec2(-1., -1.)).rgb;
-  o = vec4(c / 16. * 0.85, 1.); }`);
+  o = vec4(c / 16. * 0.35, 1.); }`);
 const P_RAYS = program(FSQ, `uniform sampler2D tMap; uniform vec2 uSunUV; uniform float uVis; uniform vec3 uRayCol; in vec2 vUv; out vec4 o;
 void main(){
   vec2 st = (uSunUV - vUv) / 32.; vec2 q = vUv; float acc = 0., w = 1.;
@@ -1311,7 +1324,7 @@ function ensurePost(w, h) {
   post.dRb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, post.dRb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
   post.resF = fboFor(post.res, post.ms ? null : post.dRb);
   post.mips = [];
-  for (let i = 1; i <= 3; i++) { const mw = Math.max(2, w >> i), mh = Math.max(2, h >> i), t = colorTex(mw, mh); post.mips.push({ t, f: fboFor(t), w: mw, h: mh }); }
+  for (let i = 1; i <= 2; i++) { const mw = Math.max(2, w >> i), mh = Math.max(2, h >> i), t = colorTex(mw, mh); post.mips.push({ t, f: fboFor(t), w: mw, h: mh }); }
   const rw = Math.max(2, w >> 1), rh = Math.max(2, h >> 1), rt = colorTex(rw, rh); post.rays = { t: rt, f: fboFor(rt), w: rw, h: rh };
 }
 function pass(prog, fbo, w, h, tex) {
@@ -1321,7 +1334,7 @@ function pass(prog, fbo, w, h, tex) {
 function postProcess(VP, eye, b, w, h) {
   gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND); gl.depthMask(false); gl.bindVertexArray(null);
   pass(P_PRE, post.mips[0].f, post.mips[0].w, post.mips[0].h, post.res);
-  gl.uniform2f(P_PRE.u('uTexel'), 1 / w, 1 / h); gl.uniform1f(P_PRE.u('uThr'), HDR ? 1.3 - 0.5 * night : 0.78); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.uniform2f(P_PRE.u('uTexel'), 1 / w, 1 / h); gl.uniform1f(P_PRE.u('uThr'), HDR ? 1.45 : 0.90); gl.drawArrays(gl.TRIANGLES, 0, 3);
   for (let i = 1; i < post.mips.length; i++) { const s0 = post.mips[i - 1]; pass(P_DOWN, post.mips[i].f, post.mips[i].w, post.mips[i].h, s0.t); gl.uniform2f(P_DOWN.u('uTexel'), 1 / s0.w, 1 / s0.h); gl.drawArrays(gl.TRIANGLES, 0, 3); }
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
   for (let i = post.mips.length - 1; i > 0; i--) { const s0 = post.mips[i]; pass(P_UP, post.mips[i - 1].f, post.mips[i - 1].w, post.mips[i - 1].h, s0.t); gl.uniform2f(P_UP.u('uTexel'), 1 / s0.w, 1 / s0.h); gl.drawArrays(gl.TRIANGLES, 0, 3); }
@@ -1340,7 +1353,7 @@ function postProcess(VP, eye, b, w, h) {
   gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, post.res); gl.uniform1i(P_FINAL.u('tScene'), 4);
   gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, post.mips[0].t); gl.uniform1i(P_FINAL.u('tBloom'), 5);
   gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, post.rays.t); gl.uniform1i(P_FINAL.u('tRays'), 6);
-  gl.uniform1f(P_FINAL.u('uBloom'), 0.19 + 0.13 * night); gl.uniform1f(P_FINAL.u('uRays'), (HDR ? 1.1 : 0.8) * (1. - night)); gl.uniform1f(P_FINAL.u('uHDRf'), HDR ? 1 : 0);
+  gl.uniform1f(P_FINAL.u('uBloom'), 0.085); gl.uniform1f(P_FINAL.u('uRays'), (HDR ? 1.1 : 0.8) * (1. - night)); gl.uniform1f(P_FINAL.u('uHDRf'), HDR ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
 }
@@ -1460,7 +1473,7 @@ function stepStones(dt) {
 }
 
 // ---------------------------------------------------------------- render
-const SUN = norm([-0.86, 0.14, -0.33]), SUNCOL = [2.7, 1.9, 1.35], PLANET = norm([0.2, 0.43, -0.88]), MOONCOL = [0.3, 0.42, 0.82];
+const SUN = norm([-0.86, 0.14, -0.33]), SUNCOL = [2.7, 1.9, 1.35], PLANET = skyBodies.amber, MOONCOL = [0.3, 0.42, 0.82];
 let night = 0, nightTarget = 0, sheet = 0, grassDrawn = 0;
 function norm(v) { const l = Math.hypot(...v); return v.map((x) => x / l); }
 // the night sky turns about a tilted pole, once in about fifteen minutes
@@ -1696,9 +1709,14 @@ function toggleNight() { nightTarget = nightTarget > 0.5 ? 0 : 1; document.getEl
 function toggleHud() { hudOn = !hudOn; document.getElementById('hud').hidden = !hudOn; document.getElementById('bHud').setAttribute('aria-pressed', String(hudOn)); }
 
 // ---------------------------------------------------------------- test hooks (?test): deterministic scripted session, fixed camera
+function skyView(direction) {
+  return { eye: [START[0], H(...START) + 1.7, START[1]], yaw: Math.atan2(direction[0], -direction[2]), pitch: Math.asin(direction[1]) };
+}
 const VIEWS = {
-  rose: { eye: [8, H(8, 30) + 1.7, 30], yaw: -0.51, pitch: 0.46 },
-  ocean: { eye: [8, H(8, 30) + 1.7, 30], yaw: 1.02, pitch: 0.60 },
+  amber: skyView(skyBodies.amber),
+  rose: skyView(skyBodies.rose),
+  ocean: skyView(skyBodies.ocean),
+  ice: skyView(skyBodies.ice),
   summit: { eye: [summit[0], H(...summit) + 1.65, summit[1]], yaw: 2.48, pitch: -0.24 },
   trail: { eye: [trail[0][0], H(...trail[0]) + 1.65, trail[0][1]], yaw: Math.atan2(trail[1][0] - trail[0][0], trail[0][1] - trail[1][1]), pitch: 0.02 },
   river: { eye: [riverX(-47) + 4, H(riverX(-47) + 4, -47) + 1.65, -47], yaw: -1.05, pitch: -0.36 },
