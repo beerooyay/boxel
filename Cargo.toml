@@ -2,6 +2,7 @@
 name = "boxel"
 version = "0.1.0"
 edition = "2024"
+license = "BUSL-1.1"
 rust-version = "1.86"
 description = "Certified-locality diffusive fields: cost and memory follow what happens, not the size of the world."
 repository = "https://github.com/beerooyay/boxel"

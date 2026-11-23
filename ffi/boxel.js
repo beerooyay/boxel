@@ -1,4 +1,5 @@
 // boxel for the web: a thin ES module over the wasm build of the C ABI.
+// Copyright (c) 2026 Blaize Rouyea and Corey Bourgeois. Business Source License 1.1; see LICENSE.
 //
 //   import { load } from './boxel.js';
 //   const boxel = await load(fetch('boxel.wasm'));

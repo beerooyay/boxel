@@ -155,6 +155,22 @@ cargo run --release -p boxel-bench -- replay replay.json && node bench/replay.mj
 - **One thread.** Awake blocks are independent within a step, so they split across cores
   cleanly; that is next.
 
+## License
+
+boxel is source-available under the [Business Source License 1.1](LICENSE), owned by Blaize
+Rouyea and Corey Bourgeois. In short:
+
+- Reading it, changing it, building with it and learning from it are always free.
+- Shipping it in a game or product is free while you and your affiliates take in under
+  US$1M a year in revenue and funding, and always free for non-commercial, educational and
+  research use.
+- Past that line, or to sell boxel itself as an engine, library, plugin or service, ask us for
+  a commercial license.
+- Each version becomes Apache-2.0 four years after its release, or on 2030-11-23 for this one.
+
+Wherever boxel ships, its license ships with it. The [LICENSE](LICENSE) file is what governs;
+this summary is not.
+
 ## Credits
 
 The mathematics is Blaize Rouyea and Corey Bourgeois's paper. Boxel grew out of the field

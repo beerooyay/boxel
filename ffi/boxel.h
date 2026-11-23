@@ -6,7 +6,9 @@
  * 16 x 16 blocks that could hold more than half of it exist at all.
  *
  * Handles are opaque. Pointers returned into a field stay valid until the next call that
- * changes it (a deposit, drain, rain or step). Link against boxel_ffi (static or shared). */
+ * changes it (a deposit, drain, rain or step). Link against boxel_ffi (static or shared).
+ *
+ * Copyright (c) 2026 Blaize Rouyea and Corey Bourgeois. Business Source License 1.1; see LICENSE. */
 
 #ifndef BOXEL_H
 #define BOXEL_H

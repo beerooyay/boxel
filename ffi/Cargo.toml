@@ -2,6 +2,7 @@
 name = "boxel-ffi"
 version = "0.1.0"
 edition = "2024"
+license = "BUSL-1.1"
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
