@@ -1,20 +1,21 @@
-// Tarnished Promise: an acre of lake shore on Tarn, under a ringed giant.
+// Tarnished Promise: four acres of lake shore on Tarn, under a ringed giant.
 //
 // The world remembers you through three boxel fields on the unbounded plane of 12.5 cm cells:
 //   glow      bioluminescence in the moss and the water   D 8 cells²/s, k 0.3/s, 60 steps/s
 //   moisture  wet feet, splashes, spore rain               D 3 cells²/s, k 0.04/s, 15 steps/s
 //   wear      trails packed into the soil                  no spread, k 0.008/s, 15 steps/s
 // Each is certified to stay within 1/255 of computing every cell, and only the 16 × 16 blocks
-// that can still matter exist. The renderer sees the acre through one R8 texture per field and
+// that can still matter exist. The renderer sees the map through one R8 texture per field and
 // re-uploads exactly the blocks the engine holds, clearing the ones it lets go.
 
 import { load } from '../ffi/boxel.js';
 
-const N = 512, CELL = 0.125, EXTENT = N * CELL;          // the acre the renderer sees: 64 m a side
-const LAKE = [-3, 4];                                     // lake centre (x, z)
+const HALF = 64;                                          // the map runs 128 m a side, centred on the origin
+const N = 1024, CELL = 0.125, EXTENT = N * CELL;         // the part of the fields the renderer sees: the whole map
+const LAKE = [-6, 8];                                     // lake centre (x, z)
 const WATER = 0;                                          // water level
-const CERT = 0, DENSE = 1;
-const MODE_NAME = { 0: 'Certified', 1: 'Dense' };
+const BOXEL = 0, DENSE = 1;
+const MODE_NAME = { 0: 'boxel', 1: 'dense' };
 const qs = new URLSearchParams(location.search);
 const TEST = qs.has('test');
 const touch = matchMedia('(pointer: coarse)').matches;
@@ -32,27 +33,35 @@ function fbm(x, y, o = 4) { let s = 0, a = 0.5; for (let i = 0; i < o; i++) { s 
 function ridged(x, y) { let s = 0, a = 0.55; for (let i = 0; i < 5; i++) { const v = 1 - Math.abs(vnoise(x, y) * 2 - 1); s += a * v * v; x = x * 2.1 + 3; y = y * 2.1 + 9; a *= 0.5; } return s; }
 const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
-// the lake's outline: an ellipse pushed around by lobes, coves and noise, so no stretch of shore is a circle
+// the lake's outline: an ellipse pushed around by lobes, coves and noise, so no stretch of shore is a circle. Measured
+// in half-size coordinates, so the lake is twice the size the noise was drawn for and keeps its shape.
 function lakeD(x, z) {
-  const dx = (x - LAKE[0]) / 1.2, dz = (z - LAKE[1]) / 0.95, th = Math.atan2(dz, dx);
+  x *= 0.5; z *= 0.5;
+  const dx = (x - LAKE[0] * 0.5) / 1.2, dz = (z - LAKE[1] * 0.5) / 0.95, th = Math.atan2(dz, dx);
   const wob = 1 + 0.17 * Math.sin(3 * th + 1.1) + 0.09 * Math.sin(5 * th - 0.4) + 0.05 * Math.sin(8 * th + 2.0)
     + 0.24 * (fbm(x * 0.07 + 31, z * 0.07 - 12, 3) - 0.5);
   return Math.hypot(dx, dz) / wob / 1.1;
 }
-const ISLET = [LAKE[0] + 3.4, LAKE[1] - 2.6];
+const ISLET = [LAKE[0] + 6.8, LAKE[1] - 5.2];
+const OUTCROP = [34, -30];                                // a rocky rise north-east of the lake
+function outcrop(x, z) { return 1 - sm(9, 27, Math.hypot(x - OUTCROP[0], (z - OUTCROP[1]) * 1.25)); }
 function H(x, z) {
-  const meadow = 0.7 + 1.1 * fbm(x * 0.045 + 3, z * 0.045 - 1) + 0.25 * fbm(x * 0.22, z * 0.22, 3);
+  // meadow: small undulation on rolling swells
+  const meadow = 0.7 + 1.1 * fbm(x * 0.045 + 3, z * 0.045 - 1) + 0.25 * fbm(x * 0.22, z * 0.22, 3) + 3.2 * (fbm(x * 0.017 - 7, z * 0.017 + 5, 3) - 0.4);
   const d = lakeD(x, z);
   // a wadeable shelf all round the shore, then a drop into the basin
-  const bowl = -0.6 * (1 - sm(8.5, 10.8, d)) - 3.4 * (1 - sm(1, 8.5, d)) - 0.35;
+  const bowl = -0.6 * (1 - sm(8.5, 10.8, d)) - 4.4 * (1 - sm(1, 8.5, d)) - 0.35;
   const t = sm(9.6, 14, d);
   let h = bowl * (1 - t) + meadow * t;
-  const ri = Math.hypot(x - ISLET[0], z - ISLET[1]);
-  if (ri < 7) h += 2.0 * Math.exp(-ri * ri / 5) * (1 - t);
+  const ri = Math.hypot(x - ISLET[0], z - ISLET[1]) * 0.5;
+  if (ri < 7) h += 2.6 * Math.exp(-ri * ri / 5) * (1 - t);
+  // the outcrop: broken ridges stepped into ledges, steep enough to stand as bare stone
+  const o = outcrop(x, z);
+  if (o > 0) { const rg = ridged(x * 0.055 + 4, z * 0.055 - 2); h += o * (2 + 7 * rg + 1.2 * Math.round(rg * 4) / 4) * t; }
   const e = Math.hypot(x, z * 1.05);
-  h += sm(19, 36, e) * (4 + 7 * fbm(x * 0.08 + 9, z * 0.08 + 2));
-  const m = sm(40, 420, e);
-  if (m > 0) h += m * m * (18 + 115 * ridged(x * 0.005 + 2, z * 0.005 - 4)) + sm(40, 90, e) * 6 * fbm(x * 0.03, z * 0.03);
+  h += sm(40, 76, e) * (4 + 8 * fbm(x * 0.04 + 9, z * 0.04 + 2));
+  const m = sm(84, 520, e);
+  if (m > 0) h += m * m * (18 + 115 * ridged(x * 0.0035 + 2, z * 0.0035 - 4)) + sm(84, 170, e) * 6 * fbm(x * 0.02, z * 0.02);
   return h;
 }
 function normalAt(x, z, e = 0.15) {
@@ -71,15 +80,16 @@ const SPECS = {
 };
 const cellOf = (m) => Math.floor(m / CELL);
 
-/** One field and the texture that shows it. Certified: a boxel field on the whole plane, uploaded block by
- *  block. Dense: the full computation over the acre alone, uploaded whole every step. */
+/** One field and the texture that shows it. boxel: a certified field on the whole plane, uploaded block by block
+ *  into a copy of the texture and sent a band of block rows at a time. Dense: the full computation over the map
+ *  alone, uploaded whole every step. */
 class Layer {
-  constructor(boxel, spec, tex) { Object.assign(this, { boxel, spec, tex, acc: 0, stepped: 0 }); }
+  constructor(boxel, spec, tex) { Object.assign(this, { boxel, spec, tex, acc: 0, stepped: 0, copy: new Uint8Array(N * N), lo: new Int32Array(N / 16), hi: new Int32Array(N / 16) }); }
   set(mode) {
     this.f?.free(); this.g?.free(); this.f = this.g = null; this.acc = 0;
-    if (mode === CERT) this.f = this.boxel.field({ spread: this.spec.spread, fade: this.spec.fade, tolerance: TOLERANCE, events: 64 });
+    if (mode === BOXEL) this.f = this.boxel.field({ spread: this.spec.spread, fade: this.spec.fade, tolerance: TOLERANCE, events: 64 });
     else this.g = this.boxel.grid(this.spec, -N / 2, -N / 2, N);
-    clearTexture(this.tex);
+    clearTexture(this.tex); this.copy.fill(0);
     this.changed = false;
   }
   deposit(x, z, r, a) { (this.f || this.g).deposit(cellOf(x), cellOf(z), r, a); this.changed = true; }
@@ -89,12 +99,11 @@ class Layer {
   advance(dt) {
     this.acc = Math.min(this.acc + dt * this.spec.hz, 4);
     const n = Math.floor(this.acc);
-    if (n === 0) return 0;
+    if (n === 0) return;
     this.acc -= n;
     this.stepped += n * (this.f ? this.f.awake * 256 : N * N);
     (this.f || this.g).step(n);
     this.changed = true;
-    return n;
   }
   /** Send what changed to the texture. Returns bytes uploaded. */
   upload() {
@@ -102,30 +111,38 @@ class Layer {
     this.changed = false;
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    const M = this.copy;
     if (this.g) {
-      for (let y = 0; y < N; y++) quantise(this.g.row(y - N / 2), WHOLE, y * N);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RED, gl.UNSIGNED_BYTE, WHOLE);
+      for (let y = 0; y < N; y++) quantise(this.g.row(y - N / 2), M, y * N);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, N, N, gl.RED, gl.UNSIGNED_BYTE, M);
       return N * N;
     }
-    let bytes = 0;
-    const inside = (bx, by) => bx >= -16 && bx < 16 && by >= -16 && by < 16;
-    this.f.freed((bx, by) => {
-      if (!inside(bx, by)) return;
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, bx * 16 + N / 2, by * 16 + N / 2, 16, 16, gl.RED, gl.UNSIGNED_BYTE, ZERO);
-      bytes += 256;
-    });
+    const half = N / 32, { lo, hi } = this;
+    lo.fill(N); hi.fill(0);
+    const put = (bx, by, v) => {
+      if (bx < -half || bx >= half || by < -half || by >= half) return;
+      const X = (bx + half) * 16, row = by + half;
+      for (let r = 0; r < 16; r++) {
+        const at = (row * 16 + r) * N + X;
+        if (v) quantise(v.subarray(r * 16, r * 16 + 16), M, at); else M.fill(0, at, at + 16);
+      }
+      lo[row] = Math.min(lo[row], X); hi[row] = Math.max(hi[row], X + 16);
+    };
+    this.f.freed((bx, by) => put(bx, by, null));
     this.f.forgetFreed();
-    this.f.blocks((bx, by, v) => {
-      if (!inside(bx, by)) return;
-      quantise(v, TILE, 0);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, bx * 16 + N / 2, by * 16 + N / 2, 16, 16, gl.RED, gl.UNSIGNED_BYTE, TILE);
-      bytes += 256;
-    });
+    this.f.blocks(put);
+    let bytes = 0;
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, N);
+    for (let row = 0; row < lo.length; row++) {
+      if (hi[row] <= lo[row]) continue;
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, lo[row], row * 16, hi[row] - lo[row], 16, gl.RED, gl.UNSIGNED_BYTE, M, row * 16 * N + lo[row]);
+      bytes += (hi[row] - lo[row]) * 16;
+    }
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
     return bytes;
   }
   stats() { return this.f ? this.f.stats() : { blocks: N * N / 256, bytes: N * N * 8, live: 0, violations: 0, bound: 0 }; }
 }
-const TILE = new Uint8Array(256), ZERO = new Uint8Array(256), WHOLE = new Uint8Array(N * N);
 function quantise(src, dst, at) { for (let i = 0; i < src.length; i++) { const v = src[i] * 255 + 0.5; dst[at + i] = v > 255 ? 255 : v; } }
 
 async function loadEngine() {
@@ -175,8 +192,17 @@ const HEAD = `#version 300 es
 precision highp float;
 precision highp int;
 `;
-const COMMON = `
+// the lake's surface: a slow swell under two wind-driven wavetrains, a few centimetres high. x is the height, yz its gradient
+const WAVES = `
+vec3 waterWave(vec2 p, float t){
+  vec2 k1 = vec2(0.21, 0.13), k2 = vec2(-0.27, 0.46), k3 = vec2(1.38, -0.8);
+  float a1 = dot(p, k1) + t * 0.7, a2 = dot(p, k2) + t * 1.1, a3 = dot(p, k3) + t * 1.9;
+  return vec3(0.035 * sin(a1) + 0.02 * sin(a2) + 0.008 * sin(a3), 0.035 * cos(a1) * k1 + 0.02 * cos(a2) * k2 + 0.008 * cos(a3) * k3);
+}
+`;
+const COMMON = WAVES + `
 uniform vec3 uSunDir, uSunCol, uCam, uPlanetDir;
+uniform mat3 uSky;
 uniform float uTime, uExposure, uExtent, uSheet, uWind, uHDR, uNight, uBio;
 uniform vec3 uStarDir;
 uniform sampler2D uGlow, uGround, uWear;
@@ -219,8 +245,19 @@ vec3 skyBase(vec3 d){
 vec3 skyColor(vec3 d){
   vec3 c = skyBase(d);
   if (d.y > 0.) {
-    vec3 q = d * 170.; vec3 id = floor(q); float hh = hash12(id.xz + id.y * 7.13);
-    if (hh > 0.997 - 0.003 * uNight) { vec3 f = fract(q) - .5; c += vec3(0.8, 0.85, 1.) * (1. + 2.5 * uNight) * smoothstep(0.3, 0., length(f)) * smoothstep(0.08, 0.45, d.y) * (0.55 + 0.45 * sin(uTime * 1.7 + hh * 90.)); }
+    // the stars and the galaxy's band turn together about a tilted pole, slowly enough to notice over a few minutes
+    vec3 sd = uSky * d;
+    // the band wanders and swells; star clouds clump along it; a dust lane runs down its middle and breaks up
+    float bb = dot(sd, normalize(vec3(0.2, 0.35, -0.91))) - (fbm3(sd.xz * 2.3 + sd.y * 1.7) - 0.5) * 0.12;
+    float width = 0.1 + 0.06 * fbm3(sd.zy * 3.1 + 4.);
+    float band = exp(-bb * bb / (width * width));
+    float clouds = fbm3(sd.xz * 13. + sd.y * 9.) * 0.6 + fbm3(sd.yz * 29. - sd.x * 17.) * 0.4;
+    float lane = smoothstep(0.03, 0.0, abs(bb + 0.012 + (fbm3(sd.xy * 8. - 3.) - 0.5) * 0.05)) * smoothstep(0.25, 0.55, fbm3(sd.xz * 4.5 + 2.));
+    band *= (0.3 + 0.7 * smoothstep(0.3, 0.75, clouds)) * (1. - 0.8 * lane);
+    float sky = smoothstep(0.02, 0.3, d.y);
+    c += mix(vec3(0.26, 0.24, 0.5), vec3(0.72, 0.62, 0.82), band) * band * 0.24 * uNight * sky;
+    vec3 q = sd * 170.; vec3 id = floor(q); float hh = hash12(id.xz + id.y * 7.13);
+    if (hh > 0.997 - 0.003 * uNight - 0.0018 * band * uNight) { vec3 f = fract(q) - .5; c += mix(vec3(0.8, 0.85, 1.), vec3(1., 0.86, 0.72), step(0.5, fract(hh * 97.))) * (1. + 2.5 * uNight) * smoothstep(0.3, 0., length(f)) * smoothstep(0.08, 0.45, d.y) * (0.55 + 0.45 * sin(uTime * 1.7 + hh * 90.)); }
   }
   c += STAR_COL * (1. - uNight) * 3. * smoothstep(0.99935, 0.99965, dot(d, uStarDir));
   vec3 P = uPlanetDir; vec3 T = normalize(cross(P, vec3(0., 1., 0.))); vec3 B = cross(T, P);
@@ -232,7 +269,7 @@ vec3 skyColor(vec3 d){
     float rr = length(vec2(rq.x, rq.y / 0.2));
     float band = smoothstep(1.32 * R, 1.38 * R, rr) * (1. - smoothstep(2.2 * R, 2.28 * R, rr)) * (1. - 0.6 * smoothstep(1.7 * R, 1.75 * R, rr) * (1. - smoothstep(1.8 * R, 1.85 * R, rr)));
     float aa = clamp(1. - fwidth(rr) * 90., 0., 1.);
-    vec3 ring = vec3(0.86, 0.70, 0.62) * band * mix(0.55, 0.55 + 0.45 * sin(rr * 95.) * sin(rr * 31.), aa) * 0.42;
+    vec3 ring = vec3(0.78, 0.84, 0.95) * band * mix(0.55, 0.55 + 0.45 * sin(rr * 95.) * sin(rr * 31.), aa) * 0.42;
     float pr = length(q);
     if (pr < R) {
       vec3 nw = normalize(q.x / R * T + q.y / R * B - sqrt(max(0., 1. - pr * pr / (R * R))) * P);
@@ -243,20 +280,38 @@ vec3 skyColor(vec3 d){
       float ang = sw * 5.5; vec2 dvr = vec2(dv.x * cos(ang) - dv.y * sin(ang), dv.x * sin(ang) + dv.y * cos(ang));
       lat += (dvr.y - dv.y) * 2.2 * sw;
       float bands = sin(lat * 19. + sin(lat * 6. + q.x * 8.) * 1.6 + vnoise(q * 30. + dvr * 40. * sw) * 0.8);
-      vec3 pc = mix(vec3(0.55, 0.26, 0.62), vec3(0.16, 0.58, 0.66), 0.5 + 0.5 * bands);
-      pc = mix(pc, vec3(0.95, 0.72, 0.55), smoothstep(0.75, 0.95, abs(sin(lat * 7. + 1.3))) * 0.35);
-      pc = mix(pc, vec3(0.92, 0.6, 0.62), smoothstep(0.03, 0.012, rs) * 0.55);
-      pc = mix(pc, vec3(0.25, 0.12, 0.3), smoothstep(0.009, 0.0, rs) * 0.6);
+      // an amber giant: cream and ochre bands, rust belts, a red storm; nothing like the world under it
+      vec3 pc = mix(vec3(0.74, 0.47, 0.26), vec3(0.95, 0.84, 0.66), 0.5 + 0.5 * bands);
+      pc = mix(pc, vec3(0.50, 0.22, 0.14), smoothstep(0.75, 0.95, abs(sin(lat * 7. + 1.3))) * 0.45);
+      pc = mix(pc, vec3(0.92, 0.42, 0.28), smoothstep(0.03, 0.012, rs) * 0.6);
+      pc = mix(pc, vec3(0.34, 0.1, 0.06), smoothstep(0.009, 0.0, rs) * 0.6);
       float lit = smoothstep(-0.15 - 0.55 * uNight, 0.35, dot(nw, uStarDir));
       c = pc * (lit * 1.1 + 0.02) + (rq.y > 0. ? vec3(0.) : ring);
-      c += vec3(0.35, 0.55, 0.9) * pow(1. - abs(dot(nw, P)), 3.) * 0.35 * (lit + 0.1);
+      c += vec3(0.95, 0.72, 0.5) * pow(1. - abs(dot(nw, P)), 3.) * 0.28 * (lit + 0.1);
     } else {
-      c += ring + vec3(0.25, 0.35, 0.6) * exp(-(pr - R) * 35.) * 0.18;
+      c += ring + vec3(0.6, 0.42, 0.28) * exp(-(pr - R) * 35.) * 0.16;
+    }
+    // its moon, on an orbit in the ring plane just past the rings, hidden while it passes behind
+    float ph = uTime * 0.045;
+    vec2 mo = vec2(cos(ph), sin(ph) * 0.2) * R * 3.1, mq = vec2(mo.x * cos(tilt) - mo.y * sin(tilt), mo.x * sin(tilt) + mo.y * cos(tilt));
+    float Rm = R * 0.13; vec2 dm = q - mq; float rm = length(dm);
+    if (rm < Rm && !(mo.y > 0. && length(mq) < R)) {
+      vec3 nm = normalize(dm.x / Rm * T + dm.y / Rm * B - sqrt(max(0., 1. - rm * rm / (Rm * Rm))) * P);
+      vec3 mc = vec3(0.66, 0.64, 0.72) * (0.7 + 0.3 * vnoise(dm * 900.) + 0.12 * vnoise(dm * 3000.));
+      c = mc * (smoothstep(-0.15, 0.35, dot(nm, uStarDir)) * 1.05 + 0.025);
     }
   }
-  vec3 M = normalize(vec3(-0.62, 0.42, -0.52)), M2 = normalize(vec3(-0.55, 0.47, -0.58));
-  c = mix(c, vec3(0.72, 0.76, 0.84) * (0.55 + 0.45 * vnoise(d.xz * 500.)), smoothstep(0.99975, 0.99985, dot(d, M)));
-  c = mix(c, vec3(0.66, 0.74, 0.88) * (0.6 + 0.4 * vnoise(d.xz * 700.)), smoothstep(0.99991, 0.99995, dot(d, M2)));
+  // a small ice world low over the far ridge, pale and faintly banded, with a thin bright limb
+  vec3 S = normalize(vec3(0.78, 0.2, -0.6)), ST = normalize(cross(S, vec3(0., 1., 0.))), SB = cross(ST, S);
+  float ds = dot(d, S);
+  if (ds > 0.99) {
+    vec2 sq = vec2(dot(d, ST), dot(d, SB)) / ds; float Rs = 0.042, sr = length(sq);
+    if (sr < Rs) {
+      vec3 ns = normalize(sq.x / Rs * ST + sq.y / Rs * SB - sqrt(max(0., 1. - sr * sr / (Rs * Rs))) * S);
+      vec3 ic = mix(vec3(0.72, 0.86, 0.9), vec3(0.88, 0.93, 0.96), 0.5 + 0.5 * sin(dot(ns, SB) * 22. + vnoise(sq * 60.) * 2.));
+      c = ic * (smoothstep(-0.1, 0.4, dot(ns, uStarDir)) * 1.1 + 0.03) + vec3(0.5, 0.7, 0.9) * pow(1. - abs(dot(ns, S)), 4.) * 0.3;
+    } else c += vec3(0.4, 0.6, 0.85) * exp(-(sr - Rs) * 90.) * 0.08;
+  }
   // clouds: soft wisps drifting downwind, lit warm on the star's side, silver-blue under the giant at night
   if (d.y > 0.015) {
     vec2 cu = d.xz / (d.y + 0.07) * 0.8 + WIND_DIR * uTime * 0.006;
@@ -295,7 +350,7 @@ vec3 fogged(vec3 col, vec3 wp){
   vec3 d = wp - uCam; float dist = length(d);
   float f = (1. - exp(-dist * 0.0013)) * (1. - 0.6 * smoothstep(0., 160., wp.y));
   // valley mist: thick near the water, thin on the slopes, heavier at night
-  float mist = (1. - exp(-dist * 0.016)) * exp(-max(wp.y + 0.3, 0.) * 0.32) * (0.16 + 0.34 * uNight);
+  float mist = (1. - exp(-dist * 0.011)) * exp(-max(wp.y + 0.3, 0.) * 0.32) * (0.16 + 0.34 * uNight);
   vec3 vd = normalize(vec3(d.x, max(d.y, 0.02 * dist), d.z));
   vec3 fc = skyBase(vd) * 0.75;
   // the haze glows where it lies between you and the star
@@ -304,10 +359,43 @@ vec3 fogged(vec3 col, vec3 wp){
   return mix(mix(col, fc, clamp(f, 0., 1.)), mc, clamp(mist, 0., 0.85));
 }
 vec3 tonemap(vec3 c){ c *= uExposure; if (uHDR > 0.5) return min(c, vec3(48.)); c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14); return pow(clamp(c, 0., 1.), vec3(1. / 2.2)); }
+
+// ---- Tarn's flora follows one set of rules ----
+// Five pigments, from the cool shallows to the warm undergrowth. Every plant is near-black at the root, saturated
+// through its body and pale at the tip; every plant takes the same sky, sun and backlight, glows from within at night,
+// and answers the glow field where you stirred the ground beside it.
+const vec3 TEAL = vec3(0.28, 0.88, 0.80), CYAN = vec3(0.42, 0.78, 1.0), VIOLET = vec3(0.72, 0.42, 0.98), MAGENTA = vec3(0.88, 0.30, 0.70), CRIMSON = vec3(0.84, 0.16, 0.34);
+vec3 pigment(float h){
+  h = clamp(h, 0., 1.) * 4.;
+  return h < 1. ? mix(TEAL, CYAN, h) : h < 2. ? mix(CYAN, VIOLET, h - 1.) : h < 3. ? mix(VIOLET, MAGENTA, h - 2.) : mix(MAGENTA, CRIMSON, h - 3.);
+}
+vec3 floraRamp(vec3 tip, float u){
+  vec3 root = tip * 0.04 + vec3(0.008, 0.012, 0.02), body = tip * vec3(0.30, 0.31, 0.36);
+  return u < 0.5 ? mix(root, body, u * 2.) : mix(body, tip * 0.9, (u - 0.5) * 2.);
+}
+vec3 floraLight(vec3 gc, vec3 tip, vec3 N, vec3 V, float u, float self, float stir){
+  if (dot(N, V) < 0.) N = -N;
+  float ndl = max(dot(N, uSunDir), 0.) * 0.72 + 0.28;
+  vec3 lit = gc * (ambient(N) * 2.35 + uSunCol * ndl * 0.3);
+  lit += uSunCol * gc * pow(clamp(dot(-V, uSunDir), 0., 1.), 3.) * u * 0.4;
+  lit += gc * self * (1. + 1.6 * uNight) * u * u;
+  lit += tip * tip * stir * uBio * (0.25 + 1.1 * u * u);
+  return lit;
+}
+// where a surface meets the lake: wet and dark under the water, a lace of foam on the line, a damp band above it
+vec3 waterline(vec3 alb, vec3 wp, out float wet){
+  float wl = wp.y - (${WATER.toFixed(1)} + waterWave(wp.xz, uTime).x);
+  vec3 cb = cobble(wp.xz * 5.5 + wp.y * 3. + vec2(uTime * 0.12, -uTime * 0.09));
+  float lace = smoothstep(0.1, 0.0, cb.y) * (0.6 + 0.4 * vnoise(wp.xz * 3. + uTime * 0.3));
+  float line = smoothstep(0.13, 0.0, abs(wl - 0.03 * sin(uTime * 1.7 + wp.x * 2.)));
+  wet = smoothstep(-0.06, 0.0, wl) * (1. - smoothstep(0.0, 0.22, wl));
+  alb = mix(alb * (1. - 0.45 * wet), alb * vec3(0.62, 0.78, 0.8), smoothstep(0.0, -0.25, wl));
+  return mix(alb, vec3(0.78, 0.84, 0.95), line * (0.45 + 0.55 * lace));
+}
 `;
 
-const WORLD_VS = `
-uniform mat4 uVP; uniform float uMirror;
+const WORLD_VS = WAVES + `
+uniform mat4 uVP; uniform float uMirror, uLodW;
 uniform float uTime, uExtent, uSheet, uWind; uniform sampler2D uGlow, uGround, uWear;
 vec2 fieldUV(vec2 xz){ return xz / uExtent + 0.5; }
 const vec2 WIND_DIR = vec2(0.87, 0.5);
@@ -419,15 +507,17 @@ void main(){
     alb = mix(alb, lichC * (0.7 + 0.3 * speck), lich * 0.5);
     float moss = smoothstep(0.5, 0.85, N.y) * smoothstep(0.35, 0.6, vnoise(vWP.xz * 1.4 + vH * 5.) + 0.15 * speck);
     alb = mix(alb, vec3(0.035, 0.085, 0.10) * (0.8 + 0.4 * speck), moss);
-    float wet = clamp(max((1. - smoothstep(0.0, 0.3, vWP.y)) * step(-0.6, vWP.y), (texture(uGround, uv).r + uSheet) * inf), 0., 1.);
-    alb *= (1. - 0.45 * wet) * mix(0.5, 1., smoothstep(-0.3, 0.4, vLoc.y / max(0.3, 1.)));
+    float shoreWet;
+    alb = waterline(alb, vWP, shoreWet);
+    float wet = clamp(max(shoreWet, (texture(uGround, uv).r + uSheet) * inf), 0., 1.);
+    alb *= (1. - 0.3 * wet) * mix(0.5, 1., smoothstep(-0.3, 0.4, vLoc.y));
     col = pbr(alb, mix(0.8 - 0.15 * lich, 0.14, wet * 0.9), 0., N, V);
     col += glowCol(vWP.xz + vH * 13.) * (uBio * glowI(glow) * 2.3 * moss + (0.008 + 0.05 * uNight) * moss);
     col += lichC * lich * (0.002 + 0.18 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
   } else {
     vec3 tint = mix(vec3(0.45, 0.95, 0.92), vec3(0.75, 0.48, 1.0), vH);
-    float fres = pow(1. - max(dot(N, V), 0.), 3.);
-    col = pbr(tint * 0.06, 0.07, 0.0, N, V) + tint * (0.012 + 0.22 * fres) * (1. + 2. * uNight) + tint * glow * 2.0 * uBio;
+    float fres = pow(1. - max(dot(N, V), 0.), 3.), shoreWet;
+    col = pbr(waterline(tint * 0.06, vWP, shoreWet), 0.07, 0.0, N, V) + tint * (0.012 + 0.22 * fres) * (1. + 2. * uNight) + tint * glow * 2.0 * uBio;
     col += tint * 0.05 * (0.6 + 0.4 * sin(uTime * 0.9 + vH * 20. + vWP.y * 3.));
   }
   o = vec4(tonemap(fogged(col, vWP)), 0.);
@@ -458,7 +548,7 @@ void main(){
   bark = mix(bark, vec3(0.42, 0.40, 0.46) * (0.8 + 0.3 * fine), dead);
   N = normalize(N + vec3(0., 0.15 * grain, 0.) * (1. - dead));
   vec3 col = pbr(bark, mix(0.75, 0.5, dead), 0., N, V);
-  vec3 tint = mix(vec3(0.2, 0.95, 0.8), vec3(0.75, 0.45, 1.0), step(0.55, vHue));
+  vec3 tint = pigment(vHue * 0.55);
   float groove = smoothstep(0.86, 1., -grain) * (1. - dead);
   col += tint * groove * (0.015 + 0.3 * uNight + 0.6 * (1. - exp(-vStir * 6.)) * uBio) * (0.6 + 0.4 * sin(uTime * 0.7 + vW.y * 4. - vW.w * 9.));
   o = vec4(tonemap(fogged(col, vWP)), 0.);
@@ -472,7 +562,7 @@ void main(){
   float u = vid >= 12 ? 1. : float(vid / 2) / 6.;
   float side = vid >= 12 ? 0. : ((vid % 2 == 0) ? -1. : 1.);
   vec3 up = vec3(0., 1., 0.), dir = normalize(aD.xyz);
-  float L = aD.w, lift = aM.x, droop = aM.y, W = aM.z, seed = aM.w;
+  float L = aD.w, lift = aM.x, droop = aM.y, W = aM.z * uLodW, seed = aM.w;
   vec3 sd = cross(up, dir); sd = length(sd) < 1e-3 ? vec3(1., 0., 0.) : normalize(sd);
   vec3 p = aR.xyz + dir * L * u + up * L * (lift * sin(u * 3.1416) - droop * u * u);
   float g = windWave(aB.xy) * uWind, flex = aR.w + 0.2 * u;
@@ -490,17 +580,10 @@ void main(){
 `uniform float uClip; in vec3 vWP; in float vU; in vec3 vN; in float vStir; in float vHue; in float vSeed; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
-  vec3 tint = vHue < 0.38 ? vec3(0.22, 0.95, 0.78) : vHue < 0.7 ? vec3(0.45, 0.75, 1.0) : vec3(0.78, 0.45, 1.0);
-  float g = pow(vU, 1.15);
-  vec3 root = vec3(0.012, 0.03, 0.04), mid = tint * vec3(0.2, 0.27, 0.3);
-  vec3 gc = g < 0.5 ? mix(root, mid, g * 2.) : mix(mid, tint * 0.9, (g - 0.5) * 2.);
-  gc *= 0.75 + 0.5 * vSeed;
-  vec3 N = normalize(vN), V = normalize(uCam - vWP); if (dot(N, V) < 0.) N = -N;
-  float ndl = max(dot(N, uSunDir), 0.) * 0.7 + 0.3;
-  vec3 lit = gc * (ambient(N) * 2.3 + uSunCol * ndl * 0.3);
-  float stir = 1. - exp(-vStir * 6.), pulse = 0.6 + 0.4 * sin(uTime * 0.9 - vU * 5. + vSeed * 40.);
-  lit += uSunCol * gc * pow(clamp(dot(-V, uSunDir), 0., 1.), 3.) * vU * 0.5;
-  lit += gc * (0.04 + 0.28 * vU * vU * pulse) * (1. + 1.6 * uNight) + tint * tint * stir * uBio * (0.25 + 1.1 * vU * vU);
+  vec3 tint = pigment(vHue * 0.55);
+  vec3 gc = floraRamp(tint, pow(vU, 1.15)) * (0.56 + 0.4 * vSeed);
+  float pulse = 0.6 + 0.4 * sin(uTime * 0.9 - vU * 5. + vSeed * 40.);
+  vec3 lit = floraLight(gc, tint, normalize(vN), normalize(uCam - vWP), vU, 0.3 * pulse, 1. - exp(-vStir * 6.));
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
@@ -520,7 +603,7 @@ void main(){
   float wet = min(1., gr.r + uSheet), trample = smoothstep(0.04, 0.45, gr.g);
   float H = 0.34 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample);
   float reed = step(1.6, aR.w);
-  float W0 = (0.05 + 0.03 * aR.z) * mix(1.9, 1.0, clamp(H / 0.2, 0., 1.)) * mix(1., 0.4, reed);
+  float W0 = (0.05 + 0.03 * aR.z) * mix(1.9, 1.0, clamp(H / 0.2, 0., 1.)) * mix(1., 0.4, reed) * uLodW;
   float wd = W0 * pow(max(1. - by, 0.), 0.75);
   float lean = (0.10 + 0.32 * aR.z) * H + trample * 0.8 * H + wet * 0.22 * H;
   float sway = windWave(aG.xy) * uWind * 0.22 * H * (1. - 0.7 * trample);
@@ -539,53 +622,59 @@ void main(){
   float g = pow(y, 1.45);
   g *= mix(0.72, 1., smoothstep(0.03, 0.3, vGH));
   g = mix(0.45, g, 0.85);
-  // two alien ramps, teal-tipped and violet-tipped, laid out in meadow patches
-  float patchN = smoothstep(0.38, 0.62, vnoise(vWP.xz * 0.085 + 3.) * 0.75 + vPatch * 0.25);
-  vec3 root = mix(vec3(0.015, 0.05, 0.065), vec3(0.04, 0.02, 0.08), patchN);
-  vec3 mid = mix(vec3(0.07, 0.30, 0.36), vec3(0.27, 0.11, 0.44), patchN);
-  vec3 tip = mix(vec3(0.28, 0.88, 0.80), vec3(0.70, 0.40, 0.95), patchN);
-  vec3 gc = g < 0.5 ? mix(root, mid, g * 2.) : mix(mid, tip, (g - 0.5) * 2.);
+  // the meadow's colour drifts teal, cyan, violet across tens of metres, in a gradient, never a step
+  float hue = smoothstep(0.12, 0.88, vnoise(vWP.xz * 0.03 + 3.) * 0.8 + vnoise(vWP.xz * 0.09 - 5.) * 0.2) * 0.5 + (vPatch - 0.5) * 0.03;
+  vec3 tip = pigment(hue);
+  vec3 gc = floraRamp(tip, g);
   float pn = vnoise(vWP.xz * 0.28) * 0.6 + vnoise(vWP.xz * 1.1) * 0.4;
   gc *= mix(0.8, 1.2, pn);
   gc = mix(gc, tip, smoothstep(0.55, 0.95, pn) * 0.2 * y);
   gc *= (0.88 + 0.24 * vGA.y) * mix(0.42, 1., smoothstep(0., 0.55, y)) * (1. - 0.35 * vWet);
-  vec3 N = normalize(vN); vec3 V = normalize(uCam - vWP);
-  if (dot(N, V) < 0.) N = -N;
-  float ndl = max(dot(N, uSunDir), 0.) * 0.75 + 0.25;
-  vec3 lit = gc * (ambient(N) * 2.4 + uSunCol * ndl * 0.3);
-  float back = pow(clamp(dot(-V, uSunDir), 0., 1.), 3.);
-  lit += gc * (0.16 + 0.3 * uNight) * (0.05 + 0.95 * y * y) + uSunCol * gc * back * y * 0.26;
+  vec3 lit = floraLight(gc, tip, normalize(vN), normalize(uCam - vWP), y, 0.17, 0.);
   lit += glowCol(vWP.xz) * uBio * glowI(vGlow) * 2.6 * y * y;
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
-// understory: one blade, three plants. Rosettes (broad crimson leaves with a living midrib), ferns (fronds cut
-// into leaflets in the fragment shader) and glow tubes (capsules whose tips are lamps). Veins brighten at night
-// and when you stir the ground beside them.
+// understory: one blade, five plants. Rosettes (broad crimson leaves with a living midrib), ferns (fronds cut into
+// leaflets in the fragment shader), glow tubes (capsules whose tips are lamps), coilferns (stalks that roll their tips
+// into spirals) and lantern bells (arching stems that nod a glowing bulb). Each blade follows a centreline in its own
+// plane; veins brighten at night and when you stir the ground beside them.
 const PLANT = program(WORLD_VS + `
 in vec4 aP; in vec4 aF; in vec4 aS2;
 out vec3 vWP; out float vU; out float vSide; out vec3 vN; out float vType; out float vStir; out float vSeed; out float vHue;
+// the centreline at u in [0, 1]: x out along the ground, y up
+vec2 path(float type, float u, float L, vec4 S){
+  if (type < 2.5) return vec2(L * S.x * sin(u * 1.5708), L * (S.y * u + S.z * sin(u * 3.1416) - S.w * u * u));
+  if (type < 3.5) {
+    float c = 0.62;
+    if (u < c) return vec2(L * S.x * u, L * S.y * u);
+    float k = (u - c) / (1. - c), a = k * 5.2, rad = L * 0.15 * (1. - 0.72 * k);
+    return vec2(L * S.x * c + L * 0.15, L * S.y * c) + rad * vec2(-cos(a), sin(a));
+  }
+  return vec2(L * S.x * (1. - cos(u * 1.7)) * 1.25, L * S.y * sin(u * 2.5));
+}
 void main(){
   int vid = gl_VertexID;
   float u = vid >= 24 ? 1. : float(vid / 2) / 12.;
   float side = vid >= 24 ? 0. : ((vid % 2 == 0) ? -1. : 1.);
-  float sc = aP.w, phi = aF.x, L = aF.y * sc, W = aF.z * sc, type = aF.w;
-  float spread = aS2.x, rise = aS2.y, lift = aS2.z, droop = aS2.w;
+  float sc = aP.w, phi = aF.x, L = aF.y * sc, W = aF.z * sc * uLodW, type = aF.w;
   float seed = fract(phi * 7.31 + aP.x * 0.13);
-  vec3 dir = vec3(cos(phi), 0., sin(phi)), sd = vec3(-sin(phi), 0., cos(phi));
-  float hh = L * spread * sin(u * 1.5708);
-  vec3 p = dir * hh + vec3(0., L * (rise * u + lift * sin(u * 3.1416) - droop * u * u), 0.);
-  float flex = type > 1.5 ? 0.3 : 1.;
-  p.xz += WIND_DIR * windWave(aP.xz + dir.xz * hh) * uWind * 0.18 * u * u * L * flex;
+  vec3 up = vec3(0., 1., 0.), dir = vec3(cos(phi), 0., sin(phi)), sd = vec3(-sin(phi), 0., cos(phi));
+  vec2 c = path(type, u, L, aS2), t2 = normalize(path(type, min(u + 0.01, 1.), L, aS2) - path(type, max(u - 0.01, 0.), L, aS2));
+  vec3 p = dir * c.x + up * c.y;
+  float flex = type > 1.5 && type < 2.5 ? 0.3 : 1.;
+  p.xz += WIND_DIR * windWave(aP.xz + dir.xz * c.x) * uWind * 0.18 * u * u * L * flex;
   p += sd * sin(uTime * 2.3 + seed * 30. + u * 3.) * 0.02 * u * L * flex;
   float w;
   if (type < 0.5) w = W * sin(min(1., u * 2.4) * 1.5708) * (1. - 0.6 * u * u);
   else if (type < 1.5) w = W * (1. - 0.72 * u) * sin(min(1., u * 4.) * 1.5708);
-  else w = W * (u < 0.85 ? 1. : sqrt(max(0., 1. - pow((u - 0.85) / 0.15, 2.))));
+  else if (type < 2.5) w = W * (u < 0.85 ? 1. : sqrt(max(0., 1. - pow((u - 0.85) / 0.15, 2.))));
+  else if (type < 3.5) w = W * (1. - 0.55 * u);
+  else w = W * (0.28 + 1.2 * sin(clamp((u - 0.72) / 0.28, 0., 1.) * 3.1416));
   float tw = (seed - 0.5) * 1.6 * u * step(type, 1.5);
-  vec3 wdir = normalize(sd * cos(tw) + vec3(0., 1., 0.) * sin(tw));
+  vec3 wdir = normalize(sd * cos(tw) + up * sin(tw));
   p += wdir * side * w * 0.5;
-  vec3 tang = normalize(dir * spread * cos(u * 1.5708) * 1.5708 + vec3(0., rise + lift * 3.1416 * cos(u * 3.1416) - 2. * droop * u, 0.));
+  vec3 tang = normalize(dir * t2.x + up * t2.y);
   vN = normalize(normalize(cross(wdir, tang)) + wdir * side * (type > 1.5 ? 1.6 : 0.7));
   vStir = texture(uGlow, fieldUV(aP.xz)).r;
   vWP = p + aP.xyz; vU = u; vSide = side; vType = type; vSeed = seed; vHue = fract(aP.x * 0.21 + aP.z * 0.17);
@@ -596,33 +685,38 @@ void main(){
   if (vWP.y < uClip) discard;
   float u = vU, s = vSide;
   if (vType > 0.5 && vType < 1.5 && abs(s) > 0.16 + 0.84 * smoothstep(0.1, 0.65, abs(sin(u * 3.1416 * 15.)))) discard;
-  vec3 N = normalize(vN), V = normalize(uCam - vWP); if (dot(N, V) < 0.) N = -N;
-  vec3 base, mid, tip, vein;
-  if (vType < 0.5) { base = vec3(0.035, 0.006, 0.018); mid = mix(vec3(0.40, 0.03, 0.11), vec3(0.30, 0.04, 0.28), vHue); tip = mix(vec3(0.82, 0.16, 0.32), vec3(0.72, 0.26, 0.88), vHue); vein = vec3(0.25, 0.95, 1.0); }
-  else if (vType < 1.5) { base = vec3(0.008, 0.026, 0.03); mid = vec3(0.045, 0.22, 0.25); tip = vec3(0.17, 0.58, 0.52); vein = vec3(0.35, 1.0, 0.8); }
-  else { base = vec3(0.08, 0.2, 0.22); mid = vec3(0.3, 0.66, 0.7); tip = vec3(0.62, 0.95, 0.94); vein = vec3(0.45, 1.0, 0.95); }
-  float g = pow(u, 1.1);
-  vec3 gc = g < 0.5 ? mix(base, mid, g * 2.) : mix(mid, tip, (g - 0.5) * 2.);
-  float ndl = max(dot(N, uSunDir), 0.) * 0.7 + 0.3;
-  vec3 lit = gc * (ambient(N) * 2.3 + uSunCol * ndl * 0.3);
-  lit += uSunCol * gc * pow(clamp(dot(-V, uSunDir), 0., 1.), 3.) * u * 0.45;
+  // each species is a pigment and a vein; the ramp and the light are everyone's
+  vec3 tip, vein;
+  if (vType < 0.5) { tip = mix(CRIMSON, MAGENTA, vHue * 0.6); vein = CYAN; }
+  else if (vType < 1.5) { tip = TEAL * 0.68; vein = TEAL; }
+  else if (vType < 2.5) { tip = mix(CYAN, vec3(1.), 0.35); vein = CYAN; }
+  else if (vType < 3.5) { tip = mix(VIOLET, CYAN, vHue * 0.4); vein = VIOLET; }
+  else { tip = mix(MAGENTA, VIOLET, vHue * 0.5); vein = mix(MAGENTA, vec3(1.), 0.25); }
+  vec3 gc = floraRamp(tip, pow(u, 1.1));
   float stir = 1. - exp(-vStir * 6.);
+  vec3 lit = floraLight(gc, tip, normalize(vN), normalize(uCam - vWP), u, 0.06, 0.);
   float midrib = (1. - smoothstep(0.05, 0.15, abs(s))) * step(vType, 1.5);
   float edge = smoothstep(0.8, 0.98, abs(s)) * step(vType, 0.5);
   float pulse = 0.65 + 0.35 * sin(uTime * 1.3 - u * 6. + vSeed * 30.);
   float em = (midrib * 0.9 + edge * 0.45) * (0.03 + 0.45 * uNight) * pulse;
-  if (vType > 1.5) em += smoothstep(0.7, 1., u) * (0.12 + 1.1 * uNight) * pulse + 0.03;
+  if (vType > 1.5 && vType < 2.5) em += smoothstep(0.7, 1., u) * (0.12 + 1.1 * uNight) * pulse + 0.03;
+  if (vType > 2.5 && vType < 3.5) em += smoothstep(0.55, 1., u) * (1. - smoothstep(0.04, 0.3, abs(s))) * (0.05 + 0.7 * uNight) * pulse;
+  if (vType > 3.5) em += smoothstep(0.7, 0.86, u) * (0.08 + 0.75 * uNight) * pulse + 0.02;
   lit += vein * (em + stir * uBio * (0.5 + midrib));
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
 const WATERP = program(WORLD_VS + `
-in vec2 aXZ; in float aDepth; out vec3 vWP; out float vDepth;
-void main(){ vWP = vec3(aXZ.x, ${WATER.toFixed(1)}, aXZ.y); vDepth = aDepth; gl_Position = project(vWP); }`,
+in vec2 aXZ; in float aDepth; out vec3 vWP; out float vDepth; out float vWave;
+void main(){
+  // the swell rides up and down the beach, so the waterline itself moves
+  vWave = waterWave(aXZ, uTime).x;
+  vWP = vec3(aXZ.x, ${WATER.toFixed(1)} + vWave, aXZ.y); vDepth = aDepth; gl_Position = project(vWP);
+}`,
 `uniform sampler2D uRefl; uniform vec2 uRes; uniform vec4 uRip[12];
-in vec3 vWP; in float vDepth; out vec4 o;
+in vec3 vWP; in float vDepth; in float vWave; out vec4 o;
 vec2 waveGrad(vec2 p){
-  vec2 g = vec2(0.);
+  vec2 g = waterWave(p, uTime).yz;
   g += vec2(0.8, 0.6) * cos(dot(p, vec2(0.8, 0.6)) * 1.3 + uTime * 1.1) * 0.016;
   g += vec2(-0.5, 0.86) * cos(dot(p, vec2(-0.5, 0.86)) * 2.1 + uTime * 1.6) * 0.010;
   g += vec2(0.2, -0.98) * cos(dot(p, vec2(0.2, -0.98)) * 3.7 + uTime * 2.2) * 0.006;
@@ -648,30 +742,31 @@ void main(){
   float F = 0.02 + 0.98 * pow(1. - NdV, 5.);
   vec2 suv = gl_FragCoord.xy / uRes + N.xz * 0.035;
   vec3 refl = texture(uRefl, suv).rgb;
-  float d = max(vDepth, 0.);
+  float d = max(vDepth + vWave, 0.);
   vec3 body = mix(vec3(0.03, 0.15, 0.17), vec3(0.008, 0.025, 0.07), smoothstep(0., 3., d));
   vec3 Hh = normalize(uSunDir + V); float spec = pow(max(dot(N, Hh), 0.), 900.) * 25.;
   vec3 hdr = body * (ambient(N) * 3. + uSunCol * 0.12) + uSunCol * spec * F * 4. * (1. - 0.75 * uNight);
   vec3 gc = pow(glowCol(p * 1.3 + 7.), vec3(1.7));
   hdr += gc * uBio * glowI(glow) * 1.9;
-  hdr += vec3(0.5, 0.45, 0.6) * smoothstep(0.12, 0.0, d) * 0.12;
+  hdr += vec3(0.5, 0.45, 0.6) * smoothstep(0.12, 0.0, d) * 0.1;
   vec3 col = tonemap(fogged(hdr, vWP));
   col = mix(col, refl, clamp(F * 0.9 + 0.08, 0., 1.)) + tonemap(gc * uBio * glowI(glow)) * 0.25;
-  // foam lines rolling into the shore, and the contact line where water meets sand
-  float shoreF = 1. - smoothstep(0.0, 0.4, d);
-  float bands = sin(d * 26. - uTime * 2.2 + vnoise(p * 1.4) * 4.);
-  float foam = shoreF * smoothstep(0.6, 0.97, bands) * (0.45 + 0.55 * vnoise(p * 3. + uTime * 0.25)) + smoothstep(0.07, 0.0, d) * 0.7;
-  col = mix(col, vec3(0.80, 0.82, 0.94), clamp(foam, 0., 1.) * 0.5);
+  // surf: lines of foam rolling up the shelf with the swell, torn into lace, thinning to a fringe where the water ends
+  vec3 cb = cobble(p * 4.5 + vec2(uTime * 0.15, -uTime * 0.11));
+  float lace = smoothstep(0.09, 0.0, cb.y) * (0.45 + 0.55 * vnoise(p * 2.2 + uTime * 0.2));
+  float swash = smoothstep(0.55, 0.95, sin(d * 22. - uTime * 2.0 + vnoise(p * 1.2) * 4. + vWave * 40.));
+  float foam = (1. - smoothstep(0.0, 0.45, d)) * (0.35 + 0.65 * swash) * lace + smoothstep(0.045, 0.0, d) * (0.25 + 0.55 * lace);
+  col = mix(col, vec3(0.74, 0.8, 0.92), clamp(foam, 0., 1.) * 0.5);
   float alpha = clamp(max(F, smoothstep(0., 1.3, d) * 0.9 + 0.04) + glow * 0.5 + foam * 0.4, 0., 1.);
   alpha *= smoothstep(-0.02, 0.03, d);
   o = vec4(col, alpha);
 }`);
 
 const POINTS = program(WORLD_VS + `
-in vec4 aP; uniform float uScale, uNight; uniform int uRain; out float vA; out vec3 vC;
+in vec4 aP; uniform float uScale, uNight; uniform vec2 uCamXZ; uniform int uRain; out float vA; out vec3 vC;
 void main(){
   vec3 p = aP.xyz; float s = aP.w;
-  if (uRain == 1) { float t = fract(uTime * (0.08 + 0.05 * s) + aP.y); p = vec3(aP.x, 22. - t * 24., aP.z); p.x += sin(uTime + s * 50.) * 0.6; p.z += cos(uTime * 0.7 + s * 31.) * 0.4; vA = smoothstep(0., 0.1, t) * (1. - smoothstep(0.85, 1., t)); s = 0.5; }
+  if (uRain == 1) { float t = fract(uTime * (0.08 + 0.05 * s) + aP.y); vec2 c = uCamXZ + mod(aP.xz - uCamXZ + 34., 68.) - 34.; p = vec3(c.x, 22. - t * 24., c.y); p.x += sin(uTime + s * 50.) * 0.6; p.z += cos(uTime * 0.7 + s * 31.) * 0.4; vA = smoothstep(0., 0.1, t) * (1. - smoothstep(0.85, 1., t)); s = 0.5; }
   else if (uRain == 2) {
     p += vec3(sin(uTime * 0.31 + s * 20.), sin(uTime * 0.47 + s * 13.) * 0.45, cos(uTime * 0.27 + s * 7.)) * 1.3 + vec3(WIND_DIR.x, 0., WIND_DIR.y) * sin(uTime * 0.11 + s * 3.) * 2.;
     vA = (0.12 + 0.88 * uNight) * (0.45 + 0.55 * sin(uTime * (1.1 + s * 2.) + s * 50.)); s = 0.18 + 0.2 * fract(s * 31.);
@@ -684,22 +779,26 @@ void main(){
 `in float vA; in vec3 vC; out vec4 o; void main(){ vec2 q = gl_PointCoord - .5; float a = smoothstep(0.5, 0., length(q)) * vA; o = vec4(tonemap(vC * 3.) * a, a); }`);
 
 // ---------------------------------------------------------------- geometry
+const NEAR = { S: 384, half: HALF + 16 };
 function terrainNear() {
-  const S = 256, half = 40, step = 2 * half / S, pos = [], nor = [], idx = [];
+  const { S, half } = NEAR, st = 2 * half / S, hs = new Float32Array((S + 1) * (S + 1)), pos = [], nor = [], idx = [];
+  for (let j = 0; j <= S; j++) for (let i = 0; i <= S; i++) hs[j * (S + 1) + i] = H(-half + i * st, -half + j * st);
+  const at = (i, j) => hs[Math.min(S, Math.max(0, j)) * (S + 1) + Math.min(S, Math.max(0, i))];
   for (let j = 0; j <= S; j++) for (let i = 0; i <= S; i++) {
-    const x = -half + i * step, z = -half + j * step;
-    pos.push(x, H(x, z), z); nor.push(...normalAt(x, z));
+    pos.push(-half + i * st, at(i, j), -half + j * st);
+    const hx = at(i + 1, j) - at(i - 1, j), hz = at(i, j + 1) - at(i, j - 1), l = Math.hypot(hx, 2 * st, hz);
+    nor.push(-hx / l, 2 * st / l, -hz / l);
   }
   for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) { const a = j * (S + 1) + i, b = a + 1, c = a + S + 1, d = c + 1; idx.push(a, c, b, b, c, d); }
   return { pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
 }
 function terrainFar() {
-  const R = 110, A = 200, pos = [], nor = [], idx = [];
+  const R = 110, A = 200, pos = [], nor = [], idx = [], edge = NEAR.half - 0.5;
   for (let j = 0; j <= R; j++) {
-    const r = 36 * Math.pow(1200 / 36, j / R);
+    const r = 72 * Math.pow(1500 / 72, j / R);
     for (let i = 0; i <= A; i++) {
       const a = i / A * Math.PI * 2, x = Math.cos(a) * r, z = Math.sin(a) * r;
-      const inside = Math.abs(x) < 39.5 && Math.abs(z) < 39.5;
+      const inside = Math.abs(x) < edge && Math.abs(z) < edge;
       pos.push(x, H(x, z) - (inside ? 4 : 0), z); nor.push(...normalAt(x, z, Math.max(0.15, r * 0.02)));
     }
   }
@@ -707,34 +806,13 @@ function terrainFar() {
   return { pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
 }
 function waterMesh() {
-  const S = 136, x0 = LAKE[0] - 23, z0 = LAKE[1] - 20, w = 46, d = 40, xz = [], dep = [], idx = [];
+  const S = 256, x0 = LAKE[0] - 46, z0 = LAKE[1] - 40, w = 92, d = 80, xz = [], dep = [], idx = [];
   for (let j = 0; j <= S; j++) for (let i = 0; i <= S; i++) { const x = x0 + i / S * w, z = z0 + j / S * d; xz.push(x, z); dep.push(WATER - H(x, z)); }
   for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) {
     const a = j * (S + 1) + i, b = a + 1, c = a + S + 1, e = c + 1;
     if (Math.max(dep[a], dep[b], dep[c], dep[e]) > -0.4) idx.push(a, c, b, b, c, e);
   }
   return { xz: new Float32Array(xz), dep: new Float32Array(dep), idx: new Uint32Array(idx) };
-}
-function icosphere(sub, warp) {
-  const t = (1 + Math.sqrt(5)) / 2;
-  let v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map((p) => { const l = Math.hypot(...p); return p.map((c) => c / l); });
-  let f = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
-  for (let s = 0; s < sub; s++) {
-    const cache = {}, nf = [];
-    const mid = (a, b) => { const k = a < b ? a + '_' + b : b + '_' + a; if (k in cache) return cache[k]; const p = v[a].map((c, i) => (c + v[b][i]) / 2); const l = Math.hypot(...p); v.push(p.map((c) => c / l)); return (cache[k] = v.length - 1); };
-    for (const [a, b, c] of f) { const ab = mid(a, b), bc = mid(b, c), ca = mid(c, a); nf.push([a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]); }
-    f = nf;
-  }
-  const pos = [], nor = [], idx = [];
-  if (warp) v = v.map(([x, y, z]) => { const k = 1 + 0.32 * (fbm(x * 1.6 + 5, z * 1.6 + y * 2.1) - 0.5) + 0.1 * (vnoise(x * 5 + y * 3, z * 5) - 0.5); return [x * k, Math.max(y * k, -0.35), z * k]; });
-  // flat-ish shading for rocks: per-face normals
-  for (const [a, b, c] of f) {
-    const A = v[a], B = v[b], C = v[c];
-    const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], w = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
-    let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]]; const l = Math.hypot(...n); n = n.map((x) => x / l);
-    for (const P of [A, B, C]) { pos.push(...P); nor.push(...(warp ? n : P)); idx.push(idx.length); }
-  }
-  return { pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
 }
 function rockMesh(seed, sub, tall, stack) {
   const rr = rng(Math.floor(seed * 100003));
@@ -784,75 +862,88 @@ function crystalMesh() {
 }
 
 // ---------------------------------------------------------------- scatter
-const STACK_GEO = rockMesh(9.31, 4, true, true), STACK_S = [2.4, 3.3, 2.0], STACK_SINK = 1.3;
-// terrain height and slope from the near mesh (fast, for hundreds of thousands of blades)
+const STACK_GEO = rockMesh(9.31, 4, true, true), STACK_S = [3.6, 4.8, 3.0];
+// terrain height and slope from the near mesh (fast, for a million blades)
 function nearH(x, z) {
-  const S = 256, st = 80 / S, fx = Math.min(S - 1e-3, Math.max(0, (x + 40) / st)), fz = Math.min(S - 1e-3, Math.max(0, (z + 40) / st));
+  const { S, half } = NEAR, st = 2 * half / S, fx = Math.min(S - 1e-3, Math.max(0, (x + half) / st)), fz = Math.min(S - 1e-3, Math.max(0, (z + half) / st));
   const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j, P = near.pos, h = (a, b) => P[(b * (S + 1) + a) * 3 + 1];
   return (h(i, j) * (1 - u) + h(i + 1, j) * u) * (1 - w) + (h(i, j + 1) * (1 - u) + h(i + 1, j + 1) * u) * w;
 }
 function nearNy(x, z) {
-  const S = 256, st = 80 / S, i = Math.min(S, Math.max(0, Math.round((x + 40) / st))), j = Math.min(S, Math.max(0, Math.round((z + 40) / st)));
+  const { S, half } = NEAR, st = 2 * half / S, i = Math.min(S, Math.max(0, Math.round((x + half) / st))), j = Math.min(S, Math.max(0, Math.round((z + half) / st)));
   return near.nor[(j * (S + 1) + i) * 3 + 1];
 }
-const GRASS_MAX = TEST ? 220000 : touch ? 210000 : 360000;
-const clearOf = (x, z) => Math.hypot(x - 4, z - 15) > 3.5 && Math.hypot(x - 9.5, z - 13) > 3.5;
+// blades per square metre where the meadow grows fully; distant tiles draw fewer (see Tiled)
+const GRASS_DENSITY = touch ? 46 : TEST ? 56 : 104;
+const START = [8, 30], SHORE_CAM = [19, 26];
+const clearOf = (x, z) => Math.hypot(x - START[0], z - START[1]) > 3.5 && Math.hypot(x - SHORE_CAM[0], z - SHORE_CAM[1]) > 3.5;
+const inMap = (x, z, m = 2) => Math.abs(x) < HALF - m && Math.abs(z) < HALF - m;
 
 function scatter() {
   const r = rng(1234);
-  // grass: Corey's stratified jitter over the acre, kept where blades can grow, then shuffled so any prefix is an even thinning
-  const n = Math.ceil(Math.sqrt(GRASS_MAX / 0.6)), cellG = 64 / n;
-  let G = new Float32Array(n * n * 4), R = new Float32Array(n * n * 4), cnt = 0;
-  for (let gz = 0; gz < n && cnt < GRASS_MAX; gz++) for (let gx = 0; gx < n && cnt < GRASS_MAX; gx++) {
-    const x = (gx + r()) * cellG - 32, z = (gz + r()) * cellG - 32, y = nearH(x, z), ld = lakeD(x, z);
+  // grass: Corey's stratified jitter, kept where blades can grow. Nothing is cut at a hard line: the chance of a blade
+  // and its height both fall off with slope, the shore, height and the outcrop, broken up by noise, so a meadow thins
+  // out into its edges. Patches of tall grass ride a slow noise.
+  const n = Math.ceil(Math.sqrt(4 * HALF * HALF * GRASS_DENSITY)), cellG = 2 * HALF / n;
+  const G = [], R = [];
+  for (let gz = 0; gz < n; gz++) for (let gx = 0; gx < n; gx++) {
+    const x = (gx + r()) * cellG - HALF, z = (gz + r()) * cellG - HALF, y = nearH(x, z), ld = lakeD(x, z);
     let hm;
     if (ld > 10.0 && ld < 12.6 && y > -0.38 && y < 0.55) { if (r() > 0.2) continue; hm = 1.9 + r() * 1.1; }   // reeds: the shoreline and the shallows
-    else { if (y < 0.3 || y > 9 || nearNy(x, z) < 0.8) continue; hm = 0.7 + 0.75 * fbm(x * 0.06 + 11, z * 0.06 - 4, 3) + 0.2 * r(); }
-    G.set([x, z, y - 0.015, r()], cnt * 4); R.set([r(), r(), r(), hm], cnt * 4); cnt++;
+    else {
+      const ny = nearNy(x, z), ragged = 0.75 + 0.5 * vnoise(x * 0.9 + 7, z * 0.9 - 3);
+      const grow = sm(0.2, 0.55, y) * (1 - sm(9, 14, y)) * sm(0.62, 0.84, ny) * (1 - 0.92 * outcrop(x, z)) * Math.min(1, ragged);
+      if (grow < 0.02 || r() > grow * 1.15) continue;
+      const tall = sm(0.5, 0.78, fbm(x * 0.028 + 21, z * 0.028 - 9, 3));
+      hm = (0.45 + 0.55 * Math.min(1, grow * 1.2)) * (0.7 + 0.75 * fbm(x * 0.06 + 11, z * 0.06 - 4, 3) + 0.2 * r()) * (1 + 0.65 * tall);
+    }
+    G.push(x, z, y - 0.015, r()); R.push(r(), r(), r(), hm);
   }
-  for (let k = cnt - 1; k > 0; k--) {
-    const m = Math.floor(r() * (k + 1));
-    for (let c = 0; c < 4; c++) { let t = G[k * 4 + c]; G[k * 4 + c] = G[m * 4 + c]; G[m * 4 + c] = t; t = R[k * 4 + c]; R[k * 4 + c] = R[m * 4 + c]; R[m * 4 + c] = t; }
-  }
-  G = G.slice(0, cnt * 4); R = R.slice(0, cnt * 4);
 
-  // rocks: clusters with one big stone each, monoliths on the ridge, a standing stone on the islet, stones in the shallows, pebbles on the shore
+  // rocks: clusters with one big stone each, a broken field on the outcrop, monoliths on the rim, the sea stack, stones
+  // in the shallows, pebbles on the shore
   const rv = [[], [], [], [], []], rs = [[], [], [], [], []];
   const add = (v, x, z, sx, sy, sz, sink) => { const y = H(x, z); rv[v].push(x, y - sink, z, r() * 6.28); rs[v].push(sx, sy, sz, r()); };
-  for (let c = 0; c < 26; c++) {
-    let cx, cz, k = 0;
-    do { cx = (r() * 2 - 1) * 33; cz = (r() * 2 - 1) * 33; k++; } while ((H(cx, cz) < -0.7 || !clearOf(cx, cz)) && k < 40);
-    const big = 0.8 + Math.pow(r(), 1.6) * 2.2, m = 3 + Math.floor(r() * 6);
+  const cluster = (cx, cz, big, m) => {
     for (let q = 0; q < m; q++) {
       const s0 = q === 0 ? big : big * (0.18 + 0.42 * r()), a = r() * 6.28, d = q === 0 ? 0 : big * (0.7 + r() * 0.9);
       const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
-      if (!clearOf(x, z)) continue;
+      if (!clearOf(x, z) || !inMap(x, z)) continue;
       add(q % 2, x, z, s0 * (0.8 + 0.5 * r()), s0 * (0.7 + 0.5 * r()), s0 * (0.8 + 0.5 * r()), 0.12 * s0);
     }
+  };
+  for (let c = 0; c < 56; c++) {
+    let cx, cz, k = 0;
+    do { cx = (r() * 2 - 1) * (HALF - 4); cz = (r() * 2 - 1) * (HALF - 4); k++; } while ((H(cx, cz) < -0.7 || !clearOf(cx, cz)) && k < 40);
+    cluster(cx, cz, 0.8 + Math.pow(r(), 1.6) * 2.2, 3 + Math.floor(r() * 6));
   }
-  for (let m = 0; m < 8; m++) {
+  for (let c = 0; c < 26; c++) {
+    const a = r() * 6.28, d = Math.sqrt(r()) * 16;
+    cluster(OUTCROP[0] + Math.cos(a) * d, OUTCROP[1] + Math.sin(a) * d / 1.25, 1.1 + Math.pow(r(), 1.3) * 2.6, 2 + Math.floor(r() * 5));
+  }
+  for (let m = 0; m < 16; m++) {
     let x, z, e, k = 0;
-    do { const a = r() * 6.28; e = 22 + r() * 8; x = Math.cos(a) * e; z = Math.sin(a) * e / 1.05; k++; } while (H(x, z) > 9 && k < 20);
-    const w = 0.55 + r() * 0.35;
-    add(2, x, z, w, 2.2 + r() * 2.4, w * (0.8 + 0.3 * r()), 0.3);
+    do { const a = r() * 6.28; e = 46 + r() * 14; x = Math.cos(a) * e; z = Math.sin(a) * e / 1.05; k++; } while ((H(x, z) > 13 || !inMap(x, z)) && k < 20);
+    const w = 0.6 + r() * 0.4;
+    add(2, x, z, w, 2.4 + r() * 2.8, w * (0.8 + 0.3 * r()), 0.3);
   }
-  { const y = H(ISLET[0], ISLET[1]); rv[4].push(ISLET[0], y + STACK_SINK * 0 - 0.15, ISLET[1], 0); rs[4].push(STACK_S[0], STACK_S[1], STACK_S[2], 0.42); }
-  for (let q = 0; q < 12; q++) {
+  { const y = H(ISLET[0], ISLET[1]); rv[4].push(ISLET[0], y - 0.2, ISLET[1], 0); rs[4].push(STACK_S[0], STACK_S[1], STACK_S[2], 0.42); }
+  for (let q = 0; q < 26; q++) {
     let x, z, k = 0;
-    do { x = LAKE[0] + (r() * 2 - 1) * 15; z = LAKE[1] + (r() * 2 - 1) * 12; k++; } while ((lakeD(x, z) < 8.6 || lakeD(x, z) > 10.6) && k < 60);
-    const s0 = 0.4 + r() * 0.8; add(q % 2, x, z, s0, s0 * 0.8, s0 * 1.1, 0.1);
+    do { x = LAKE[0] + (r() * 2 - 1) * 30; z = LAKE[1] + (r() * 2 - 1) * 24; k++; } while ((lakeD(x, z) < 8.6 || lakeD(x, z) > 10.6) && k < 60);
+    const s0 = 0.4 + r() * 0.9; add(q % 2, x, z, s0, s0 * 0.8, s0 * 1.1, 0.1);
   }
-  for (let q = 0; q < (touch ? 500 : 900); q++) {
+  for (let q = 0; q < (touch ? 900 : 1600); q++) {
     let x, z, k = 0;
-    if (q < 600) do { x = LAKE[0] + (r() * 2 - 1) * 17; z = LAKE[1] + (r() * 2 - 1) * 14; k++; } while ((lakeD(x, z) < 9.6 || lakeD(x, z) > 12.4) && k < 60);
-    else { x = (r() * 2 - 1) * 31; z = (r() * 2 - 1) * 31; }
+    if (q < 1000) do { x = LAKE[0] + (r() * 2 - 1) * 34; z = LAKE[1] + (r() * 2 - 1) * 28; k++; } while ((lakeD(x, z) < 9.6 || lakeD(x, z) > 12.4) && k < 60);
+    else { x = (r() * 2 - 1) * (HALF - 2); z = (r() * 2 - 1) * (HALF - 2); }
     const s0 = 0.04 + Math.pow(r(), 2) * 0.18; add(3, x, z, s0, s0 * 0.7, s0 * (0.8 + 0.4 * r()), 0.01);
   }
 
   const crys = [], csc = [];
-  for (let c = 0; c < 9; c++) {
+  for (let c = 0; c < 17; c++) {
     let cx, cz, k = 0;
-    do { cx = LAKE[0] + (r() * 2 - 1) * 18; cz = LAKE[1] + (r() * 2 - 1) * 15; k++; } while ((lakeD(cx, cz) < 11.2 || lakeD(cx, cz) > 13.8 || !clearOf(cx, cz)) && k < 80);
+    do { cx = LAKE[0] + (r() * 2 - 1) * 36; cz = LAKE[1] + (r() * 2 - 1) * 30; k++; } while ((lakeD(cx, cz) < 11.2 || lakeD(cx, cz) > 13.8 || !clearOf(cx, cz)) && k < 80);
     const hue = r();
     for (let i = 0; i < 6; i++) {
       const x = cx + (r() - 0.5) * 1.6, z = cz + (r() - 0.5) * 1.6, y = H(x, z);
@@ -860,17 +951,28 @@ function scatter() {
     }
   }
 
+  // junipers in three sizes of the one species: the common tree, saplings that gather round it and in groves of
+  // their own, and a few old giants with room around them. [x, y, z, seed, height]
   const trees = [];
-  let tries2 = 0;
-  while (trees.length / 4 < 46 && tries2++ < 6000) {
-    const x = (r() * 2 - 1) * 30, z = (r() * 2 - 1) * 30, y = H(x, z);
-    if (y < 0.3 || y > 7 || normalAt(x, z)[1] < 0.86 || lakeD(x, z) < 12.3 || Math.hypot(x - 4, z - 15) < 4 || Math.hypot(x - 9.5, z - 13) < 4.5) continue;
-    let ok = true;
-    for (let q = 0; q < trees.length; q += 4) if (Math.hypot(trees[q] - x, trees[q + 2] - z) < 3.6) { ok = false; break; }
-    if (!ok) continue;
-    trees.push(x, y - 0.05, z, r());
+  const ground = (x, z) => { const y = H(x, z); return y > 0.3 && y < 11 && normalAt(x, z)[1] > 0.84 && lakeD(x, z) > 12.3 && clearOf(x, z) && inMap(x, z, 4) && outcrop(x, z) < 0.5; };
+  const room = (x, z, d) => { for (let q = 0; q < trees.length; q += 5) if (Math.hypot(trees[q] - x, trees[q + 2] - z) < d + (trees[q + 4] > 6 ? 3 : 0)) return false; return true; };
+  for (let t = 0; trees.length / 5 < 7 && t < 4000; t++) {
+    const x = (r() * 2 - 1) * (HALF - 6), z = (r() * 2 - 1) * (HALF - 6);
+    if (ground(x, z) && room(x, z, 12)) trees.push(x, H(x, z) - 0.08, z, r(), 7.5 + r() * 2.8);
   }
-  return { G, R, grassN: cnt, rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), crys: new Float32Array(crys), csc: new Float32Array(csc), trees: new Float32Array(trees) };
+  const common = trees.length;
+  for (let t = 0; (trees.length - common) / 5 < 88 && t < 12000; t++) {
+    const x = (r() * 2 - 1) * (HALF - 3), z = (r() * 2 - 1) * (HALF - 3);
+    if (ground(x, z) && room(x, z, 3.8)) trees.push(x, H(x, z) - 0.05, z, r(), 3.4 + r() * 3.0);
+  }
+  const grown = trees.length;
+  const sapling = (x, z) => { if (ground(x, z) && room(x, z, 1.3)) trees.push(x, H(x, z) - 0.03, z, r(), 1.1 + r() * 1.3); };
+  for (let q = common; q < grown; q += 5) if (r() < 0.45) for (let k = 0, m = 2 + Math.floor(r() * 4); k < m; k++) { const a = r() * 6.28, d = 2 + r() * 2.8; sapling(trees[q] + Math.cos(a) * d, trees[q + 2] + Math.sin(a) * d); }
+  for (let g = 0; g < 14; g++) {
+    const cx = (r() * 2 - 1) * (HALF - 6), cz = (r() * 2 - 1) * (HALF - 6);
+    for (let k = 0, m = 3 + Math.floor(r() * 5); k < m; k++) sapling(cx + (r() - 0.5) * 6, cz + (r() - 0.5) * 6);
+  }
+  return { G: new Float32Array(G), R: new Float32Array(R), rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), crys: new Float32Array(crys), csc: new Float32Array(csc), trees: new Float32Array(trees) };
 }
 
 // ---------------------------------------------------------------- junipers
@@ -907,14 +1009,14 @@ function growJuniper(x, y, z, h, seed, W, Lf, leanTo) {
   for (let k = 0; k <= 12; k++) { tp.push(at(k / 12)); tr.push(rad(k / 12)); }
   tube(W, tp, tr, 9, 0, 0.55, base, seed);
   const pads = [{ c: at(1), R: h * (0.2 + 0.1 * r()), f: 0.6 }];
-  const nl = 3 + Math.floor(r() * 3);
+  const young = h < 2.6, nl = young ? 2 + Math.floor(r() * 2) : h > 7 ? 5 + Math.floor(r() * 3) : 3 + Math.floor(r() * 3);
   for (let i = 0; i < nl; i++) {
     const t0 = 0.38 + 0.55 * (i + r() * 0.7) / nl, P0 = at(t0), az = lean + (r() - 0.5) * 4.2, len = h * (0.26 + 0.3 * r()), rise = 0.12 + 0.45 * r(), dr = 0.2 + 0.3 * r();
     const dh = [Math.cos(az), Math.sin(az)], pts = [], rr = [], fA = 0.55 * t0, fB = fA + 0.45;
     for (let k = 0; k <= 6; k++) { const q = k / 6; pts.push([P0[0] + dh[0] * len * q + lp[0] * 0.05 * h * Math.sin(q * 4 + i), P0[1] + len * (rise * q - dr * q * q * 0.5), P0[2] + dh[1] * len * q + lp[1] * 0.05 * h * Math.sin(q * 4 + i)]); rr.push(rad(t0) * 0.62 * (1 - 0.62 * q)); }
     tube(W, pts, rr, 7, fA, fB, base, seed + i);
     pads.push({ c: [pts[6][0], pts[6][1] + 0.05 * h, pts[6][2]], R: h * (0.17 + 0.09 * r()), f: fB });
-    for (let j = 0, nt = 2 + Math.floor(r() * 2); j < nt; j++) {
+    for (let j = 0, nt = young ? Math.floor(r() * 2) : 2 + Math.floor(r() * 2); j < nt; j++) {
       const q0 = 0.45 + 0.35 * r(), Q = pts[Math.round(q0 * 6)], az2 = az + (r() < 0.5 ? -1 : 1) * (0.6 + 0.6 * r()), l2 = len * (0.3 + 0.25 * r()), tw = [], trr = [];
       for (let k = 0; k <= 4; k++) { const q = k / 4; tw.push([Q[0] + Math.cos(az2) * l2 * q, Q[1] + l2 * (0.35 * q), Q[2] + Math.sin(az2) * l2 * q]); trr.push(rad(t0) * 0.32 * (1 - 0.6 * q)); }
       tube(W, tw, trr, 5, fA + 0.3, fB + 0.1, base, seed + i + j * 7);
@@ -922,7 +1024,7 @@ function growJuniper(x, y, z, h, seed, W, Lf, leanTo) {
     }
   }
   for (const pd of pads) {
-    const nb = Math.round(Math.min(120, Math.max(30, 260 * pd.R * pd.R)) * LEAF_MULT);
+    const nb = Math.round(Math.min(120, Math.max(young ? 14 : 30, 260 * pd.R * pd.R)) * LEAF_MULT);
     for (let b = 0; b < nb; b++) {
       const a = r() * 6.2832, rf = Math.sqrt(r()), rd = rf * pd.R * 0.75;
       const root = [pd.c[0] + Math.cos(a) * rd, pd.c[1] - pd.R * 0.18 + r() * pd.R * 0.22, pd.c[2] + Math.sin(a) * rd];
@@ -933,37 +1035,39 @@ function growJuniper(x, y, z, h, seed, W, Lf, leanTo) {
 }
 function growForest(sc) {
   const W = { pos: [], nor: [], w: [], b: [], idx: [] }, Lf = { R: [], D: [], M: [], B: [] };
-  const r = rng(4049);
-  for (let q = 0; q < sc.trees.length; q += 4) growJuniper(sc.trees[q], sc.trees[q + 1], sc.trees[q + 2], 3.4 + r() * 3.0, sc.trees[q + 3], W, Lf);
+  for (let q = 0; q < sc.trees.length; q += 5) growJuniper(sc.trees[q], sc.trees[q + 1], sc.trees[q + 2], sc.trees[q + 4], sc.trees[q + 3], W, Lf);
   // one small juniper clinging to the top of the sea stack, leaning out over the water
   let top = 0;
   for (let i = 1; i < STACK_GEO.pos.length; i += 3) if (STACK_GEO.pos[i] > STACK_GEO.pos[top * 3 + 1]) top = (i - 1) / 3;
-  const sx = ISLET[0] + STACK_GEO.pos[top * 3] * STACK_S[0], sz = ISLET[1] + STACK_GEO.pos[top * 3 + 2] * STACK_S[2], sy = H(ISLET[0], ISLET[1]) - 0.15 + STACK_GEO.pos[top * 3 + 1] * STACK_S[1];
-  growJuniper(sx, sy - 0.1, sz, 2.6, 0.7317, W, Lf, Math.atan2(LAKE[1] - sz, LAKE[0] - sx) + 2.4);
+  const sx = ISLET[0] + STACK_GEO.pos[top * 3] * STACK_S[0], sz = ISLET[1] + STACK_GEO.pos[top * 3 + 2] * STACK_S[2], sy = H(ISLET[0], ISLET[1]) - 0.2 + STACK_GEO.pos[top * 3 + 1] * STACK_S[1];
+  growJuniper(sx, sy - 0.1, sz, 3.2, 0.7317, W, Lf, Math.atan2(LAKE[1] - sz, LAKE[0] - sx) + 2.4);
   return { pos: new Float32Array(W.pos), nor: new Float32Array(W.nor), w: new Float32Array(W.w), b: new Float32Array(W.b), idx: new Uint32Array(W.idx), R: new Float32Array(Lf.R), D: new Float32Array(Lf.D), M: new Float32Array(Lf.M), B: new Float32Array(Lf.B) };
 }
 
-// understory around tree bases and big stones, ferns along the shade and the shore, glow tubes by the water
+// understory around tree bases and big stones, ferns along the shade and the shore, glow tubes by the water,
+// coilferns curling in the shade of the junipers, and lantern bells nodding along the shore and the meadows
 function plantScatter(sc) {
   const r = rng(555), P = [], F = [], S2 = [];
-  const ok = (x, z) => { const y = H(x, z); return y > 0.32 && y < 8 && nearNy(x, z) > 0.8 && clearOf(x, z) && Math.abs(x) < 31 && Math.abs(z) < 31; };
+  const ok = (x, z) => { const y = H(x, z); return y > 0.32 && y < 10 && nearNy(x, z) > 0.8 && clearOf(x, z) && inMap(x, z) && outcrop(x, z) < 0.6; };
   const anchors = [];
-  for (let q = 0; q < sc.trees.length; q += 4) anchors.push([sc.trees[q], sc.trees[q + 2]]);
+  for (let q = 0; q < sc.trees.length; q += 5) anchors.push([sc.trees[q], sc.trees[q + 2]]);
   for (const v of [0, 1]) for (let q = 0; q < sc.rv[v].length; q += 4) if (sc.rs[v][q] > 0.9) anchors.push([sc.rv[v][q], sc.rv[v][q + 2]]);
   const nearA = (r0, r1) => { const a = anchors[Math.floor(r() * anchors.length)], t = r() * 6.2832, d = r0 + r() * (r1 - r0); return [a[0] + Math.cos(t) * d, a[1] + Math.sin(t) * d]; };
-  const shoreP = (d0, d1) => { let x, z, k = 0; do { x = LAKE[0] + (r() * 2 - 1) * 19; z = LAKE[1] + (r() * 2 - 1) * 16; k++; } while ((lakeD(x, z) < d0 || lakeD(x, z) > d1) && k < 60); return [x, z]; };
+  const shoreP = (d0, d1) => { let x, z, k = 0; do { x = LAKE[0] + (r() * 2 - 1) * 38; z = LAKE[1] + (r() * 2 - 1) * 32; k++; } while ((lakeD(x, z) < d0 || lakeD(x, z) > d1) && k < 60); return [x, z]; };
+  const anywhere = () => [(r() * 2 - 1) * (HALF - 2), (r() * 2 - 1) * (HALF - 2)];
   const place = (gen) => { for (let t = 0; t < 30; t++) { const [x, z] = gen(); if (ok(x, z)) return [x, z]; } return null; };
-  for (let k = 0; k < (touch ? 150 : 230); k++) {
-    const at = place(() => (r() < 0.7 ? nearA(1.2, 3.6) : [(r() * 2 - 1) * 30, (r() * 2 - 1) * 30])); if (!at) continue;
+  const k = touch ? 0.65 : 1;
+  for (let c = 0; c < 560 * k; c++) {
+    const at = place(() => (r() < 0.7 ? nearA(1.2, 3.6) : anywhere())); if (!at) continue;
     const [x, z] = at, y = H(x, z), scl = 0.7 + r() * 0.8, n = 9 + Math.floor(r() * 5);
     for (let i = 0; i < n; i++) { P.push(x, y - 0.03, z, scl); F.push(i / n * 6.2832 + r() * 0.4, 0.5 + r() * 0.45, 0.11 + r() * 0.05, 0); S2.push(0.55 + r() * 0.25, 0.45, 0.25 + r() * 0.15, 0.45 + r() * 0.25); }
   }
-  for (let k = 0; k < (touch ? 130 : 200); k++) {
+  for (let c = 0; c < 480 * k; c++) {
     const at = place(() => (r() < 0.6 ? nearA(0.8, 3.2) : shoreP(12, 14.5))); if (!at) continue;
     const [x, z] = at, y = H(x, z), scl = 0.7 + r() * 0.6, n = 10 + Math.floor(r() * 5);
     for (let i = 0; i < n; i++) { P.push(x, y - 0.02, z, scl); F.push(i / n * 6.2832 + r() * 0.5, 0.75 + r() * 0.5, 0.24, 1); S2.push(0.8, 0.22, 0.5, 0.85 + r() * 0.2); }
   }
-  for (let c = 0; c < (touch ? 70 : 110); c++) {
+  for (let c = 0; c < 260 * k; c++) {
     const at = place(() => (r() < 0.55 ? shoreP(11, 13.2) : nearA(0.6, 1.8))); if (!at) continue;
     const m = 8 + Math.floor(r() * 9);
     for (let i = 0; i < m; i++) {
@@ -971,13 +1075,98 @@ function plantScatter(sc) {
       for (const ph of [phi, phi + 1.5708]) { P.push(x, y - 0.02, z, 1); F.push(ph, L, W, 2); S2.push(0.06, 1, 0, 0); }
     }
   }
+  // coilferns: a few stalks to a clump, each rising and rolling its tip into a spiral
+  for (let c = 0; c < 300 * k; c++) {
+    const at = place(() => nearA(0.9, 3.4)); if (!at) continue;
+    const m = 3 + Math.floor(r() * 5);
+    for (let i = 0; i < m; i++) {
+      const x = at[0] + (r() - 0.5) * 0.5, z = at[1] + (r() - 0.5) * 0.5, y = H(x, z), sc0 = 0.9 + r() * 0.6, phi = r() * 6.2832, L = 0.42 + r() * 0.34, W = 0.05 + r() * 0.025, lean = 0.18 + r() * 0.2;
+      // two ribbons crossed, so the stalk and its spiral read from every side
+      for (const ph of [phi, phi + 1.5708]) { P.push(x, y - 0.02, z, sc0); F.push(ph, L, W, 3); S2.push(lean, 0.85, 0, 0); }
+    }
+  }
+  // lantern bells: arching stems that nod a glowing bulb toward the ground
+  for (let c = 0; c < 280 * k; c++) {
+    const at = place(() => (r() < 0.5 ? shoreP(11.5, 15) : anywhere())); if (!at) continue;
+    const m = 2 + Math.floor(r() * 4);
+    for (let i = 0; i < m; i++) {
+      const x = at[0] + (r() - 0.5) * 0.8, z = at[1] + (r() - 0.5) * 0.8, y = H(x, z), sc0 = 0.9 + r() * 0.4, phi = r() * 6.2832, L = 0.62 + r() * 0.4, W = 0.05 + r() * 0.02, arch = 0.45 + r() * 0.3;
+      for (const ph of [phi, phi + 1.5708]) { P.push(x, y - 0.02, z, sc0); F.push(ph, L, W, 4); S2.push(arch, 0.95, 0, 0); }
+    }
+  }
   return { P: new Float32Array(P), F: new Float32Array(F), S2: new Float32Array(S2) };
 }
-const MOTE_N = touch ? 260 : 420;
+const MOTE_N = touch ? 520 : 840;
 function moteScatter() {
   const r = rng(808), m = new Float32Array(MOTE_N * 4);
-  for (let i = 0; i < MOTE_N; i++) { const x = (r() * 2 - 1) * 30, z = (r() * 2 - 1) * 30, g = H(x, z); m.set([x, Math.max(g, 0) + 0.4 + r() * 2.4, z, r()], i * 4); }
+  for (let i = 0; i < MOTE_N; i++) { const x = (r() * 2 - 1) * (HALF - 2), z = (r() * 2 - 1) * (HALF - 2), g = H(x, z); m.set([x, Math.max(g, 0) + 0.4 + r() * 2.4, z, r()], i * 4); }
   return m;
+}
+
+// ---------------------------------------------------------------- tiled instances
+// Blades, leaves and plants are drawn tile by tile, 16 m to a tile. A tile outside the view is skipped, and one
+// further than `near` metres draws only a prefix of its instances, shuffled so the prefix is an even thinning, with
+// each survivor widened to hold the cover (Corey's adaptive density, per tile).
+const TILE_M = 16, TILES = Math.ceil(2 * (HALF + TILE_M) / TILE_M);
+class Tiled {
+  constructor(prog, data, at, span, verts, near, least) {
+    Object.assign(this, { prog, verts, near, least });
+    const names = Object.keys(data), n = data[names[0]].length / 4, cell = new Int32Array(n), counts = new Int32Array(TILES * TILES + 1);
+    const tileOf = (x, z) => Math.min(TILES - 1, Math.max(0, Math.floor((x + HALF + TILE_M) / TILE_M))) + TILES * Math.min(TILES - 1, Math.max(0, Math.floor((z + HALF + TILE_M) / TILE_M)));
+    for (let i = 0; i < n; i++) { const [x, , z] = at(i); cell[i] = tileOf(x, z); counts[cell[i] + 1]++; }
+    for (let t = 0; t < TILES * TILES; t++) counts[t + 1] += counts[t];
+    const order = new Int32Array(n), fill = counts.slice(0, TILES * TILES);
+    for (let i = 0; i < n; i++) order[fill[cell[i]]++] = i;
+    const r = rng(9001);
+    this.tiles = [];
+    for (let t = 0; t < TILES * TILES; t++) {
+      const a = counts[t], b = counts[t + 1];
+      for (let k = b - 1; k > a; k--) { const m = a + Math.floor(r() * (k - a + 1)); [order[k], order[m]] = [order[m], order[k]]; }
+      let y0 = 1e9, y1 = -1e9;
+      for (let k = a; k < b; k++) { const y = at(order[k])[1]; y0 = Math.min(y0, y - span); y1 = Math.max(y1, y + span); }
+      const x0 = (t % TILES) * TILE_M - HALF - TILE_M, z0 = Math.floor(t / TILES) * TILE_M - HALF - TILE_M;
+      if (b > a) this.tiles.push({ start: a, count: b - a, x0, z0, y0, y1 });
+    }
+    this.vao = gl.createVertexArray(); gl.bindVertexArray(this.vao);
+    this.attrs = names.map((name) => {
+      const src = data[name], dst = new Float32Array(n * 4);
+      for (let k = 0; k < n; k++) dst.set(src.subarray(order[k] * 4, order[k] * 4 + 4), k * 4);
+      const buf = gl.createBuffer(), l = gl.getAttribLocation(prog, name);
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, dst, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(l); gl.vertexAttribDivisor(l, 1);
+      return { buf, loc: l };
+    });
+    gl.bindVertexArray(null);
+    this.count = n;
+  }
+  /** Draw what the camera can see. Returns the instances drawn. */
+  draw(VP, eye, mirror, density = 1) {
+    gl.bindVertexArray(this.vao);
+    const lodW = this.prog.u('uLodW');
+    let drawn = 0;
+    for (const t of this.tiles) {
+      const dx = Math.max(t.x0 - eye[0], 0, eye[0] - t.x0 - TILE_M), dz = Math.max(t.z0 - eye[2], 0, eye[2] - t.z0 - TILE_M), d = Math.hypot(dx, dz);
+      const f = d < this.near ? 1 : Math.max(this.least, Math.pow(this.near / d, 1.5)), n = Math.floor(t.count * f * density);
+      if (n <= 0 || this.hidden(VP, t, mirror)) continue;
+      for (const a of this.attrs) { gl.bindBuffer(gl.ARRAY_BUFFER, a.buf); gl.vertexAttribPointer(a.loc, 4, gl.FLOAT, false, 0, t.start * 16); }
+      gl.uniform1f(lodW, Math.min(2.2, 1 / Math.sqrt(f * density)));
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, this.verts, n);
+      drawn += n;
+    }
+    gl.uniform1f(lodW, 1);
+    return drawn;
+  }
+  /** True when the tile's box lies wholly outside one plane of the view (the mirror pass flips it in the water). */
+  hidden(M, t, mirror) {
+    let left = 0, right = 0, low = 0, high = 0, behind = 0;
+    for (let c = 0; c < 8; c++) {
+      const x = t.x0 + (c & 1) * TILE_M, y = ((c & 2) ? t.y1 : t.y0) * mirror, z = t.z0 + ((c & 4) ? TILE_M : 0);
+      const cx = M[0] * x + M[4] * y + M[8] * z + M[12], cy = M[1] * x + M[5] * y + M[9] * z + M[13], cw = M[3] * x + M[7] * y + M[11] * z + M[15];
+      if (cw <= 0) { behind++; continue; }
+      if (cx < -cw) left++; if (cx > cw) right++; if (cy < -cw) low++; if (cy > cw) high++;
+    }
+    return behind === 8 || left + behind === 8 && left > 0 || right + behind === 8 && right > 0 || low + behind === 8 && low > 0 || high + behind === 8 && high > 0;
+  }
 }
 
 // ---------------------------------------------------------------- build the scene
@@ -990,10 +1179,10 @@ const vWater = vao([{ loc: loc(WATERP, 'aXZ'), size: 2, data: wm.xz }, { loc: lo
 const vRocks = rockGeos.map((g, k) => vao([{ loc: loc(ROCK, 'aPos'), size: 3, data: g.pos }, { loc: loc(ROCK, 'aNor'), size: 3, data: g.nor }, { loc: loc(ROCK, 'aI'), size: 4, data: sc.rv[k], div: 1 }, { loc: loc(ROCK, 'aS'), size: 4, data: sc.rs[k], div: 1 }], g.idx));
 const vCrys = vao([{ loc: loc(ROCK, 'aPos'), size: 3, data: crysGeo.pos }, { loc: loc(ROCK, 'aNor'), size: 3, data: crysGeo.nor }, { loc: loc(ROCK, 'aI'), size: 4, data: sc.crys, div: 1 }, { loc: loc(ROCK, 'aS'), size: 4, data: sc.csc, div: 1 }], crysGeo.idx);
 const vWood = vao([{ loc: loc(WOOD, 'aPos'), size: 3, data: forest.pos }, { loc: loc(WOOD, 'aNor'), size: 3, data: forest.nor }, { loc: loc(WOOD, 'aW'), size: 4, data: forest.w }, { loc: loc(WOOD, 'aB'), size: 4, data: forest.b }], forest.idx);
-const vGrass = vao([{ loc: loc(GRASS, 'aG'), size: 4, data: sc.G, div: 1 }, { loc: loc(GRASS, 'aR'), size: 4, data: sc.R, div: 1 }]);
-const vJLeaf = vao([{ loc: loc(JLEAF, 'aR'), size: 4, data: forest.R, div: 1 }, { loc: loc(JLEAF, 'aD'), size: 4, data: forest.D, div: 1 }, { loc: loc(JLEAF, 'aM'), size: 4, data: forest.M, div: 1 }, { loc: loc(JLEAF, 'aB'), size: 4, data: forest.B, div: 1 }]);
-let grassDraw = sc.grassN;
-const vPlant = vao([{ loc: loc(PLANT, 'aP'), size: 4, data: pl.P, div: 1 }, { loc: loc(PLANT, 'aF'), size: 4, data: pl.F, div: 1 }, { loc: loc(PLANT, 'aS2'), size: 4, data: pl.S2, div: 1 }]);
+const grass = new Tiled(GRASS, { aG: sc.G, aR: sc.R }, (i) => [sc.G[i * 4], sc.G[i * 4 + 2], sc.G[i * 4 + 1]], 1.4, 7, 18, 0.06);
+const leaves = new Tiled(JLEAF, { aR: forest.R, aD: forest.D, aM: forest.M, aB: forest.B }, (i) => [forest.R[i * 4], forest.R[i * 4 + 1], forest.R[i * 4 + 2]], 2, 13, 40, 0.3);
+const plants = new Tiled(PLANT, { aP: pl.P, aF: pl.F, aS2: pl.S2 }, (i) => [pl.P[i * 4], pl.P[i * 4 + 1], pl.P[i * 4 + 2]], 1.2, 25, 24, 0.12);
+let grassDensity = 1;
 const vMotes = vao([{ loc: loc(POINTS, 'aP'), size: 4, data: motes }]);
 const RAIN_N = 700, rainSeeds = new Float32Array(RAIN_N * 4); { const r = rng(9); for (let i = 0; i < RAIN_N; i++) rainSeeds.set([(r() * 2 - 1) * 34, r(), (r() * 2 - 1) * 34, r()], i * 4); }
 const vRain = vao([{ loc: loc(POINTS, 'aP'), size: 4, data: rainSeeds }]);
@@ -1130,7 +1319,7 @@ function postProcess(VP, eye, b, w, h) {
 }
 
 // ---------------------------------------------------------------- engine state
-let engine, glowF, groundF, wearF, mode = CERT;
+let engine, glowF, groundF, wearF, mode = BOXEL;
 const ripples = []; // [x, z, t0, strength]
 let simT = 0;
 
@@ -1151,13 +1340,13 @@ function splash(x, z, water) {
 }
 function ripple(x, z, s) { ripples.push([x, z, simT, s]); if (ripples.length > 12) ripples.shift(); }
 function spore(r) {
-  const x = (r() * 2 - 1) * 31, z = (r() * 2 - 1) * 31, y = H(x, z);
+  const x = (r() * 2 - 1) * (HALF - 2), z = (r() * 2 - 1) * (HALF - 2), y = H(x, z);
   glowF.deposit(x, z, 1 + Math.floor(r() * 3), 0.5);
   if (y < WATER && r() < 0.2) ripple(x, z, 0.25);
 }
 
 // ---------------------------------------------------------------- camera + player
-const player = { x: 4, z: 15, y: 0, yaw: 0.05, pitch: 0.06, vy: 0, stride: 0, foot: 1, wet: 0 };
+const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vy: 0, stride: 0, foot: 1, wet: 0 };
 player.y = H(player.x, player.z);
 const keys = {};
 let rain = false, hudOn = true, started = false;
@@ -1180,7 +1369,7 @@ function viewProj(eye, b, fov, aspect) {
   return M;
 }
 
-function walkable(x, z) { const h = H(x, z); return h > -1.25 && Math.abs(x) < 31 && Math.abs(z) < 31; }
+function walkable(x, z) { return H(x, z) > -1.25 && inMap(x, z, 1); }
 
 function stepPlayer(dt) {
   let mx = 0, mz = 0;
@@ -1226,8 +1415,14 @@ function stepStones(dt) {
 
 // ---------------------------------------------------------------- render
 const SUN = norm([-0.86, 0.14, -0.33]), SUNCOL = [2.7, 1.9, 1.35], PLANET = norm([0.2, 0.43, -0.88]), MOONCOL = [0.3, 0.42, 0.82];
-let night = 0, nightTarget = 0, sheet = 0;
+let night = 0, nightTarget = 0, sheet = 0, grassDrawn = 0;
 function norm(v) { const l = Math.hypot(...v); return v.map((x) => x / l); }
+// the night sky turns about a tilted pole, once in about fifteen minutes
+const POLE = norm([0.25, 0.8, 0.55]), skyTurn = new Float32Array(9);
+function turnSky(t) {
+  const a = t * 0.007, c = Math.cos(a), s = Math.sin(a), k = 1 - c, [x, y, z] = POLE;
+  skyTurn.set([c + x * x * k, y * x * k + z * s, z * x * k - y * s, x * y * k - z * s, c + y * y * k, z * y * k + x * s, x * z * k + y * s, y * z * k - x * s, c + z * z * k]);
+}
 
 function common(p, eye, VP, mirror, t) {
   gl.useProgram(p);
@@ -1236,7 +1431,7 @@ function common(p, eye, VP, mirror, t) {
   gl.uniform3fv(p.u('uCam'), eye); gl.uniform3fv(p.u('uSunDir'), norm(SUN.map((v, i) => v * (1 - night) + PLANET[i] * night))); gl.uniform3fv(p.u('uSunCol'), SUNCOL.map((v, i) => v * (1 - night) + MOONCOL[i] * night)); gl.uniform3fv(p.u('uPlanetDir'), PLANET);
   gl.uniform3fv(p.u('uStarDir'), SUN); gl.uniform1f(p.u('uNight'), night); gl.uniform1f(p.u('uBio'), 1 + 2.4 * night); gl.uniform1f(p.u('uHDR'), HDR ? 1 : 0);
   gl.uniform1f(p.u('uTime'), t); gl.uniform1f(p.u('uExposure'), 0.95 + 0.3 * night); gl.uniform1f(p.u('uExtent'), EXTENT); gl.uniform1f(p.u('uSheet'), sheet); gl.uniform1f(p.u('uWind'), TEST ? 0.7 : (rain ? 1.15 : 0.7) + 0.2 * Math.sin(t * 0.13));
-  gl.uniform1i(p.u('uGlow'), 0); gl.uniform1i(p.u('uGround'), 1); gl.uniform1i(p.u('uWear'), 7);
+  gl.uniform1i(p.u('uGlow'), 0); gl.uniform1i(p.u('uGround'), 1); gl.uniform1i(p.u('uWear'), 7); gl.uniformMatrix3fv(p.u('uSky'), false, skyTurn);
   gl.uniform1f(p.u('uClip'), mirror < 0 ? WATER - 0.02 : -1e9);
 }
 function drawScene(eye, b, VP, mirror, t, opts) {
@@ -1255,9 +1450,9 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   gl.uniform1i(ROCK.u('uKind'), 1); gl.bindVertexArray(vCrys); gl.drawElementsInstanced(gl.TRIANGLES, crysGeo.idx.length, gl.UNSIGNED_INT, 0, sc.crys.length / 4);
   gl.disable(gl.CULL_FACE);
   common(WOOD, eye, VP, mirror, t); gl.bindVertexArray(vWood); gl.drawElements(gl.TRIANGLES, forest.idx.length, gl.UNSIGNED_INT, 0);
-  common(JLEAF, eye, VP, mirror, t); gl.bindVertexArray(vJLeaf); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 13, forest.R.length / 4);
-  common(PLANT, eye, VP, mirror, t); gl.bindVertexArray(vPlant); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 25, pl.P.length / 4);
-  if (opts.grass) { common(GRASS, eye, VP, mirror, t); gl.bindVertexArray(vGrass); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 7, grassDraw); }
+  common(JLEAF, eye, VP, mirror, t); leaves.draw(VP, eye, mirror);
+  common(PLANT, eye, VP, mirror, t); plants.draw(VP, eye, mirror);
+  if (opts.grass) { common(GRASS, eye, VP, mirror, t); grassDrawn = grass.draw(VP, eye, mirror, grassDensity); }
 }
 
 function render(t, camOverride) {
@@ -1272,6 +1467,7 @@ function render(t, camOverride) {
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texGround);
   gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, texWear);
   sheet = groundF ? groundF.sheet : 0;
+  turnSky(t);
   // reflection: the same scene mirrored in the lake plane, half resolution, no grass
   const rw = Math.max(1, w >> 1), rh = Math.max(1, h >> 1);
   ensureRefl(rw, rh);
@@ -1293,7 +1489,7 @@ function render(t, camOverride) {
   gl.bindVertexArray(vWater); gl.drawElements(gl.TRIANGLES, wm.idx.length, gl.UNSIGNED_INT, 0);
   // particles: additive colour, and they cut themselves out of the sky mask so the rays never streak them
   gl.colorMask(true, true, true, true); gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE_MINUS_SRC_ALPHA);
-  common(POINTS, cam.eye, VP, 1, t); gl.uniform1f(POINTS.u('uScale'), h * 0.9);
+  common(POINTS, cam.eye, VP, 1, t); gl.uniform1f(POINTS.u('uScale'), h * 0.9); gl.uniform2f(POINTS.u('uCamXZ'), cam.eye[0], cam.eye[2]);
   if (!camOverride || camOverride.motes) { gl.uniform1i(POINTS.u('uRain'), 2); gl.bindVertexArray(vMotes); gl.drawArrays(gl.POINTS, 0, MOTE_N); }
   if (!camOverride) {
     if (rain) { gl.uniform1i(POINTS.u('uRain'), 1); gl.bindVertexArray(vRain); gl.drawArrays(gl.POINTS, 0, RAIN_N); }
@@ -1314,16 +1510,17 @@ function render(t, camOverride) {
 
 // ---------------------------------------------------------------- loop
 const hud = Object.fromEntries(['hMode', 'hFps', 'hBar', 'hStep', 'hDense', 'hAwake', 'hMs', 'hMem', 'hUp', 'hPromise', 'hNote'].map((id) => [id.slice(1).toLowerCase(), document.getElementById(id)]));
-const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'k' : Math.round(n).toLocaleString();
+const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(Math.round(n));
+const time = (ms) => ms < 0.1 ? Math.round(ms * 1000) + ' µs' : ms.toFixed(2) + ' ms';
 const bytes = (n) => n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
-let last = 0, wall = 0, acc = { frames: 0, t: 0, dense: 0, ms: 0, up: 0 }, sporeR = rng(77), sporeAcc = 0;
+let last = 0, wall = 0, acc = { frames: 0, t: 0, ms: 0, up: 0 }, sporeR = rng(77), sporeAcc = 0;
 const layers = () => [glowF, groundF, wearF];
 
 function simulate(dt) {
   stepPlayer(dt); stepStones(dt);
   if (rain) { sporeAcc += dt * 30; while (sporeAcc >= 1) { spore(sporeR); sporeAcc -= 1; } if (groundF.sheet < 0.45) groundF.rain(dt * 0.025); }
   const t0 = performance.now();
-  for (const f of layers()) acc.dense += f.advance(dt) * N * N;
+  for (const f of layers()) f.advance(dt);
   acc.ms += performance.now() - t0;
   for (const f of layers()) acc.up += f.upload();
   acc.frames++;
@@ -1340,13 +1537,13 @@ function adaptDensity(rawDt) {
   const ts = perfT.sort((a, b) => a - b), med = ts[30], p90 = ts[54]; perfT = [];
   const slow = med > 1 / 50 || p90 > 1 / 33;
   if (slow) {
-    if (grassDraw > sc.grassN * 0.55) grassDraw = Math.floor(grassDraw * 0.85);
+    if (grassDensity > 0.6) grassDensity *= 0.85;
     else if (renderScale > 0.72) renderScale = Math.max(0.72, renderScale * 0.9);
-    else if (grassDraw > 40000) grassDraw = Math.floor(grassDraw * 0.85);
+    else if (grassDensity > 0.3) grassDensity *= 0.85;
     coolUntil = warm + 6;
   } else if (med < 1 / 57 && warm > coolUntil) {
     if (renderScale < 1) renderScale = Math.min(1, renderScale * 1.06);
-    else if (grassDraw < sc.grassN) grassDraw = Math.min(sc.grassN, Math.floor(grassDraw * 1.08));
+    else if (grassDensity < 1) grassDensity = Math.min(1, grassDensity * 1.08);
   }
 }
 function frame(now) {
@@ -1367,12 +1564,12 @@ function frame(now) {
     hud.dense.textContent = fmt(N * N * (60 + 15 + 15) / 60);
     hud.bar.style.width = Math.max(0.6, Math.min(100, stepped / f / (N * N * 1.5) * 100)) + '%';
     hud.awake.textContent = st.map((s) => fmt(s.blocks)).join(' · ');
-    hud.ms.textContent = (acc.ms / f).toFixed(2) + ' ms';
-    hud.mem.textContent = bytes(st.reduce((n, s) => n + s.bytes, 0)) + (mode === CERT ? ' of ' + bytes(3 * N * N * 8) : '');
+    hud.ms.textContent = time(acc.ms / f);
+    hud.mem.textContent = bytes(st.reduce((n, s) => n + s.bytes, 0)) + (mode === BOXEL ? ' of ' + bytes(3 * N * N * 8) : '');
     hud.up.textContent = bytes(acc.up / f);
     const bound = Math.max(...st.map((s) => s.bound)), broken = st.reduce((n, s) => n + s.violations, 0);
-    hud.promise.textContent = mode === CERT ? `${(bound * 255).toFixed(2)}/255 · ${broken} broken` : 'is the reference';
-    acc = { frames: 0, t: 0, dense: 0, ms: 0, up: 0 };
+    hud.promise.textContent = mode === BOXEL ? `within ${(bound * 255).toFixed(2)}/255 · ${broken} broken` : 'is the reference';
+    acc = { frames: 0, t: 0, ms: 0, up: 0 };
   }
 }
 
@@ -1380,11 +1577,11 @@ function refreshModeUI() {
   hud.mode.firstElementChild.textContent = MODE_NAME[mode];
   hud.mode.className = 'mode' + (mode === DENSE ? ' dense' : '');
   document.getElementById('bMode').textContent = MODE_NAME[mode];
-  hud.note.textContent = mode === CERT
-    ? 'Every cell the engine skips is proven to sit within 1/255 of the full computation, on a plane with no edge. Walk, throw, call spore rain: the cost follows what happens, not the size of the world.'
-    : 'Dense steps every cell of the acre, every step: the full computation the certified engine promises to match. It costs the whole acre whether anything happens or not, and nothing outside the acre exists for it.';
+  hud.note.textContent = mode === BOXEL
+    ? 'Every cell boxel skips is proven to sit within 1/255 of the full computation, rounding included, on a plane with no edge. Walk, throw, call spore rain: the cost follows what happens, not the size of the world.'
+    : 'Dense steps every cell of the map, every step: the full computation boxel promises to match. It costs the whole map whether anything happens or not, and nothing past the map exists for it.';
 }
-function cycleMode() { setMode(mode === CERT ? DENSE : CERT); refreshModeUI(); }
+function cycleMode() { setMode(mode === BOXEL ? DENSE : BOXEL); refreshModeUI(); }
 
 // ---------------------------------------------------------------- input
 function bindInput() {
@@ -1443,23 +1640,41 @@ function toggleNight() { nightTarget = nightTarget > 0.5 ? 0 : 1; document.getEl
 function toggleHud() { hudOn = !hudOn; document.getElementById('hud').hidden = !hudOn; document.getElementById('bHud').setAttribute('aria-pressed', String(hudOn)); }
 
 // ---------------------------------------------------------------- test hooks (?test): deterministic scripted session, fixed camera
+const VIEWS = {
+  shore: { eye: [SHORE_CAM[0], H(...SHORE_CAM) + 2.6, SHORE_CAM[1]], yaw: -0.95, pitch: -0.24, motes: true },
+  planet: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 0.05, pitch: 0.12, motes: true },
+  sunset: { eye: [12, H(12, 4) + 1.7, 4], yaw: -1.5, pitch: 0.08, motes: true },
+  outcrop: { eye: [12, H(12, -14) + 1.7, -14], yaw: 0.9, pitch: 0.05, motes: true },
+  beach: { eye: [12.5, H(12.5, 28) + 1.5, 28], yaw: -1.9, pitch: -0.32, motes: false },
+  stack: { eye: [ISLET[0] + 9, 1.4, ISLET[1] + 6], yaw: -0.98, pitch: -0.08, motes: false },
+  galaxy: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 2.6, pitch: 0.75, motes: false },
+  get coil() { return plantView(3); },
+  get lantern() { return plantView(4); },
+  get grove() { const x = sc.trees[7 * 5] + 2.2, z = sc.trees[7 * 5 + 2] + 2.2; return { eye: [x, H(x, z) + 1.1, z], yaw: -0.785, pitch: -0.3, motes: false }; },
+};
+/** A close look at the first plant of a species, from a metre and a half away. */
+function plantView(type) {
+  let i = 0; while (i < pl.F.length / 4 && pl.F[i * 4 + 3] !== type) i++;
+  const x = pl.P[i * 4] + 1.0, z = pl.P[i * 4 + 2] + 1.0;
+  return { eye: [x, Math.max(H(x, z), pl.P[i * 4 + 1]) + 1.2, z], yaw: -0.785, pitch: -0.62, motes: false };
+}
 function scripted(m, frames = 900, view = 'shore') {
   setMode(m); started = false; rain = false; stones.length = 0;
   const r = rng(4242); simT = 0;
-  if (view === 'render') { render(12.0, { shore: { eye: [9.5, H(9.5, 13) + 2.6, 13], yaw: -0.95, pitch: -0.28, motes: true }, planet: { eye: [4, H(4, 15) + 1.7, 15], yaw: 0.05, pitch: 0.12, motes: true }, sunset: { eye: [6, H(6, 2) + 1.7, 2], yaw: -1.5, pitch: 0.08, motes: true } }[frames]); return {}; }
+  if (view === 'render') { render(12.0, VIEWS[frames]); return {}; }
   const t0 = performance.now();
   let stride = 0, foot = 1, px = 9, pz = 9;
   for (let f = 0; f < frames; f++) {
     const dt = 1 / 60; simT += dt;
     // a hiker along the south-east shore and into the shallows, then back out with wet feet
-    const a = 0.9 + f / frames * 1.6, R = 10.2 + 2.4 * Math.sin(f / frames * Math.PI);
+    const a = 0.9 + f / frames * 1.6, R = 20.4 + 4.8 * Math.sin(f / frames * Math.PI);
     const nx = LAKE[0] + Math.cos(a) * R * 1.2, nz = LAKE[1] + Math.sin(a) * R * 0.95;
     if (f < 760) stride += Math.hypot(nx - px, nz - pz); px = nx; pz = nz;
     const wetNow = H(px, pz) < WATER;
     if (f < 760 && stride > 0.55) { stride -= 0.55; foot = -foot; footstep(px + 0.14 * foot, pz, wetNow, wetNow ? 1 : 0.6, false); }
-    if (f === 380 || f === 800) splash(LAKE[0] + (f === 380 ? 2 : -1), LAKE[1] + (f === 380 ? 1 : 5), true);
-    if (f >= 760) { const q = (f - 760) / 140, wx = 8.6 - 3.8 * q, wz = 13.4 - 1.6 * q; stride += 0.03; if (stride > 0.55) { stride = 0; foot = -foot; footstep(wx + 0.14 * foot, wz, false, 1, false); } }
-    if (f === 850) splash(5.2, 10.6, false);
+    if (f === 380 || f === 800) splash(LAKE[0] + (f === 380 ? 4 : -2), LAKE[1] + (f === 380 ? 2 : 10), true);
+    if (f >= 760) { const q = (f - 760) / 140, wx = 17.2 - 7.6 * q, wz = 26.8 - 3.2 * q; stride += 0.03; if (stride > 0.55) { stride = 0; foot = -foot; footstep(wx + 0.14 * foot, wz, false, 1, false); } }
+    if (f === 850) splash(10.4, 21.2, false);
     if (f > 300 && f < 600) { if (r() < 0.5) spore(r); groundF.rain(0.0004); }
     for (const l of layers()) l.advance(dt);
   }
@@ -1467,8 +1682,7 @@ function scripted(m, frames = 900, view = 'shore') {
   const stepped = layers().reduce((n, l) => n + l.stepped, 0);
   for (const l of layers()) { l.upload(); l.stepped = 0; }
   ripples.length = 0;
-  const cams = { shore: { eye: [9.5, H(9.5, 13) + 2.6, 13], yaw: -0.95, pitch: -0.28 }, planet: { eye: [4, H(4, 15) + 1.7, 15], yaw: 0.05, pitch: 0.12, motes: true } };
-  render(12.0, cams[view] || cams.shore);
+  render(12.0, { ...(VIEWS[view] || VIEWS.shore), motes: view === 'planet' });
   const st = layers().map((l) => l.stats());
   return { mode: MODE_NAME[m], frames, ms, stepped, violations: st.reduce((n, s) => n + s.violations, 0), blocks: st.map((s) => s.blocks), bytes: st.reduce((n, s) => n + s.bytes, 0) };
 }
@@ -1480,11 +1694,11 @@ function scripted(m, frames = 900, view = 'shore') {
   glowF = new Layer(engine.boxel, SPECS.glow, texGlow);
   groundF = new Layer(engine.boxel, SPECS.moist, texGround);
   wearF = new Layer(engine.boxel, SPECS.wear, texWear);
-  setMode(CERT);
+  setMode(BOXEL);
   refreshModeUI();
-  document.getElementById('status').textContent = `field engine ready: three certified fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
+  document.getElementById('status').textContent = `boxel ready: three certified fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
   if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, night, switch engine, readout</span>'; }
-  window.__game = { setNight: (v) => { night = nightTarget = v; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks) }) };
+  window.__game = { setNight: (v) => { night = nightTarget = v; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) { document.documentElement.classList.remove('intro'); document.getElementById('intro').hidden = true; document.getElementById('pad').hidden = true; document.getElementById('cross').hidden = true; return; }
   bindInput();
   document.getElementById('intro').addEventListener('click', () => {
