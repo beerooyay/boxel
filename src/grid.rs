@@ -37,16 +37,8 @@ impl Grid {
     pub fn new(spec: Spec, x0: i32, y0: i32, side: usize) -> Result<Grid, Error> {
         spec.check()?;
         let w = side + 2;
-        Ok(Grid {
-            x0,
-            y0,
-            side,
-            now: vec![0.0; w * w],
-            next: vec![0.0; w * w],
-            spread: spec.spread,
-            centre: 1.0 - 4.0 * spec.spread - spec.fade,
-            sheet: 0.0,
-        })
+        let (spread, centre) = spec.weights();
+        Ok(Grid { x0, y0, side, now: vec![0.0; w * w], next: vec![0.0; w * w], spread, centre, sheet: 0.0 })
     }
 
     #[inline]
@@ -71,7 +63,7 @@ impl Grid {
     pub fn deposit(&mut self, x: i32, y: i32, radius: u32, amount: f32) {
         let amount = amount.min(1.0);
         if amount > 0.0 {
-            let room = 1.0 - self.sheet;
+            let room = (1.0 - self.sheet).max(0.0);
             self.each_cell(x, y, radius, |v| *v = (*v + amount).min(room));
         }
     }
@@ -116,13 +108,5 @@ impl Grid {
     pub fn row(&self, y: i32) -> &[f32] {
         let i = self.at(self.x0, y).expect("row inside the region");
         &self.now[i..i + self.side]
-    }
-
-    pub fn origin(&self) -> (i32, i32) {
-        (self.x0, self.y0)
-    }
-
-    pub fn side(&self) -> usize {
-        self.side
     }
 }

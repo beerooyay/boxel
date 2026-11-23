@@ -43,10 +43,15 @@ use alloc::vec::Vec;
 
 use crate::spec::Error;
 
-/// Relative headroom over every computed value. A sum of nonnegative terms rounds to within
-/// `(1 - u)^(6n)` of the truth after `n` steps; at `u = 2^-53` and the step limit below that
-/// is under `1e-10`.
+/// Rounding, accounted for. Each new value is `c0·c + a·(((l + r) + u) + d)` over nonnegative
+/// numbers: five roundings on the longest path, each losing at most a factor `1 - 2⁻⁵³` while
+/// the result is normal, and at most `2⁻¹⁰⁷⁵` once it is subnormal. By induction over `n`
+/// steps the exact kernel is at most the computed one times `(1 - 2⁻⁵³)^(-5n)`, plus
+/// `5n·2⁻¹⁰⁷⁵` times that. At the step limit below the factor is under `1 + 8·10⁻¹¹`, so every
+/// stored value is multiplied by `HEADROOM` and has `FLOOR` added, which covers both with room
+/// for the roundings of those two operations themselves.
 const HEADROOM: f64 = 1.0 + 1e-9;
+const FLOOR: f64 = 1e-300;
 
 /// No table is computed past this many steps: a field that still has visible mass after this
 /// long fades too slowly to certify.
@@ -67,19 +72,27 @@ pub struct Cone {
     /// `q`: the exterior bound falls by this factor per cell beyond the box.
     falloff: f64,
     radius: u32,
-    horizon: u32,
 }
 
 impl Cone {
     /// The cone of the scheme with this `spread` and `fade`, computed until the kernel is
-    /// under `floor` on and beyond the box, and at every later age.
+    /// under `floor` on and beyond the box, and at every later age. The centre weight
+    /// `1 - 4·spread - fade` is rounded up, which can only raise the kernel.
     pub fn new(spread: f64, fade: f64, floor: f64) -> Result<Cone, Error> {
+        Cone::weights(spread, (1.0 - 4.0 * spread - fade).next_up().next_up(), fade, floor)
+    }
+
+    /// The cone of the scheme with exactly these weights: `centre` on the cell itself and
+    /// `spread` on each neighbour. `fade` must not exceed `1 - 4·spread - centre`; it sets how
+    /// fast the bound outside the box falls off.
+    pub fn weights(spread: f64, centre: f64, fade: f64, floor: f64) -> Result<Cone, Error> {
         if spread == 0.0 {
-            return Cone::still(fade, floor);
+            return Cone::still(centre, floor);
         }
+        let fade = fade.min(1.0 - 4.0 * spread - centre).max(0.0) * (1.0 - 1e-12);
         let mut radius = 24;
         loop {
-            match Run::new(spread, fade, radius).go(floor) {
+            match Run::new(spread, centre, radius).go(floor, falloff(spread, fade)) {
                 Ok(cone) => return Ok(cone),
                 Err(Short::Wall) if radius < MAX_RADIUS => radius += radius / 2,
                 Err(_) => return Err(Error::NeverForgets),
@@ -87,9 +100,8 @@ impl Cone {
         }
     }
 
-    /// Without spread an event never leaves its cells; it fades in place.
-    fn still(fade: f64, floor: f64) -> Result<Cone, Error> {
-        let keep = 1.0 - fade;
+    /// Without spread an event never leaves its cells; it fades in place by `keep` a step.
+    fn still(keep: f64, floor: f64) -> Result<Cone, Error> {
         let (mut starts, mut hull) = (Vec::new(), Vec::new());
         let (mut age, mut peak) = (0u32, 1.0f64);
         while peak > floor {
@@ -97,7 +109,7 @@ impl Cone {
                 return Err(Error::NeverForgets);
             }
             starts.push(age);
-            hull.push(peak * HEADROOM);
+            hull.push(peak * HEADROOM + FLOOR);
             let next = next_start(age);
             for _ in age..next {
                 peak *= keep;
@@ -105,8 +117,8 @@ impl Cone {
             age = next;
         }
         starts.push(age);
-        hull.push(peak * HEADROOM);
-        Ok(Cone { starts, hull, rings: 1, wall: 0.0, falloff: 0.0, radius: 0, horizon: age })
+        hull.push(peak * HEADROOM + FLOOR);
+        Ok(Cone { starts, hull, rings: 1, wall: 0.0, falloff: 0.0, radius: 0 })
     }
 
     /// The age bin holding `age`.
@@ -137,16 +149,6 @@ impl Cone {
         self.starts.len()
     }
 
-    /// Half-width of the quadrant the kernel was computed on.
-    pub fn radius(&self) -> u32 {
-        self.radius
-    }
-
-    /// Steps of the kernel the table was built from.
-    pub fn horizon(&self) -> u32 {
-        self.horizon
-    }
-
     /// Lattice cells a point event of `mass` is certified never to push above `level`.
     pub fn footprint(&self, mass: f64, level: f64) -> u64 {
         let mut reach = 0u32;
@@ -174,7 +176,8 @@ impl Cone {
             t += 1;
         }
         let beyond = t.saturating_sub(self.radius as u64).max(1);
-        self.wall * pow(self.falloff, beyond)
+        // at most 128 roundings in the power and one in the product
+        self.wall * pow(self.falloff, beyond) * (1.0 + 1e-12)
     }
 }
 
@@ -191,9 +194,10 @@ fn pow(mut base: f64, mut exp: u64) -> f64 {
 }
 
 /// `q = e^-a` for the steepest exponential `2·spread·(cosh a - 1) ≤ fade` allows:
-/// the smaller root of `q² - 2cq + 1` with `c = cosh a`, rounded up.
+/// the smaller root of `q² - 2cq + 1` with `c = cosh a`, rounded up. A smaller `c` gives a
+/// larger root, so `c` is rounded down first.
 fn falloff(spread: f64, fade: f64) -> f64 {
-    let c = 1.0 + fade / (2.0 * spread);
+    let c = (1.0 + fade / (2.0 * spread)).next_down().next_down();
     if c <= 1.0 {
         return 1.0;
     }
@@ -229,15 +233,15 @@ struct Run {
     now: Vec<f64>,
     next: Vec<f64>,
     spread: f64,
-    fade: f64,
+    centre: f64,
 }
 
 impl Run {
-    fn new(spread: f64, fade: f64, radius: usize) -> Run {
+    fn new(spread: f64, centre: f64, radius: usize) -> Run {
         let width = radius + 3;
         let mut now = vec![0.0; width * width];
         now[width + 1] = 1.0;
-        Run { radius, width, next: now.clone(), now, spread, fade }
+        Run { radius, width, next: now.clone(), now, spread, centre }
     }
 
     #[inline]
@@ -262,7 +266,7 @@ impl Run {
     fn step(&mut self, age: usize, best: &mut [f64]) {
         self.ghosts();
         let (r, w) = (self.radius, self.width);
-        let (a, c0) = (self.spread, 1.0 - 4.0 * self.spread - self.fade);
+        let (a, c0) = (self.spread, self.centre);
         let n = r.min(age + 1) + 1;
         for y in 0..n {
             let row = (y + 1) * w;
@@ -307,7 +311,7 @@ impl Run {
         all
     }
 
-    fn go(mut self, floor: f64) -> Result<Cone, Short> {
+    fn go(mut self, floor: f64, falloff: f64) -> Result<Cone, Short> {
         let r = self.radius;
         let side = r + 1;
         let rings = ((2 * r * r) as u64).isqrt() as usize + 1;
@@ -356,10 +360,9 @@ impl Run {
             starts,
             hull: vec![0.0; bins.len() * rings],
             rings,
-            wall: wall * HEADROOM,
-            falloff: falloff(self.spread, self.fade),
+            wall: wall * HEADROOM + FLOOR,
+            falloff,
             radius: r as u32,
-            horizon: age,
         };
         // from bin j on: the max over that bin and every later one (suffix in age), at every
         // ring at least as far (suffix in distance), never below what the box can hold past
@@ -371,7 +374,7 @@ impl Run {
                 later[k] = later[k].max(most[k]);
                 outward = outward.max(later[k]);
                 let exterior = cone.outside(k as u32);
-                cone.hull[j * rings + k] = outward.max(flat).max(exterior) * HEADROOM;
+                cone.hull[j * rings + k] = outward.max(flat).max(exterior) * HEADROOM + FLOOR;
             }
         }
         Ok(cone)
@@ -398,7 +401,7 @@ mod tests {
     fn still_fields_fade_in_place() {
         let cone = Cone::new(0.0, 0.01, 1e-4).unwrap();
         assert_eq!(cone.envelope(0, 1), 0.0);
-        assert!(cone.peak(cone.bins() - 1) <= 1e-4 * HEADROOM);
+        assert!(cone.peak(cone.bins() - 1) <= 1e-4 * HEADROOM + FLOOR);
     }
 
     #[test]

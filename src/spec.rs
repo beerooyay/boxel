@@ -33,6 +33,21 @@ impl Spec {
         Spec { spread: (d * step / (cell * cell)) as f32, fade: (k * step) as f32, tolerance, events: 64 }
     }
 
+    /// The weights the machine actually steps with. The centre weight is rounded down into
+    /// f32, so the five weights never sum past `1 - fade`: the scheme the field runs fades at
+    /// least as fast as the one the spec names, and every bound built from `fade` holds for it.
+    pub(crate) fn weights(&self) -> (f32, f32) {
+        let a = self.spread as f64;
+        let real = 1.0 - 4.0 * a - self.fade as f64;
+        // two roundings in f64 can raise `real` by a few units in the last place; step under them
+        let target = real - real.abs() * 1e-15;
+        let mut centre = target as f32;
+        if centre as f64 > target {
+            centre = centre.next_down();
+        }
+        (self.spread, centre.max(0.0))
+    }
+
     pub(crate) fn check(&self) -> Result<(), Error> {
         let (a, f) = (self.spread as f64, self.fade as f64);
         if !(a >= 0.0 && f >= 0.0 && 4.0 * a + f <= 1.0) {
@@ -46,8 +61,9 @@ impl Spec {
 }
 
 /// How the tolerance is spent. The first three parts are the three error sources of the
-/// paper's Theorem 6.7; the last covers what districts too far away to count can still reach.
-/// They always sum to the whole.
+/// paper's Theorem 6.7. The fourth is what f32 arithmetic can add on top of exact arithmetic,
+/// and the last covers what districts too far away to count can still reach. They always sum
+/// to the whole.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Budget {
     /// A block outside the window holds less than this, by the ledger.
@@ -56,6 +72,8 @@ pub struct Budget {
     pub tails: f64,
     /// What retired events may still put on any cell, together.
     pub retired: f64,
+    /// What rounding can move the field by, relative to exact arithmetic, in steady state.
+    pub rounding: f64,
     /// What every event further than a district away may put on any cell, together.
     pub slack: f64,
 }
@@ -63,7 +81,13 @@ pub struct Budget {
 impl Budget {
     pub fn split(tolerance: f64) -> Budget {
         let slack = tolerance * 1e-6;
-        Budget { window: tolerance * 0.5, tails: tolerance * 0.25, retired: tolerance * 0.25 - slack, slack }
+        Budget {
+            window: tolerance * 0.5,
+            tails: tolerance * 0.2,
+            retired: tolerance * 0.2 - slack,
+            rounding: tolerance * 0.1,
+            slack,
+        }
     }
 }
 
