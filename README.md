@@ -24,19 +24,21 @@ It's an engine for the certified locality of Rouyea & Bourgeois,
 ## What it does that nothing else did
 
 **Open worlds stop costing their size.** A thousand walkers leave glowing trails on worlds of
-every size: [results](docs/results.md#open-worlds), one core, 12.5 cm cells.
+every size: [results](docs/results.md#open-worlds), one core, 12.5 cm cells. The last two columns
+are extrapolated from a measured 2048² grid (0.53 ns per cell per step, two f32 buffers), since
+nothing here could hold 128 GB.
 
-| world | certified | memory | computing every cell | its memory |
+| world | boxel | memory | computing every cell | its memory |
 |---|---|---|---|---|
-| 1 km × 1 km | 21.9 ms | 91 MB | 40 ms | 512 MB |
-| 4 km × 4 km | 23.3 ms | 94 MB | 640 ms | 8 GB |
-| 16 km × 16 km | 23.8 ms | 94 MB | 10.2 s | 128 GB |
+| 1 km × 1 km | 22.2 ms | 91 MB | 36 ms | 512 MB |
+| 4 km × 4 km | 24.2 ms | 94 MB | 569 ms | 8 GB |
+| 16 km × 16 km | 24.1 ms | 94 MB | 9.1 s | 128 GB |
 
 The cost grows with the number of walkers and nothing else: 10 walkers cost 0.07 ms, 100 cost
-1.4 ms, and 10 000 on 4 km still beat computing every cell (402 ms in 893 MB, against 640 ms in
+1.7 ms, and 10 000 on 4 km still beat computing every cell (401 ms in 894 MB, against 569 ms in
 8 GB). The certified bound stayed under the tolerance in every run, no block was ever caught
-over its bound, and checked cell by cell against the full grid with a thousand walkers, the
-largest error was 0.08 of the tolerance.
+over its bound, and checked cell by cell against a full grid that was actually run (a thousand
+walkers on 256 m), the largest error was 0.08 of the tolerance.
 
 **The lattice certificate the paper left open.** The paper proves tight windows in the
 continuum. On the actual grid it either proves loose ones (10 to 40 times too large) or proves
@@ -49,6 +51,15 @@ an event ever touches: [docs/certificate.md](docs/certificate.md#3-the-cone-comp
 | 0 | 845 | 889 | none |
 | 0.002 | 577 | 609 | 23 981 |
 | 0.02 | 241 | 249 | 2 381 |
+
+**A proof that survives the machine.** The theorems are about exact arithmetic; a game runs in
+f32. Boxel builds its table from the exact f32 weights it steps with, bounds the table's own
+f64 rounding, and carries a live rounding term inside the promise. So the guarantee is about
+the numbers a game holds: the field never reads above computing every cell in the same
+arithmetic, and never below it by more than the bound. What is assumed is IEEE-754 doing what
+it says. Nothing here is machine-checked; interval arithmetic over the table is the step that
+would make it so. [Section 8](docs/certificate.md#8-floating-point-accounted-for-new) has the
+analysis.
 
 **A bound that does not grow with the number of events.** The paper's global error is a sum
 over every event ever made. Boxel keeps that sum per district of 1024 × 1024 cells and proves
@@ -67,12 +78,13 @@ hundred thousand cells apart cost what two events cost.
 
 ## The demo: Tarnished Promise
 
-An acre of lake shore on the planet Tarn, under a ringed giant. Every step wakes light in the
-moss that spreads and fades, wet feet darken the sand, trails wear in and heal, and a stone
-thrown in the lake lights the water. All of it is three boxel fields, drawn by a hand-written
-WebGL2 renderer, on phones too. One key switches to computing every cell of the acre, the
-reference the promise is about, so you can watch the cost change and the picture not change.
-The two render 61 dB apart (PSNR).
+Four acres of lake shore on the planet Tarn, under an amber ringed giant and its moon. Every
+step wakes light in the moss that spreads and fades, wet feet darken the sand, trails wear in
+and heal, and a stone thrown in the lake lights the water. All of it is three boxel fields,
+drawn by a hand-written WebGL2 renderer, on phones too. One key switches to computing every
+cell of the map, the reference the promise is about, so you can watch the cost change and the
+picture not change. Over a scripted session the two render 74 dB apart (PSNR), while boxel
+steps a tenth of the cells and holds an eighth of the memory.
 
 ```sh
 cargo build --release --target wasm32-unknown-unknown -p boxel-ffi
@@ -123,7 +135,7 @@ fog of war are the same three calls with different numbers.
 ```sh
 cargo test --release
 cargo run --release -p boxel-bench -- cone      # the paper's tables, certified
-cargo run --release -p boxel-bench -- acre      # the demo's fields: certified, dense, guessing
+cargo run --release -p boxel-bench -- acre      # the demo's fields: boxel, dense, guessing
 cargo run --release -p boxel-bench -- world     # open worlds
 cargo run --release -p boxel-bench -- replay replay.json && node bench/replay.mjs replay.json target/wasm32-unknown-unknown/release/boxel_ffi.wasm
 ```
@@ -137,8 +149,9 @@ cargo run --release -p boxel-bench -- replay replay.json && node bench/replay.mj
 - **No fade makes everything expensive.** That is the physics: an undamped event's footprint
   is A/(eε) cells however slowly it spreads.
 - **Where activity covers the whole world, computing everything wins.** A block costs about
-  twice what a dense cell row does per cell. In a spore storm over the entire acre the
-  certified field takes 0.13 ms against 0.11 ms. The promise holds either way.
+  twice what a dense cell row does per cell. In a spore storm over an entire acre boxel takes
+  0.15 ms against 0.09 ms, and a thousand walkers crammed onto 256 m cost it 11 ms against 2.
+  The promise holds either way.
 - **One thread.** Awake blocks are independent within a step, so they split across cores
   cleanly; that is next.
 

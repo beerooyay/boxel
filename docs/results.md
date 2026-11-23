@@ -27,18 +27,19 @@ Computing the cone takes 0 to 15 ms here. The demo's fields take 6 ms (glow) and
 glowing footstep every half second (radius 2 cells, +0.8). Glow is D = 8 cells²/s and
 k = 0.3/s at 12.5 cm cells, stepped 60 times a second, with 1024 live events per district.
 Each run lasts 30 s; times and blocks are averaged over the second half. The dense columns are
-what computing every cell would cost: 0.6 ns per cell per step, measured on a 2048² grid, and
-two f32 buffers.
+extrapolated, not run: what computing every cell would cost at 0.53 ns per cell per step (the
+best of five runs of a 2048² grid on an idle machine; runs alongside other work measured up to
+1.05), with two f32 buffers per cell. The boxel columns are measured.
 
-| world | walkers | certified ms / frame | blocks awake | memory | dense ms / frame | dense memory | bound / tolerance | violations |
+| world | walkers | boxel ms / frame | blocks awake | memory | dense ms / frame (extrapolated) | dense memory (extrapolated) | bound / tolerance | violations |
 |---|---|---|---|---|---|---|---|---|
-| 256 m | 1000 | 12.669 | 16831 | 36 MB | 2 | 32 MB | 0.7500 | 0 |
-| 1024 m | 1000 | 21.858 | 36997 | 91 MB | 40 | 512 MB | 0.9987 | 0 |
-| 4096 m | 1000 | 23.310 | 39073 | 94 MB | 640 | 8192 MB | 0.8095 | 0 |
-| 16384 m | 1000 | 23.754 | 39222 | 94 MB | 10236 | 131072 MB | 0.7832 | 0 |
-| 4096 m | 10 | 0.067 | 392 | 956 KB | 640 | 8192 MB | 0.7590 | 0 |
-| 4096 m | 100 | 1.437 | 3917 | 9972 KB | 640 | 8192 MB | 0.7717 | 0 |
-| 4096 m | 10000 | 402.374 | 379076 | 893 MB | 640 | 8192 MB | 0.9987 | 0 |
+| 256 m | 1000 | 11.3 | 16 831 | 36 MB | 2.2 | 32 MB | 0.74 | 0 |
+| 1 km | 1000 | 22.2 | 36 998 | 91 MB | 36 | 512 MB | 0.94 | 0 |
+| 4 km | 1000 | 24.2 | 39 074 | 94 MB | 569 | 8 GB | 0.78 | 0 |
+| 16 km | 1000 | 24.1 | 39 223 | 94 MB | 9 105 | 128 GB | 0.76 | 0 |
+| 4 km | 10 | 0.065 | 392 | 0.9 MB | 569 | 8 GB | 0.74 | 0 |
+| 4 km | 100 | 1.7 | 3 918 | 9.7 MB | 569 | 8 GB | 0.75 | 0 |
+| 4 km | 10 000 | 401 | 379 079 | 894 MB | 569 | 8 GB | 0.94 | 0 |
 
 Across 1 km, 4 km and 16 km the certified cost is flat, and it is linear in the number of
 walkers: about 38 blocks and 20 to 40 µs per walker per frame, the higher figure once the
@@ -60,36 +61,36 @@ dense grid twice the acre's width.
 
 | scene | engine | ms / frame | cells stepped / frame | max error | 8-bit levels | violations | peak blocks | memory |
 |---|---|---|---|---|---|---|---|---|
-| walk, glow | dense | 0.093 | 262144 | 0 | 0 | | | 2048 KB |
-| | guessing | 0.049 | 2989 | 0.00990 | 3 | | | 1290 KB |
-| | **certified** | **0.007** | 13722 | 0.00128 | 1 | 0 | 75 | 193 KB |
-| walk, moisture | dense | 0.024 | 65536 | 0 | 0 | | | 2048 KB |
-| | guessing | 0.065 | 3807 | 0.01510 | 4 | | | 1290 KB |
-| | **certified** | **0.008** | 13270 | 0.00148 | 1 | 0 | 325 | 728 KB |
-| storm, glow | dense | 0.106 | 262144 | 0 | 0 | | | 2048 KB |
-| | guessing | 0.258 | 17519 | 0.01360 | 4 | | | 1290 KB |
-| | **certified** | **0.134** | 184079 | 0.00170 | 1 | 0 | 1282 | 2826 KB |
-| burst, glow | dense | 0.094 | 262144 | 0 | 0 | | | 2048 KB |
-| | guessing | 0.007 | 647 | 0.01006 | 3 | | | 1290 KB |
-| | **certified** | **0.006** | 5648 | 0.00041 | 1 | 0 | 37 | 108 KB |
+| walk, glow | dense | 0.100 | 262144 | 0 | 0 | | | 2048 KB |
+| | guessing | 0.037 | 2989 | 0.00990 | 3 | | | 1290 KB |
+| | **boxel** | **0.007** | 13723 | 0.00128 | 1 | 0 | 75 | 193 KB |
+| walk, moisture | dense | 0.036 | 65536 | 0 | 0 | | | 2048 KB |
+| | guessing | 0.049 | 3807 | 0.01510 | 4 | | | 1290 KB |
+| | **boxel** | **0.008** | 13269 | 0.00148 | 1 | 0 | 325 | 728 KB |
+| storm, glow | dense | 0.094 | 262144 | 0 | 0 | | | 2048 KB |
+| | guessing | 0.318 | 17519 | 0.01360 | 4 | | | 1290 KB |
+| | **boxel** | **0.150** | 184102 | 0.00170 | 1 | 0 | 1282 | 2826 KB |
+| burst, glow | dense | 0.122 | 262144 | 0 | 0 | | | 2048 KB |
+| | guessing | 0.018 | 647 | 0.01006 | 3 | | | 1290 KB |
+| | **boxel** | **0.006** | 5640 | 0.00049 | 1 | 0 | 37 | 108 KB |
 
-The certified field is never over tolerance and reads one 8-bit level from the reference at
-most. Guessing is 2.5 to 3.9 times over tolerance. On a quiet acre the certified field is
-10 to 15 times cheaper than dense. In a storm that covers the entire acre it is about 1.3 times
-dearer: the window holds 70% of the acre, and a block costs more per cell than a dense row.
+Boxel is never over tolerance and reads one 8-bit level from the reference at most. Guessing
+is 2.5 to 3.9 times over tolerance. On a quiet acre boxel is 4 to 20 times cheaper than dense.
+In a storm that covers the entire acre it is about 1.6 times dearer: the window holds 70% of the
+acre, and a block costs more per cell than a dense row.
 
 ## The picture
 
 `demo/` with `?test`: a scripted 15 s session (a hiker into the shallows and out, two stones,
-spore rain, a landing splash) rendered from a fixed camera under the certified engine and under
-dense, then compared.
+spore rain, a landing splash) on the demo's four-acre map, rendered from a fixed camera under
+boxel and under dense, then compared.
 
 | | |
 |---|---|
-| PSNR, certified vs dense | 61.2 dB |
-| pixels more than 2 levels apart | 0.047% (grass-blade edges, moved by sub-tolerance wetness and trampling) |
-| cells stepped over the session | 85.7 M certified, 353.9 M dense |
-| field memory at the end | 1.8 MB certified, 6.3 MB dense |
+| PSNR, boxel vs dense | 74.3 dB |
+| pixels more than 2 levels apart | 0.006% (grass-blade edges, moved by sub-tolerance wetness and trampling) |
+| cells stepped over the session | 126 M boxel, 1 416 M dense |
+| field memory at the end | 2.9 MB boxel, 25.2 MB dense |
 
 ## Same bits everywhere
 
@@ -98,9 +99,9 @@ resulting field. `bench/replay.mjs` replays it through the wasm build in Node.
 
 | build | hash |
 |---|---|
-| x86-64, baseline (SSE2) | `6cea2d93572b217a` |
-| x86-64, `target-cpu=native` (AVX2, FMA) | `6cea2d93572b217a` |
-| wasm32 with SIMD128, Node 22 | `6cea2d93572b217a` |
+| x86-64, baseline (SSE2) | `0b94e72ee0ea0c34` |
+| x86-64, `target-cpu=native` (AVX2, FMA) | `0b94e72ee0ea0c34` |
+| wasm32 with SIMD128, Node 22 | `0b94e72ee0ea0c34` |
 
 The session's events are 237 bytes a second. Sending the field itself as 8-bit tiles would be
 12.6 MB a second.

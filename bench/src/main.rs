@@ -129,7 +129,7 @@ fn acre() {
             kb(g2.bytes())
         );
         println!(
-            "| | **certified** | **{t_field:.3}** | {:.0} | {err_field:.5} | {} | {} | {} | {} |",
+            "| | **boxel** | **{t_field:.3}** | {:.0} | {err_field:.5} | {} | {} | {} | {} |",
             s.stepped as f64 / frames as f64,
             levels(err_field),
             s.violations,
@@ -244,18 +244,21 @@ fn crowd(side: i64, walkers: usize, seconds: f64) -> Open {
 }
 
 fn world() {
-    // what the full computation costs per cell, measured once on a 2048² grid
-    let mut g = Grid::new(glow(), 0, 0, 2048).unwrap();
-    g.deposit(1024, 1024, 8, 1.0);
-    let t0 = Instant::now();
-    for _ in 0..40 {
-        g.step();
+    // what the full computation costs per cell: the best of five runs of a 2048² grid
+    let mut ns = f64::INFINITY;
+    for _ in 0..5 {
+        let mut g = Grid::new(glow(), 0, 0, 2048).unwrap();
+        g.deposit(1024, 1024, 8, 1.0);
+        let t0 = Instant::now();
+        for _ in 0..40 {
+            g.step();
+        }
+        ns = ns.min(t0.elapsed().as_secs_f64() * 1e9 / (40.0 * 2048.0 * 2048.0));
     }
-    let ns = t0.elapsed().as_secs_f64() * 1e9 / (40.0 * 2048.0 * 2048.0);
     println!("dense: {ns:.3} ns per cell per step\n");
     let metres = |side: i64| side as f64 * scenes::CELL;
     println!(
-        "| world | walkers | certified ms / frame | blocks awake | memory | dense ms / frame | dense memory | bound / tolerance | violations |"
+        "| world | walkers | boxel ms / frame | blocks awake | memory | dense ms / frame (extrapolated) | dense memory (extrapolated) | bound / tolerance | violations |"
     );
     println!("|---|---|---|---|---|---|---|---|---|");
     let row = |side: i64, walkers: usize, seconds: f64| {
