@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tarnished Promise</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;800&family=IBM+Plex+Mono:wght@400;500&family=Figtree:wght@400;500;600&display=swap">
+<style>
+/* One full-bleed canvas; a quiet instrument strip top-left reads the field engine; controls ride the bottom corners. A single dark world by choice. */
+:root {
+  --void: #070912;        /* night under the ringed planet */
+  --ink: #e9e4f5;         /* pale lavender text */
+  --dim: #9a93b4;         /* secondary text */
+  --glow: #5ff2e0;        /* bioluminescent cyan: the field itself */
+  --spore: #b98cff;       /* violet spore light */
+  --warn: #ffb27a;        /* dense-mode warning, the warm sun */
+  --glass: rgba(14, 16, 32, 0.62);
+  --edge: rgba(185, 140, 255, 0.22);
+  --display: "Syne", "Avenir Next", "Segoe UI", sans-serif;
+  --body: "Figtree", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: var(--void); color: var(--ink); font-family: var(--body); overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; }
+#gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; background: var(--void); }
+
+#intro {
+  position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
+  padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px));
+  background: radial-gradient(120% 80% at 50% 110%, rgba(95, 242, 224, 0.10), transparent 60%), rgba(7, 9, 18, 0.55);
+  cursor: pointer;
+}
+#intro .card { width: min(34rem, 100%); min-width: 0; display: grid; gap: 14px; text-align: left; }
+#intro h1 { font-family: var(--display); font-weight: 800; font-size: clamp(1.9rem, 8.4vw, 5.2rem); letter-spacing: 0.04em; line-height: 0.92; margin: 0; color: var(--ink); text-wrap: balance; }
+#intro h1 span { color: var(--glow); text-shadow: 0 0 28px rgba(95, 242, 224, 0.55); }
+#intro p { margin: 0; color: var(--dim); line-height: 1.55; font-size: 1rem; max-width: 62ch; }
+#intro .keys { font-family: var(--mono); font-size: 0.78rem; color: var(--dim); display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; }
+#intro .keys b { color: var(--ink); font-weight: 500; }
+#intro .go { font-family: var(--display); font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--glow); font-size: 0.9rem; }
+#intro .status { font-family: var(--mono); font-size: 0.75rem; color: var(--dim); }
+
+#hud {
+  position: fixed; z-index: 10; top: calc(env(safe-area-inset-top, 0px) + 12px); left: max(12px, env(safe-area-inset-left, 0px));
+  width: min(22rem, calc(100vw - 24px)); padding: 10px 12px; border-radius: 10px;
+  background: var(--glass); border: 1px solid var(--edge); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5; font-variant-numeric: tabular-nums; pointer-events: none;
+}
+#hud .mode { font-family: var(--display); font-weight: 800; letter-spacing: 0.12em; font-size: 12px; text-transform: uppercase; color: var(--glow); display: flex; justify-content: space-between; gap: 8px; }
+#hud .mode.dense { color: var(--warn); }
+#hud .mode.act { color: var(--spore); }
+#hud .row { display: flex; justify-content: space-between; gap: 10px; color: var(--dim); }
+#hud .row b { color: var(--ink); font-weight: 500; }
+#hud .bar { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.07); margin: 4px 0 6px; overflow: hidden; }
+#hud .bar i { display: block; height: 100%; width: 0; background: var(--glow); transition: width 0.25s; }
+#hud .mode.dense + .bar i { background: var(--warn); }
+#hud .note { color: var(--dim); font-family: var(--body); font-size: 11.5px; margin-top: 4px; line-height: 1.4; }
+
+#pad { position: fixed; z-index: 10; right: max(12px, env(safe-area-inset-right, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 14px); display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; max-width: min(30rem, 58vw); }
+#pad button {
+  font-family: var(--display); font-weight: 600; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink); background: var(--glass); border: 1px solid var(--edge); border-radius: 999px; padding: 10px 14px; cursor: pointer;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+#pad button:focus-visible { outline: 2px solid var(--glow); outline-offset: 2px; }
+#pad button[aria-pressed="true"] { border-color: var(--spore); color: var(--spore); }
+#pad button.throw { border-color: rgba(95, 242, 224, 0.5); color: var(--glow); }
+
+#stick { pointer-events: none; position: fixed; z-index: 9; left: max(18px, env(safe-area-inset-left, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 22px); width: 120px; height: 120px; border-radius: 50%; border: 1px solid var(--edge); background: rgba(14, 16, 32, 0.35); display: none; }
+#stick i { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%; background: rgba(95, 242, 224, 0.25); border: 1px solid rgba(95, 242, 224, 0.5); }
+body.touch #stick { display: block; }
+html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display: none !important; }
+#cross { position: fixed; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(233, 228, 245, 0.55); z-index: 5; pointer-events: none; }
+#err { position: fixed; z-index: 30; inset: auto 16px 16px 16px; font-family: var(--mono); font-size: 12px; color: var(--warn); }
+@media (max-width: 560px) { #hud { font-size: 10.5px; } #hud .note { display: none; } #pad button { padding: 9px 12px; font-size: 11px; } }
+@media (prefers-reduced-motion: reduce) { #hud .bar i { transition: none; } }
+</style>
+
+<script>document.documentElement.classList.add("intro")</script>
+<canvas id="gl" aria-label="Tarnished Promise: a lake shore on the planet Tarn"></canvas>
+<div id="cross" aria-hidden="true"></div>
+
+<div id="hud" aria-live="off">
+  <div class="mode" id="hMode"><span>boxel</span><span id="hFps">— fps</span></div>
+  <div class="bar"><i id="hBar"></i></div>
+  <div class="row"><span>cells stepped / frame</span><b id="hStep">—</b></div>
+  <div class="row"><span>a dense engine would step</span><b id="hDense">—</b></div>
+  <div class="row"><span>blocks: glow · moisture · wear</span><b id="hAwake">—</b></div>
+  <div class="row"><span>field sim / frame</span><b id="hMs">—</b></div>
+  <div class="row"><span>memory</span><b id="hMem">—</b></div>
+  <div class="row"><span>texture upload / frame</span><b id="hUp">—</b></div>
+  <div class="row"><span>the promise</span><b id="hPromise">—</b></div>
+  <div class="note" id="hNote"></div>
+</div>
+
+<div id="stick" aria-hidden="true"><i id="knob"></i></div>
+<div id="pad">
+  <button class="throw" id="bThrow" type="button">Throw</button>
+  <button id="bRain" type="button" aria-pressed="false">Spore rain</button>
+  <button id="bNight" type="button" aria-pressed="false">Night</button>
+  <button id="bMode" type="button" title="Switch the field engine">boxel</button>
+  <button id="bHud" type="button" aria-pressed="true">Readout</button>
+</div>
+
+<div id="intro">
+  <div class="card">
+    <h1>T<span>A</span>RNISHED<br>PROMISE</h1>
+    <p>Follow the glowing river into Tarn’s lake, or take the winding trail up the western hill for a view of the three giants. Footsteps wake the moss, wet feet darken the sand, and drifting pods leave light in the current. Press M to compare the boxel fields with a dense simulation.</p>
+    <div class="keys" id="keys">
+      <b>WASD</b><span>walk · Shift to run</span>
+      <b>mouse</b><span>look (click to capture)</span>
+      <b>click / F</b><span>throw a glowstone</span>
+      <b>R</b><span>spore rain</span>
+      <b>N</b><span>night: the biome lights up</span>
+      <b>M</b><span>switch engine: boxel · dense</span>
+      <b>H</b><span>hide the readout</span>
+    </div>
+    <div class="go" id="go">Click to step onto the shore</div>
+    <div class="status" id="status">loading the field engine…</div>
+  </div>
+</div>
+<div id="err" hidden></div>
+
+<script type="module" src="./demo/game.js"></script>
