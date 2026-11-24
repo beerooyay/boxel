@@ -27,6 +27,25 @@ vec3 bodyLight(vec3 albedo, vec3 normal, float viewCos, float atmosphere) {
        + atmosphere * (albedo + 0.12) * rim + gBehind * 0.42;
 }
 
+// A moon of the body at P (T, B its axes on the sky, R its radius there): its orbit is a circle of orbit radii, seen
+// squashed to squash and turned by tilt; at phase ph it is on the far side when sin(ph) > 0, and the body hides it.
+vec3 moon(vec3 d, vec3 c, vec3 P, vec3 T, vec3 B, float R, float tilt, float orbit, float squash, float ph, float size, vec3 tint, float seed) {
+  vec2 mo = vec2(cos(ph), sin(ph) * squash) * R * orbit;
+  vec2 mq = vec2(mo.x * cos(tilt) - mo.y * sin(tilt), mo.x * sin(tilt) + mo.y * cos(tilt));
+  vec3 M = normalize(P + mq.x * T + mq.y * B), MT = normalize(cross(M, vec3(0., 1., 0.))), MB = cross(MT, M);
+  float dm0 = dot(d, M); if (dm0 < 0.99) return c;
+  vec2 dm = vec2(dot(d, MT), dot(d, MB)) / dm0;
+  float Rm = R * size, rm = length(dm), cov = smoothstep(Rm, Rm * 0.9, rm);
+  if (cov <= 0.) return c;
+  vec2 pq = vec2(dot(d, T), dot(d, B)) / dot(d, P);
+  if (sin(ph) > 0. && length(pq) < R) return c;
+  vec2 disc = dm / Rm; float viewCos = sqrt(max(0., 1. - dot(disc, disc)));
+  vec3 nm = disc.x * MT + disc.y * MB - viewCos * M;
+  float crater = smoothstep(0.62, 0.75, vnoise(disc * 4. + seed)) * 0.25 + smoothstep(0.55, 0.7, vnoise(disc * 9. - seed)) * 0.15;
+  vec3 mc = tint * (0.82 + 0.25 * vnoise(disc * 2.5 + seed * 3.)) * (1. - crater);
+  return mix(c, bodyLight(mc, nm, viewCos, 0.), cov);
+}
+
 // Ring coordinates are in planet radii. Trace toward the star from the particle
 // to tell whether the globe lies between it and the light.
 float ringSun(vec3 position) {
@@ -36,14 +55,26 @@ float ringSun(vec3 position) {
 }
 vec3 roseClouds(vec3 n) {
   vec2 p = n.xy;
-  vec2 storm = (p - vec2(-0.22, -0.20)) * vec2(0.76, 1.35);
-  float curl = 4.6 * exp(-dot(storm, storm) * 12.);
-  float latitude = p.y + (sin(curl) * storm.x + (cos(curl) - 1.) * storm.y) / 1.35;
-  float flow = fbm3(vec2(p.x * 4. - uTime * 0.009, latitude * 8.) + n.z);
-  float wave = sin(latitude * 20. + 1.25 * sin(p.x * 5. + latitude * 4.) + flow * 3.);
+  float t = uTime;
+  // the whole deck is stirred by two passes of drifting turbulence, so no band runs clean
+  vec2 w = p + 0.09 * (vec2(fbm3(p * 3.3 + vec2(t * 0.011, 1.7)), fbm3(p * 3.3 + vec2(-4.3, -t * 0.008))) - 0.5);
+  w += 0.045 * (vec2(fbm3(w * 8.1 + vec2(-t * 0.02, 0.)), fbm3(w * 8.1 + vec2(2.9, t * 0.017))) - 0.5);
+  // a great storm, and smaller ones that ride their bands and turn either way
+  for (int i = 0; i < 5; i++) {
+    float fi = float(i);
+    vec2 c = i == 0 ? vec2(-0.22, -0.2) : vec2(fract(0.37 * fi + t * (0.0015 + 0.0011 * fi)) * 2.4 - 1.2, -0.62 + 0.3 * fi);
+    vec2 sv = (w - c) * vec2(0.76, 1.35);
+    float k = (i == 0 ? 4.6 : 2.4 + 0.6 * fi) * exp(-dot(sv, sv) * (i == 0 ? 12. : 30. + 14. * fi)) * (i == 2 || i == 4 ? -1. : 1.);
+    w = c + vec2(sv.x * cos(k) - sv.y * sin(k), sv.x * sin(k) + sv.y * cos(k)) / vec2(0.76, 1.35);
+  }
+  float latitude = w.y;
+  float flow = fbm3(vec2(w.x * 4. - t * 0.009, latitude * 8.) + n.z);
+  // bands of uneven width whose edges break into waves and curls
+  float wave = sin(latitude * 20. + 1.25 * sin(w.x * 5. + latitude * 4.) + flow * 3. + 0.6 * sin(w.x * 17. - t * 0.05 + latitude * 9.) * smoothstep(0.2, 0.8, flow));
   vec3 body = mix(vec3(0.68, 0.16, 0.36), vec3(0.96, 0.28, 0.055), smoothstep(-0.7, 0.68, wave));
-  float clouds = fbm3(vec2(p.x * 11. - uTime * 0.014, latitude * 30. + flow * 3.));
-  body = mix(body, vec3(1., 0.53, 0.65), smoothstep(0.34, 0.72, clouds) * 0.72);
+  body *= 0.86 + 0.24 * vnoise(w * 23. + flow);
+  float clouds = fbm3(vec2(w.x * 11. - t * 0.014, latitude * 30. + flow * 3.)) * (0.75 + 0.5 * vnoise(w * 6. - t * 0.01));
+  body = mix(body, vec3(1., 0.53, 0.65), smoothstep(0.36, 0.74, clouds) * 0.72);
   return mix(body, vec3(1., 0.75, 0.12), smoothstep(0.90, 1., wave) * smoothstep(0.40, 0.65, clouds));
 }
 
@@ -149,6 +180,8 @@ vec3 companion(vec3 d, vec3 sky, vec3 axis, float radius, bool ocean) {
 const vec3 ICE_DIR = ${glslDirection(skyBodies.ice)}, ROSE_DIR = ${glslDirection(skyBodies.rose)}, OCEAN_DIR = ${glslDirection(skyBodies.ocean)};
 vec3 companions(vec3 d, vec3 sky) {
   sky = companion(d, sky, ROSE_DIR, 0.198, false);
+  vec3 rt = normalize(cross(ROSE_DIR, vec3(0., 1., 0.))), rb = cross(rt, ROSE_DIR);
+  sky = moon(d, sky, ROSE_DIR, rt, rb, 0.198, -0.4, 2.2, 0.32, uTime * 0.05 + 1.2, 0.13, vec3(0.72, 0.62, 0.66), 3.7);
   return companion(d, sky, OCEAN_DIR, 0.143, true);
 }
 `;

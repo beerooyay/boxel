@@ -313,30 +313,35 @@ vec3 skyColor(vec3 d){
     } else {
       c += ring + vec3(0.6, 0.42, 0.28) * exp(-(pr - R) * 95.) * 0.065 * max(dot(normalize(q.x * T + q.y * B), uStarDir), 0.);
     }
-    // its moon, on an orbit in the ring plane just past the rings, hidden while it passes behind
-    float ph = uTime * 0.045;
-    vec2 mo = vec2(cos(ph), sin(ph) * 0.2) * R * 3.1, mq = vec2(mo.x * cos(tilt) - mo.y * sin(tilt), mo.x * sin(tilt) + mo.y * cos(tilt));
-    vec3 M = normalize(P + mq.x * T + mq.y * B);
-    vec3 MT = normalize(cross(M, vec3(0., 1., 0.))), MB = cross(MT, M);
-    vec2 dm = vec2(dot(d, MT), dot(d, MB)) / dot(d, M);
-    float Rm = R * 0.13, rm = length(dm);
-    if (rm < Rm && !(mo.y > 0. && pr < R)) {
-      vec2 disc = dm / Rm;
-      float viewCos = sqrt(max(0., 1. - dot(disc, disc)));
-      vec3 nm = disc.x * MT + disc.y * MB - viewCos * M;
-      vec3 mc = vec3(0.66, 0.64, 0.72) * (0.7 + 0.3 * vnoise(dm * 900.) + 0.12 * vnoise(dm * 3000.));
-      c = bodyLight(mc, nm, viewCos, 0.);
-    }
+    // three moons: a grey one on an orbit in the ring plane past the rings, a small ochre one skimming the rings' edge,
+    // and a small icy one on an inclined orbit further out; each hidden while it passes behind
+    c = moon(d, c, P, T, B, R, tilt, 2.75, 0.2, uTime * 0.045, 0.15, vec3(0.66, 0.64, 0.72), 1.3);
+    c = moon(d, c, P, T, B, R, tilt, 2.6, 0.2, uTime * 0.08 + 4.24, 0.1, vec3(0.8, 0.64, 0.46), 5.1);
+    c = moon(d, c, P, T, B, R, tilt + 0.3, 3.3, 0.5, uTime * 0.03 + 6.22, 0.11, vec3(0.62, 0.72, 0.84), 8.9);
   }
-  // a small ice world low over the far ridge, pale and faintly banded, with a thin bright limb
+  // a small ice world, like Europa: frost plains crossed by long rust-brown cracks, mottled chaos terrain and a
+  // blue-white cap, turning slowly
   vec3 S = ICE_DIR, ST = normalize(cross(S, vec3(0., 1., 0.))), SB = cross(ST, S);
   float ds = dot(d, S);
   if (ds > 0.99) {
-    vec2 sq = vec2(dot(d, ST), dot(d, SB)) / ds; float Rs = 0.042, sr = length(sq);
-    if (sr < Rs) {
-      vec3 ns = normalize(sq.x / Rs * ST + sq.y / Rs * SB - sqrt(max(0., 1. - sr * sr / (Rs * Rs))) * S);
-      vec3 ic = mix(vec3(0.18, 0.30, 0.41), vec3(0.45, 0.58, 0.63), 0.5 + 0.5 * sin(dot(ns, SB) * 22. + fbm3(ns.xy * 9. + ns.z) * 4.5));
-      c = bodyLight(ic, ns, -dot(ns, S), 0.06);
+    vec2 sq = vec2(dot(d, ST), dot(d, SB)) / ds; float Rs = 0.046, sr = length(sq), cov = smoothstep(Rs, Rs * 0.95, sr);
+    if (cov > 0.) {
+      vec2 u = sq / Rs; float z = sqrt(max(0., 1. - dot(u, u)));
+      vec3 ns = normalize(u.x * ST + u.y * SB - z * S), ax = normalize(vec3(0.25, 0.95, 0.15));
+      vec3 sp = spin(vec3(u, z), ax, uTime * 0.01);
+      float m1 = vnoise(sp.xy * 3.2 + 4.) * 0.6 + vnoise(sp.yz * 6.5) * 0.4;
+      vec3 ic = mix(vec3(0.78, 0.8, 0.82), vec3(0.88, 0.87, 0.83), m1);
+      ic = mix(ic, vec3(0.6, 0.44, 0.32), smoothstep(0.6, 0.8, vnoise(sp.zx * 4. - 1.)) * 0.55);
+      float cracks = 0.;
+      for (int i = 0; i < 5; i++) {
+        float fi = float(i);
+        vec3 k = normalize(vec3(sin(fi * 2.4 + 0.3), cos(fi * 1.7), sin(fi * 3.1 + 1.)));
+        float a = abs(dot(sp, k) + 0.05 * sin(dot(sp, k.yzx) * 9. + fi));
+        cracks = max(cracks, smoothstep(0.05, 0.015, a) * (0.5 + 0.5 * vnoise(sp.xy * 5. + fi)));
+      }
+      ic = mix(ic, vec3(0.45, 0.27, 0.18), cracks * 0.8);
+      ic = mix(ic, vec3(0.74, 0.86, 1.0), smoothstep(0.65, 0.88, dot(sp, ax)) * 0.7);
+      c = mix(c, bodyLight(ic, ns, z, 0.06), cov);
     }
   }
   c = companions(d, c);
@@ -514,23 +519,22 @@ void main(){
 }`);
 
 const ROCK = program(WORLD_VS + `
-uniform int uKind; in vec3 aPos; in vec3 aNor; in vec4 aI; in vec4 aS;
+in vec3 aPos; in vec3 aNor; in vec4 aI; in vec4 aS;
 out vec3 vWP; out vec3 vN; out float vH; out vec3 vLoc; out vec3 vNl;
 void main(){
   float c = cos(aI.w), s = sin(aI.w);
-  float lean = uKind == 1 ? 0.16 + 0.56 * aS.w : 0.;
-  vec3 p = aPos * aS.xyz; p.x += lean * p.y; p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
-  vec3 n = aNor / aS.xyz; n.y -= lean * n.x; n = normalize(vec3(c * n.x - s * n.z, n.y, s * n.x + c * n.z));
+  vec3 p = aPos * aS.xyz; p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
+  vec3 n = aNor / aS.xyz; n = normalize(vec3(c * n.x - s * n.z, n.y, s * n.x + c * n.z));
   vWP = p + aI.xyz; vN = n; vH = aS.w; vLoc = aPos * aS.xyz; vNl = aNor; gl_Position = project(vWP);
 }`,
-`uniform float uClip; uniform int uKind; in vec3 vWP; in vec3 vN; in float vH; in vec3 vLoc; in vec3 vNl; out vec4 o;
+`uniform float uClip; in vec3 vWP; in vec3 vN; in float vH; in vec3 vLoc; in vec3 vNl; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 N = normalize(vN); vec3 V = normalize(uCam - vWP);
   vec2 uv = fieldUV(vWP.xz); float inf = inField(uv); float glow = texture(uGlow, uv).r * inf;
   float dist = length(uCam - vWP);
   vec3 col;
-  if (uKind == 0) {
+  {
     vec3 lp = vLoc * 1.6 + vec3(vH * 17.);
     // a crack network laid on the stone from three sides (triplanar), so it never stretches
     vec3 aw = abs(normalize(vNl)); aw /= aw.x + aw.y + aw.z;
@@ -560,12 +564,33 @@ void main(){
     col = pbr(alb, mix(0.8 - 0.15 * lich, 0.14, wet * 0.9), 0., N, V);
     col += glowCol(vWP.xz + vH * 13.) * (uBio * glowI(glow) * 2.3 * moss + (0.008 + 0.05 * uNight) * moss);
     col += lichC * lich * (0.002 + 0.18 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
-  } else {
-    vec3 tint = mix(vec3(0.014, 0.72, 0.60), vec3(0.33, 0.028, 0.85), vH);
-    float fres = pow(1. - max(dot(N, V), 0.), 3.), shoreWet;
-    col = pbr(waterline(tint * 0.06, vWP, shoreWet), 0.07, 0.0, N, V) + tint * (0.012 + 0.22 * fres) * (1. + 2. * uNight) + tint * glow * 2.0 * uBio;
-    col += tint * 0.05 * (0.6 + 0.4 * sin(uTime * 0.9 + vH * 20. + vWP.y * 3.));
   }
+  o = vec4(tonemap(fogged(col, vWP)), 0.);
+}`);
+
+// crystal: clear, cool and faceted, a milky foot that clears toward the tip, veils of inclusions drifting up through it,
+// a light inside that brightens toward the tip and breathes with the wind at night, and the glow you stir around it
+const CRYSTAL = program(WORLD_VS + `
+in vec3 aPos; in vec3 aNor; in vec4 aC; out vec3 vWP; out vec3 vN; out vec4 vC;
+void main(){ vWP = aPos; vN = aNor; vC = aC; gl_Position = project(aPos); }`,
+`uniform float uClip; in vec3 vWP; in vec3 vN; in vec4 vC; out vec4 o;
+void main(){
+  if (vWP.y < uClip) discard;
+  vec3 N = normalize(vN), V = normalize(uCam - vWP);
+  vec2 uv = fieldUV(vWP.xz); float glow = texture(uGlow, uv).r * inField(uv);
+  float u = clamp(vC.y, 0., 1.), seed = vC.z;
+  vec3 tint = pigment(vC.x * 0.62), deep = tint * tint;
+  float fres = pow(1. - abs(dot(N, V)), 3.);
+  float facet = hash12(floor(N.xz * 40. + N.y * 17.));
+  float bands = 0.5 + 0.5 * sin(u * 38. + seed * 20.);
+  float veil = smoothstep(0.45, 0.8, vnoise(vec2(u * 7. + seed * 13., seed * 31. + dot(vWP, vec3(1.3, 0.4, 0.9)))));
+  float milk = 1. - smoothstep(0., 0.55, u), shoreWet;
+  vec3 body = deep * mix(0.07, 0.17, milk) * (0.8 + 0.35 * facet) * (1. - 0.3 * veil);
+  vec3 col = pbr(waterline(body, vWP, shoreWet), 0.08, 0., N, V);
+  float inner = (0.025 + 0.22 * uNight * (0.45 + 0.7 * smoothstep(-0.7, 0.85, windWave(vWP.xz)))) * (smoothstep(0.3, 1., u) * 1.4 + 0.15) * (0.8 + 0.2 * bands);
+  // and the star shining through it from behind
+  float through = pow(clamp(dot(-V, uSunDir), 0., 1.), 2.) * (0.4 + 0.6 * u) * (1. - 0.7 * uNight);
+  col += deep * (inner + (0.012 + 0.22 * fres) * (1. + uNight) + uSunCol * through * 0.14) + deep * glow * 2. * uBio * (0.4 + 0.6 * u);
   o = vec4(tonemap(fogged(col, vWP)), 0.);
 }`);
 
@@ -964,13 +989,76 @@ function rockMesh(seed, sub, tall, stack) {
   }
   return { pos: new Float32Array(pos.flat()), nor: new Float32Array(nor.map((n) => { const l = Math.hypot(...n) || 1; return n.map((x) => x / l); }).flat()), idx: new Uint32Array(f.flat()) };
 }
-function crystalMesh() {
-  const pos = [], nor = [], idx = [];
-  const ring = (r, y, twist = 0) => Array.from({ length: 6 }, (_, i) => { const a = i / 6 * Math.PI * 2 + twist, radius = r * (0.94 + 0.06 * Math.sin(i * 4)); return [Math.cos(a) * radius, y, Math.sin(a) * radius]; });
-  const lo = ring(0.16, -0.1), mid = ring(0.165, 0.42, 0.10), hi = ring(0.13, 0.78, 0.16), tip = [0.035, 1.05, -0.02];
-  const tri = (A, B, C) => { const u = B.map((c, i) => c - A[i]), w = C.map((c, i) => c - A[i]); let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]]; const l = Math.hypot(...n); n = n.map((x) => x / l); for (const P of [A, B, C]) { pos.push(...P); nor.push(...n); idx.push(idx.length); } };
-  for (let i = 0; i < 6; i++) { const j = (i + 1) % 6; tri(lo[i], mid[i], lo[j]); tri(lo[j], mid[i], mid[j]); tri(mid[i], hi[i], mid[j]); tri(mid[j], hi[i], hi[j]); tri(hi[i], tip, hi[j]); }
-  return { pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
+// crystals, each grown on its own: an uneven hexagonal prism that swells a little, then narrows into a pyramid set off
+// its axis (or snapped flat where it broke), a child crystal now and then at its foot. Every crystal leans, between 7 and
+// 43 degrees and roughly away from its cluster's heart, as a druse grows. Each one is a capsule for spacing, and is only
+// kept when it clears every capsule already grown, so no two crystals ever pass through each other.
+const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const clamp01 = (x) => Math.min(1, Math.max(0, x));
+/** The least distance between the segments p1 q1 and p2 q2. */
+function segDist(p1, q1, p2, q2) {
+  const d1 = sub3(q1, p1), d2 = sub3(q2, p2), w = sub3(p1, p2), a = dot3(d1, d1), e = dot3(d2, d2), b = dot3(d1, d2), c = dot3(d1, w), f = dot3(d2, w), den = a * e - b * b;
+  let s = den > 1e-9 ? clamp01((b * f - c * e) / den) : 0, t = (b * s + f) / e;
+  if (t < 0) { t = 0; s = clamp01(-c / a); } else if (t > 1) { t = 1; s = clamp01((b - c) / a); }
+  return Math.hypot(...sub3([p1[0] + d1[0] * s, p1[1] + d1[1] * s, p1[2] + d1[2] * s], [p2[0] + d2[0] * t, p2[1] + d2[1] * t, p2[2] + d2[2] * t]));
+}
+function growCrystals(sites) {
+  const r = rng(4747), W = { pos: [], nor: [], c: [] }, caps = [];
+  const fits = (a, b, rad) => caps.every(([p, q, cr]) => segDist(a, b, p, q) > rad + cr + 0.025);
+  // one face, wound and lit outward from the crystal's axis point m
+  const tri = (A, B, C, m, attr) => {
+    const u = sub3(B, A), w = sub3(C, A); let n = norm(cross(u, w));
+    const ctr = [(A[0] + B[0] + C[0]) / 3 - m[0], (A[1] + B[1] + C[1]) / 3 - m[1], (A[2] + B[2] + C[2]) / 3 - m[2]];
+    if (dot3(n, ctr) < 0) { n = n.map((x) => -x); [B, C] = [C, B]; }
+    for (const P of [A, B, C]) { W.pos.push(...P); W.nor.push(...n); W.c.push(attr[0], attr[1](P), attr[2], 0); }
+  };
+  const crystal = (base, dir, L, rad, hue) => {
+    const top = [base[0] + dir[0] * L, base[1] + dir[1] * L, base[2] + dir[2] * L];
+    if (!fits(base, top, rad * 1.08)) return false;
+    caps.push([base, top, rad * 1.08]);
+    const e1 = norm(cross(dir, Math.abs(dir[1]) < 0.95 ? [0, 1, 0] : [1, 0, 0])), e2 = cross(dir, e1), seed = r();
+    const corner = Array.from({ length: 6 }, () => 0.8 + 0.38 * r()), twist = (r() - 0.5) * 0.12, swell = 1 + r() * 0.1;
+    const at = (u, k, s) => { const a = k / 6 * Math.PI * 2 + twist * u, q = rad * corner[k % 6] * s; return [base[0] + dir[0] * L * u + (e1[0] * Math.cos(a) + e2[0] * Math.sin(a)) * q, base[1] + dir[1] * L * u + (e1[1] * Math.cos(a) + e2[1] * Math.sin(a)) * q, base[2] + dir[2] * L * u + (e1[2] * Math.cos(a) + e2[2] * Math.sin(a)) * q]; };
+    const along = (P) => dot3(sub3(P, base), dir) / L, attr = [hue, along, seed];
+    const broken = r() < 0.22, shoulder = broken ? 0.86 : 0.7 + r() * 0.1;
+    const rings = [[-0.12, 1], [0.38, swell], [shoulder, 0.97]];
+    for (let j = 0; j < rings.length - 1; j++) for (let k = 0; k < 6; k++) {
+      const a0 = at(rings[j][0], k, rings[j][1]), a1 = at(rings[j][0], k + 1, rings[j][1]), b0 = at(rings[j + 1][0], k, rings[j + 1][1]), b1 = at(rings[j + 1][0], k + 1, rings[j + 1][1]);
+      const m = [base[0] + dir[0] * L * 0.4, base[1] + dir[1] * L * 0.4, base[2] + dir[2] * L * 0.4];
+      tri(a0, a1, b0, m, attr); tri(a1, b1, b0, m, attr);
+    }
+    const m = [base[0] + dir[0] * L * shoulder, base[1] + dir[1] * L * shoulder, base[2] + dir[2] * L * shoulder];
+    if (broken) {
+      // a snapped top: a flat, slightly tilted break with a bevel
+      const cap = Array.from({ length: 6 }, (_, k) => at(0.9 + 0.05 * Math.sin(k + seed * 9), k, 0.82));
+      const mid = [cap.reduce((s, p) => s + p[0], 0) / 6, cap.reduce((s, p) => s + p[1], 0) / 6, cap.reduce((s, p) => s + p[2], 0) / 6];
+      for (let k = 0; k < 6; k++) { const s0 = at(shoulder, k, 0.97), s1 = at(shoulder, k + 1, 0.97); tri(s0, s1, cap[k], m, attr); tri(s1, cap[(k + 1) % 6], cap[k], m, attr); tri(cap[k], cap[(k + 1) % 6], mid, [mid[0] - dir[0], mid[1] - dir[1], mid[2] - dir[2]], attr); }
+    } else {
+      const off = [(r() - 0.5) * 0.7 * rad, (r() - 0.5) * 0.7 * rad], tip = [top[0] + e1[0] * off[0] + e2[0] * off[1], top[1] + e1[1] * off[0] + e2[1] * off[1], top[2] + e1[2] * off[0] + e2[2] * off[1]];
+      for (let k = 0; k < 6; k++) tri(at(shoulder, k, 0.97), at(shoulder, k + 1, 0.97), tip, m, attr);
+    }
+    return true;
+  };
+  const lean = (out, t) => { const a = Math.atan2(out[1], out[0]); return [Math.sin(t) * Math.cos(a), Math.cos(t), Math.sin(t) * Math.sin(a)]; };
+  for (const [cx, cz, hue, n, size] of sites) {
+    for (let i = 0, tries = 0; i < n && tries < n * 40; tries++) {
+      const first = i === 0, ang = r() * 6.2832, d = first ? r() * 0.12 : 0.12 + r() * 0.6 * size;
+      const x = cx + Math.cos(ang) * d, z = cz + Math.sin(ang) * d;
+      const L = (first ? 1.5 + r() * 0.9 : 0.45 + Math.pow(r(), 1.4) * 1.5) * size, rad = L * (0.085 + r() * 0.05);
+      const t = first ? 0.12 + r() * 0.22 : 0.22 + r() * 0.53, wob = (r() - 0.5) * 1.1;
+      const dir = lean([Math.cos(ang + wob), Math.sin(ang + wob)], t);
+      const base = [x - dir[0] * 0.12 * L, H(x, z) - 0.05 - dir[1] * 0.12 * L, z - dir[2] * 0.12 * L];
+      if (!crystal(base, dir, L, rad, clamp01(hue + (r() - 0.5) * 0.16))) continue;
+      i++;
+      // a child at the foot, leaning harder
+      if (r() < 0.35) {
+        const ca = ang + (r() - 0.5) * 2, cl = L * (0.3 + r() * 0.25), cd = lean([Math.cos(ca), Math.sin(ca)], t + 0.3 + r() * 0.35);
+        const cx2 = x + Math.cos(ca) * rad * 1.6, cz2 = z + Math.sin(ca) * rad * 1.6;
+        crystal([cx2 - cd[0] * 0.12 * cl, H(cx2, cz2) - 0.04 - cd[1] * 0.12 * cl, cz2 - cd[2] * 0.12 * cl], cd, cl, cl * (0.1 + r() * 0.04), clamp01(hue + (r() - 0.5) * 0.2));
+      }
+    }
+  }
+  return { pos: new Float32Array(W.pos), nor: new Float32Array(W.nor), c: new Float32Array(W.c), count: W.pos.length / 3, caps };
 }
 
 // ---------------------------------------------------------------- scatter
@@ -1053,23 +1141,12 @@ function scatter() {
     const s0 = 0.04 + Math.pow(r(), 2) * 0.18; add(3, x, z, s0, s0 * 0.7, s0 * (0.8 + 0.4 * r()), 0.01);
   }
 
-  const crys = [], csc = [], crystalBounds = [];
+  // crystal clusters along the shore, grown later (see growCrystals): [x, z, hue, crystals, size]
+  const crystalSites = [];
   for (let c = 0; c < 17; c++) {
     let cx, cz, k = 0;
     do { cx = LAKE[0] + (r() * 2 - 1) * 36; cz = LAKE[1] + (r() * 2 - 1) * 30; k++; } while ((lakeD(cx, cz) < 11.2 || lakeD(cx, cz) > 13.8 || !clearOf(cx, cz)) && k < 80);
-    const hue = r();
-    for (let grown = 0, tries = 0; grown < 6 && tries < 60; tries++) {
-      const az = r() * Math.PI * 2, d = Math.sqrt(r()) * 2.7;
-      const x = cx + Math.cos(az) * d, z = cz + Math.sin(az) * d;
-      const width = 0.65 + 0.55 * r(), height = 0.58 + 1.45 * r(), color = Math.min(1, Math.max(0, hue + (r() - 0.5) * 0.28));
-      const lean = 0.16 + 0.56 * color;
-      // The tilted prism fits inside this horizontal disc, including its buried base and offset tip.
-      const reach = 0.18 * width + 1.06 * height * lean;
-      if (!clearOf(x, z) || crystalBounds.some(b => Math.hypot(x - b.x, z - b.z) < reach + b.reach)) continue;
-      crystalBounds.push({ x, z, reach });
-      crys.push(x, H(x, z) - 0.05, z, az); csc.push(width, height, width, color);
-      grown++;
-    }
+    crystalSites.push([cx, cz, r(), 5 + Math.floor(r() * 6), 0.8 + r() * 0.5]);
   }
 
   // junipers in three sizes of the one species: the common tree, saplings that gather round it and in groves of
@@ -1093,7 +1170,7 @@ function scatter() {
     const cx = (r() * 2 - 1) * (HALF - 6), cz = (r() * 2 - 1) * (HALF - 6);
     for (let k = 0, m = 3 + Math.floor(r() * 5); k < m; k++) sapling(cx + (r() - 0.5) * 6, cz + (r() - 0.5) * 6);
   }
-  return { G: new Float32Array(G), R: new Float32Array(R), rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), crys: new Float32Array(crys), csc: new Float32Array(csc), trees: new Float32Array(trees) };
+  return { G: new Float32Array(G), R: new Float32Array(R), rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), crystalSites, trees: new Float32Array(trees) };
 }
 
 // ---------------------------------------------------------------- junipers
@@ -1111,8 +1188,9 @@ function tube(W, pts, rad, sides, f0, f1, base, seed) {
     const fl = f0 + (f1 - f0) * k / (n - 1);
     for (let q = 0; q <= sides; q++) {
       const ang = q / sides * 6.2832, c = Math.cos(ang), sn = Math.sin(ang), o = [Nn[0] * c + B[0] * sn, Nn[1] * c + B[1] * sn, Nn[2] * c + B[2] * sn];
-      const radius = rad[k] * (1 + 0.12 * Math.cos(3 * ang + along * 0.6 + seed) + 0.06 * Math.sin(5 * ang - along * 0.3));
-      W.pos.push(pts[k][0] + o[0] * radius, pts[k][1] + o[1] * radius, pts[k][2] + o[2] * radius); W.nor.push(...o);
+      const lobe = 1 + 0.12 * Math.cos(3 * ang + along * 0.6 + seed) + 0.06 * Math.sin(5 * ang - along * 0.3), radius = rad[k] * lobe;
+      const dLobe = -0.36 * Math.sin(3 * ang + along * 0.6 + seed) + 0.3 * Math.cos(5 * ang - along * 0.3), t = [-Nn[0] * sn + B[0] * c, -Nn[1] * sn + B[1] * c, -Nn[2] * sn + B[2] * c];
+      W.pos.push(pts[k][0] + o[0] * radius, pts[k][1] + o[1] * radius, pts[k][2] + o[2] * radius); W.nor.push(...norm([o[0] * lobe - t[0] * dLobe, o[1] * lobe - t[1] * dLobe, o[2] * lobe - t[2] * dLobe]));
       W.w.push(fl, along, ang, seed); W.b.push(...base);
     }
   }
@@ -1338,12 +1416,12 @@ class Tiled {
 // ---------------------------------------------------------------- build the scene
 const loc = (p, n) => gl.getAttribLocation(p, n);
 const near = terrainNear(), far = terrainFar(), wm = waterMesh(), sc = scatter(), forest = growForest(sc), pl = plantScatter(sc), motes = moteScatter();
-const rockGeos = [rockMesh(1.3, 3, false), rockMesh(4.1, 3, false), rockMesh(7.7, 3, true), rockMesh(2.2, 1, false), STACK_GEO], crysGeo = crystalMesh();
+const rockGeos = [rockMesh(1.3, 3, false), rockMesh(4.1, 3, false), rockMesh(7.7, 3, true), rockMesh(2.2, 1, false), STACK_GEO], crystals = growCrystals(sc.crystalSites);
 const vNear = vao([{ loc: loc(TERRAIN, 'aPos'), size: 3, data: near.pos }, { loc: loc(TERRAIN, 'aNor'), size: 3, data: near.nor }, { loc: loc(TERRAIN, 'aTrail'), size: 1, data: near.path }], near.idx);
 const vFar = vao([{ loc: loc(TERRAIN, 'aPos'), size: 3, data: far.pos }, { loc: loc(TERRAIN, 'aNor'), size: 3, data: far.nor }], far.idx);
 const vWater = vao([{ loc: loc(WATERP, 'aXZ'), size: 2, data: wm.xz }, { loc: loc(WATERP, 'aLevel'), size: 1, data: wm.levels }, { loc: loc(WATERP, 'aDepth'), size: 1, data: wm.dep }], wm.idx);
 const vRocks = rockGeos.map((g, k) => vao([{ loc: loc(ROCK, 'aPos'), size: 3, data: g.pos }, { loc: loc(ROCK, 'aNor'), size: 3, data: g.nor }, { loc: loc(ROCK, 'aI'), size: 4, data: sc.rv[k], div: 1 }, { loc: loc(ROCK, 'aS'), size: 4, data: sc.rs[k], div: 1 }], g.idx));
-const vCrys = vao([{ loc: loc(ROCK, 'aPos'), size: 3, data: crysGeo.pos }, { loc: loc(ROCK, 'aNor'), size: 3, data: crysGeo.nor }, { loc: loc(ROCK, 'aI'), size: 4, data: sc.crys, div: 1 }, { loc: loc(ROCK, 'aS'), size: 4, data: sc.csc, div: 1 }], crysGeo.idx);
+const vCrys = vao([{ loc: loc(CRYSTAL, 'aPos'), size: 3, data: crystals.pos }, { loc: loc(CRYSTAL, 'aNor'), size: 3, data: crystals.nor }, { loc: loc(CRYSTAL, 'aC'), size: 4, data: crystals.c }]);
 const vWood = vao([{ loc: loc(WOOD, 'aPos'), size: 3, data: forest.pos }, { loc: loc(WOOD, 'aNor'), size: 3, data: forest.nor }, { loc: loc(WOOD, 'aW'), size: 4, data: forest.w }, { loc: loc(WOOD, 'aB'), size: 4, data: forest.b }], forest.idx);
 const grass = new Tiled(GRASS, { aG: sc.G, aR: sc.R }, (i) => [sc.G[i * 4], sc.G[i * 4 + 2], sc.G[i * 4 + 1]], 1.4, 7, 18, 0.06);
 const leaves = new Tiled(JLEAF, { aR: forest.R, aD: forest.D, aM: forest.M, aB: forest.B }, (i) => [forest.R[i * 4], forest.R[i * 4 + 1], forest.R[i * 4 + 2]], (i) => 1.5 * forest.D[i * 4 + 3] + 1, 13, 40, 0.3);
@@ -1637,9 +1715,8 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   gl.bindVertexArray(vNear); gl.drawElements(gl.TRIANGLES, near.idx.length, gl.UNSIGNED_INT, 0);
   gl.bindVertexArray(vFar); gl.drawElements(gl.TRIANGLES, far.idx.length, gl.UNSIGNED_INT, 0);
   common(ROCK, eye, VP, mirror, t);
-  gl.uniform1i(ROCK.u('uKind'), 0);
   for (let k = 0; k < rockGeos.length; k++) { if (!sc.rv[k].length || (k === 3 && mirror < 0)) continue; gl.bindVertexArray(vRocks[k]); gl.drawElementsInstanced(gl.TRIANGLES, rockGeos[k].idx.length, gl.UNSIGNED_INT, 0, sc.rv[k].length / 4); }
-  gl.uniform1i(ROCK.u('uKind'), 1); gl.bindVertexArray(vCrys); gl.drawElementsInstanced(gl.TRIANGLES, crysGeo.idx.length, gl.UNSIGNED_INT, 0, sc.crys.length / 4);
+  common(CRYSTAL, eye, VP, mirror, t); gl.bindVertexArray(vCrys); gl.drawArrays(gl.TRIANGLES, 0, crystals.count);
   gl.disable(gl.CULL_FACE);
   common(WOOD, eye, VP, mirror, t); gl.bindVertexArray(vWood); gl.drawElements(gl.TRIANGLES, forest.idx.length, gl.UNSIGNED_INT, 0);
   common(JLEAF, eye, VP, mirror, t); leaves.draw(VP, eye, mirror);
@@ -1860,6 +1937,7 @@ const VIEWS = {
   stack: { eye: [ISLET[0] + 9, 1.4, ISLET[1] + 6], yaw: -0.98, pitch: -0.08, motes: false },
   galaxy: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 2.6, pitch: 0.75, motes: false },
   get coil() { return plantView(3); },
+  get crystals() { const [x, z] = sc.crystalSites[3], ex = x + 2.4, ez = z + 2.4; return { eye: [ex, H(ex, ez) + 1.4, ez], yaw: -0.785, pitch: -0.28, motes: false }; },
   get lantern() { return plantView(4); },
   get grove() { const x = sc.trees[7 * 5] + 2.2, z = sc.trees[7 * 5 + 2] + 2.2; return { eye: [x, H(x, z) + 1.1, z], yaw: -0.785, pitch: -0.3, motes: false }; },
 };
