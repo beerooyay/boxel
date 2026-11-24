@@ -109,6 +109,23 @@ await __game.verify('river');
 The reported session timer covers the simulation loop. Texture upload, rendering and readback
 occur outside that timer. Field storage excludes the renderer and the rest of the browser.
 
+## Cores
+
+`boxel-bench --features parallel cores`: the open-world crowds of the trails field, 20 s each,
+on one thread and then on all four of this machine's, ms per frame over the second half. The
+last column compares a hash of every block at the end.
+
+| world | walkers | blocks awake | 1 thread, ms / frame | 4 threads, ms / frame | speedup | same bits |
+|---|---|---|---|---|---|---|
+| 1024 m | 1000 | 35 357 | 11.96 | 5.91 | 2.03× | yes |
+| 4096 m | 1000 | 37 566 | 13.13 | 6.48 | 2.03× | yes |
+| 4096 m | 4000 | 148 698 | 89.93 | 36.90 | 2.44× | yes |
+| 4096 m | 10 000 | 363 515 | 249.96 | 96.49 | 2.59× | yes |
+
+Blocks only split across threads once there are 96 of them to each; below that, starting the
+threads costs more than they save. `tests/cores.rs` steps a storm on one thread and on eight and
+compares every block, bit for bit, as it goes.
+
 ## Same bits everywhere
 
 `boxel-bench replay` writes a 30 s storm session as events (f32 bit patterns) and hashes the

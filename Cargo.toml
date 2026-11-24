@@ -8,6 +8,10 @@ repository = "https://github.com/beerooyay/boxel"
 keywords = ["simulation", "diffusion", "gamedev", "no-std", "certified"]
 categories = ["game-development", "simulation", "no-std"]
 
+[features]
+# step large windows across cores with std threads; the default build is no_std with no dependencies
+parallel = []
+
 [workspace]
 members = ["ffi", "bench"]
 

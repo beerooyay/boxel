@@ -31,6 +31,7 @@ fn main() {
     match what.as_str() {
         "acre" => acre(),
         "world" => world(),
+        "cores" => cores(),
         "cone" => cone(),
         "replay" => replay(),
         _ => eprintln!("usage: boxel-bench acre | world | cone | replay"),
@@ -209,7 +210,19 @@ struct Open {
 }
 
 fn crowd(side: i64, walkers: usize, seconds: f64) -> Open {
+    crowd_on(side, walkers, seconds, None).0
+}
+
+/// The crowd on a given number of threads (the build's default when `None`), and a hash of the
+/// field it ends with.
+fn crowd_on(side: i64, walkers: usize, seconds: f64, threads: Option<usize>) -> (Open, u64) {
     let mut field = Field::new(trails()).unwrap();
+    #[cfg(feature = "parallel")]
+    if let Some(n) = threads {
+        field.set_threads(n);
+    }
+    #[cfg(not(feature = "parallel"))]
+    let _ = threads;
     let mut people = Crowd::new(walkers, side, 9);
     let mut drops = Vec::new();
     let frames = (seconds * FPS) as u32;
@@ -232,7 +245,13 @@ fn crowd(side: i64, walkers: usize, seconds: f64) -> Open {
     }
     let n = (frames - settle) as f64;
     let s = field.stats();
-    Open {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for (bx, by, values) in field.blocks() {
+        for v in [bx as u32, by as u32].into_iter().chain(values.iter().map(|v| v.to_bits())) {
+            hash = (hash ^ v as u64).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    let open = Open {
         ms: ms / n,
         blocks: blocks / n,
         bytes,
@@ -240,7 +259,8 @@ fn crowd(side: i64, walkers: usize, seconds: f64) -> Open {
         violations: s.violations,
         merged: s.merged,
         deposits: s.deposits,
-    }
+    };
+    (open, hash)
 }
 
 fn world() {
@@ -313,6 +333,35 @@ fn world() {
         worst / glow().tolerance as f64,
         field.stats().violations
     );
+}
+
+// ---- cores: the same crowds on one thread and on all of them ---------------------------------
+
+#[cfg(feature = "parallel")]
+fn cores() {
+    let all = std::thread::available_parallelism().map_or(1, |n| n.get());
+    println!(
+        "| world | walkers | blocks awake | 1 thread, ms / frame | {all} threads, ms / frame | speedup | same bits |"
+    );
+    println!("|---|---|---|---|---|---|---|");
+    for (side, walkers) in [(1i64 << 13, 1000usize), (1 << 15, 1000), (1 << 15, 4000), (1 << 15, 10_000)] {
+        let (one, h1) = crowd_on(side, walkers, 20.0, Some(1));
+        let (many, hn) = crowd_on(side, walkers, 20.0, Some(all));
+        println!(
+            "| {:.0} m | {walkers} | {:.0} | {:.2} | {:.2} | {:.2}× | {} |",
+            side as f64 * scenes::CELL,
+            one.blocks,
+            one.ms,
+            many.ms,
+            one.ms / many.ms,
+            if h1 == hn { "yes" } else { "NO" }
+        );
+    }
+}
+
+#[cfg(not(feature = "parallel"))]
+fn cores() {
+    eprintln!("cores compares threads: build with --features parallel");
 }
 
 // ---- cone: the paper's lattice footprints, certified -------------------------------------------

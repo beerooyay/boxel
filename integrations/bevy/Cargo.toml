@@ -6,7 +6,16 @@ publish = false
 
 [workspace]
 
+[features]
+default = ["image"]
+# keep a texture of each field's window current, block by block
+image = ["dep:bevy_asset", "dep:bevy_image", "dep:bevy_math", "dep:wgpu-types"]
+
 [dependencies]
-boxel = { path = "../.." }
+boxel = { path = "../..", features = ["parallel"] }
 bevy_app = { version = "0.20", default-features = false }
-bevy_ecs = { version = "0.20", default-features = false }
+bevy_ecs = { version = "0.20", default-features = false, features = ["multi_threaded"] }
+bevy_asset = { version = "0.20", default-features = false, optional = true }
+bevy_image = { version = "0.20", default-features = false, optional = true }
+bevy_math = { version = "0.20", default-features = false, optional = true }
+wgpu-types = { version = "30", default-features = false, optional = true }

@@ -23,6 +23,10 @@
 //! The crate is `no_std`, has no dependencies, and uses no transcendental functions at run
 //! time, so a field gives the same bits on every machine.
 //!
+//! With the `parallel` feature it uses `std` threads to step a large window's blocks across
+//! cores. Every block is computed exactly as it is on one core and the bookkeeping stays serial,
+//! so the field holds the same bits on any number of threads.
+//!
 //! ```
 //! use boxel::{Field, Spec};
 //!
@@ -37,6 +41,8 @@
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
+#[cfg(feature = "parallel")]
+extern crate std;
 
 pub mod cone;
 pub mod field;

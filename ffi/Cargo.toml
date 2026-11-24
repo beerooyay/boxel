@@ -6,3 +6,6 @@ edition = "2024"
 crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 boxel = { path = ".." }
+
+[features]
+parallel = ["boxel/parallel"]

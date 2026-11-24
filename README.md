@@ -114,14 +114,19 @@ The whole interface is deposit, drain, rain, step, sample, and the blocks in the
 host maps world positions to integer cells, steps at a fixed rate, and copies blocks into
 whatever it draws with.
 
-- **Rust and Bevy**: depend on the crate. It is `no_std` with no dependencies.
+- **Rust**: depend on the crate. It is `no_std` with no dependencies. Turn on the `parallel`
+  feature and a large window's blocks step across cores, on `std` threads, holding the same bits
+  as on one: two to two and a half times faster on four cores for a crowd of a thousand to ten
+  thousand walkers ([cores](docs/results.md#cores)).
 - **Unity, Unreal, Godot, C, C++**: link `boxel_ffi` (static or shared) through
   [`ffi/boxel.h`](ffi/boxel.h). Upload `boxel_block_data` into a texture region per block.
 - **The web**: [`ffi/boxel.js`](ffi/boxel.js) over the wasm build, about 60 KB. The demo is the
   example.
 - **Bevy** can step one field per entity in `FixedUpdate` with the optional
   [Boxel plugin](integrations/bevy/src/lib.rs). Match the fixed clock to the field spec.
-  Run its example as a doctest with `cargo test --manifest-path integrations/bevy/Cargo.toml`.
+  Fields step in parallel with each other, and a `BoxelImage` beside a field keeps a texture of
+  its window current, block by block, to sample in any material. Run its tests with
+  `cargo test --manifest-path integrations/bevy/Cargo.toml`.
 
 Fields compose. Each one has its own spread and fade, so footprints, wetness, heat, scent and
 fog of war are the same three calls with different numbers.
@@ -135,7 +140,7 @@ fog of war are the same three calls with different numbers.
 | `ffi/` | the C ABI, its header, and the JavaScript binding |
 | `bench/` | every number in `docs/results.md`, and the wasm replay |
 | `demo/` | Tarnished Promise |
-| `integrations/bevy/` | standalone Bevy ECS adapter |
+| `integrations/bevy/` | standalone Bevy plugin: fields as components, windows as textures |
 | `docs/` | [the certificate](docs/certificate.md), [results](docs/results.md) |
 
 ```sh
@@ -143,6 +148,7 @@ cargo test --release
 cargo run --release -p boxel-bench -- cone      # the paper's tables, certified
 cargo run --release -p boxel-bench -- acre      # the demo's fields: boxel, dense, guessing
 cargo run --release -p boxel-bench -- world     # open worlds
+cargo run --release -p boxel-bench --features parallel -- cores   # one thread against all of them
 cargo run --release -p boxel-bench -- replay replay.json && node bench/replay.mjs replay.json target/wasm32-unknown-unknown/release/boxel_ffi.wasm
 ```
 
@@ -158,8 +164,10 @@ cargo run --release -p boxel-bench -- replay replay.json && node bench/replay.mj
   twice what a dense cell row does per cell. In a spore storm over an entire acre boxel takes
   0.15 ms against 0.09 ms, and a thousand walkers crammed onto 256 m cost it 11 ms against 2.
   The promise holds either way.
-- **One thread.** Awake blocks are independent within a step, so they split across cores
-  cleanly; that is next.
+- **The bookkeeping is serial.** Stepping blocks splits across cores, but placing events,
+  ageing, retiring and closing blocks stay on one, which is what holds the speedup near 2.5× on
+  four cores. The web build runs on one thread, since the page cannot share memory between
+  workers without headers the host does not send.
 
 ## Credits
 

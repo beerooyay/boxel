@@ -147,6 +147,32 @@ pub struct Field {
     sheet: f32,
     step: u64,
     stats: Stats,
+    #[cfg(feature = "parallel")]
+    threads: usize,
+}
+
+/// Below this many awake blocks for each thread, starting the threads costs more than they save.
+#[cfg(feature = "parallel")]
+const PARALLEL_BLOCKS: usize = 96;
+#[cfg(feature = "parallel")]
+const MAX_THREADS: usize = 16;
+
+/// The pages of `next`, handed to the threads that step them. See `Field::step_blocks`.
+#[cfg(feature = "parallel")]
+#[derive(Clone, Copy)]
+struct Pages(*mut Block);
+#[cfg(feature = "parallel")]
+unsafe impl Send for Pages {}
+#[cfg(feature = "parallel")]
+unsafe impl Sync for Pages {}
+#[cfg(feature = "parallel")]
+impl Pages {
+    /// # Safety
+    /// `p` is in bounds, and no other reference to page `p` is alive while this one is.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn page(&self, p: usize) -> &mut Block {
+        unsafe { &mut *self.0.add(p) }
+    }
 }
 
 #[inline(always)]
@@ -225,6 +251,8 @@ impl Field {
             sheet: 0.0,
             step: 0,
             stats: Stats::default(),
+            #[cfg(feature = "parallel")]
+            threads: std::thread::available_parallelism().map_or(1, |n| n.get().min(MAX_THREADS)),
         })
     }
 
@@ -279,15 +307,9 @@ impl Field {
         self.age();
         self.retire();
         self.sweep();
-        let (a, c0) = (self.spread, self.centre);
-        for &p in &self.awake {
-            let p = p as usize;
-            let [u, d, l, r] = self.links[p];
-            let n = &self.now;
-            step_block(&n[p], &n[u as usize], &n[d as usize], &n[l as usize], &n[r as usize], a, c0, &mut self.next[p]);
-        }
+        self.step_blocks();
         core::mem::swap(&mut self.now, &mut self.next);
-        let s = self.sheet;
+        let (a, c0, s) = (self.spread, self.centre, self.sheet);
         self.sheet = flush(c0 * s + a * (s + s + s + s));
         // everything that only decays is rounded up as it decays, so it never decays too fast
         let keep = (1.0 - self.spec.fade as f64).next_up();
@@ -304,6 +326,57 @@ impl Field {
         self.stats.stepped += (self.awake.len() * AREA) as u64;
         self.stats.steps += 1;
         self.step += 1;
+    }
+
+    /// Step every awake block from `now` into `next`, on one core.
+    fn step_serial(&mut self) {
+        let (a, c0) = (self.spread, self.centre);
+        for &p in &self.awake {
+            let p = p as usize;
+            let [u, d, l, r] = self.links[p];
+            let n = &self.now;
+            step_block(&n[p], &n[u as usize], &n[d as usize], &n[l as usize], &n[r as usize], a, c0, &mut self.next[p]);
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    fn step_blocks(&mut self) {
+        self.step_serial();
+    }
+
+    /// Step every awake block, split across threads when there is enough of them to pay for the
+    /// threads. A block reads only `now` and writes only its own page of `next`, so the parts
+    /// share nothing they write.
+    #[cfg(feature = "parallel")]
+    fn step_blocks(&mut self) {
+        let threads = self.threads.min(self.awake.len() / PARALLEL_BLOCKS);
+        if threads < 2 {
+            return self.step_serial();
+        }
+        let (a, c0) = (self.spread, self.centre);
+        let (now, links, next) = (&self.now, &self.links, Pages(self.next.as_mut_ptr()));
+        std::thread::scope(|s| {
+            for part in self.awake.chunks(self.awake.len().div_ceil(threads)) {
+                s.spawn(move || {
+                    for &p in part {
+                        let p = p as usize;
+                        let [u, d, l, r] = links[p];
+                        let n = now;
+                        // SAFETY: a page is awake at most once, so no two threads ever hold the same page of
+                        // `next`, every awake page is in bounds of it, and nothing else touches `next` until the
+                        // scope has joined every thread.
+                        let out = unsafe { next.page(p) };
+                        step_block(&n[p], &n[u as usize], &n[d as usize], &n[l as usize], &n[r as usize], a, c0, out);
+                    }
+                });
+            }
+        });
+    }
+
+    /// Step on at most `n` threads (at least one). Results do not depend on it.
+    #[cfg(feature = "parallel")]
+    pub fn set_threads(&mut self, n: usize) {
+        self.threads = n.max(1);
     }
 
     /// The field at a cell, sheet included.
