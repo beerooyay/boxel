@@ -78,6 +78,8 @@ hundred thousand cells apart cost what two events cost.
 
 ## The demo: Tarnished Promise
 
+[Play Tarnished Promise in your browser](https://beerooyay.github.io/boxel/).
+
 Tarn is a four-acre lakeshore in a valley under a snowy range, beneath an amber giant and its three
 moons, a storm-swirled rose giant and its moon, and a cloud-swirled ocean world with crossed rings. At night the galaxy rises over the
 peaks: twelve thousand stars and a band painted once into a cube map, turning with the sky. A

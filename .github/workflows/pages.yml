@@ -1,0 +1,42 @@
+name: Publish Tarnished Promise
+
+on:
+  push:
+    branches: [main]
+    paths: ['demo/**', 'ffi/boxel.js', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Stage the browser demo and its WASM binding
+        run: |
+          mkdir -p site/ffi
+          cp -R demo site/demo
+          cp ffi/boxel.js site/ffi/
+          sed 's|src="game.js"|src="./demo/game.js"|' demo/index.html > site/index.html
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - id: pages
+        uses: actions/deploy-pages@v5

@@ -69,6 +69,8 @@ function H(x, z) {
   const range = e * scale, m = sm(84, 520, range);
   if (m > 0) {
     const mx = x * scale, mz = z * scale;
+    const drainage = Math.abs(2 * fbm(mx * 0.011 + 8, mz * 0.006 - 3, 3) - 0.85);
+    h -= 9 * m * m * (1 - sm(0.02, 0.16, drainage));
     // broad ridges, and on their crests a second, sharper set: crags, horns and notches
     const rg = ridged(mx * 0.0035 + 2, mz * 0.0035 - 4), crag = ridged(mx * 0.013 + 7, mz * 0.013 - 3);
     h += m * m * (18 + 115 * rg + 18 * crag * crag * rg) + sm(84, 170, range) * 6 * fbm(mx * 0.02, mz * 0.02);
@@ -157,7 +159,7 @@ class Layer {
 function quantise(src, dst, at) { for (let i = 0; i < src.length; i++) { const v = src[i] * 255 + 0.5; dst[at + i] = v > 255 ? 255 : v; } }
 
 async function loadEngine() {
-  return { kind: 'boxel · Rust → wasm', boxel: await load(fetch('boxel.wasm')) };
+  return { kind: 'boxel · Rust → wasm', boxel: await load(fetch(new URL('./boxel.wasm', import.meta.url))) };
 }
 
 // ---------------------------------------------------------------- GL helpers
@@ -930,17 +932,29 @@ function terrainNear() {
   return { path, pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
 }
 function terrainFar() {
-  const R = touch ? 150 : 190, A = touch ? 320 : 512, pos = [], nor = [], idx = [], edge = NEAR.half - 0.5;
-  for (let j = 0; j <= R; j++) {
-    const r = 72 * Math.pow(1500 / 72, j / R);
-    for (let i = 0; i <= A; i++) {
-      const a = i / A * Math.PI * 2, x = Math.cos(a) * r, z = Math.sin(a) * r;
+  const rings = touch ? 150 : 190, sectors = touch ? 320 : 512, stride = sectors + 1, edge = NEAR.half - 0.5;
+  const pos = new Float32Array((rings + 1) * stride * 3), nor = new Float32Array(pos.length);
+  const idx = new Uint32Array(rings * sectors * 6);
+  for (let j = 0; j <= rings; j++) {
+    const r = 72 * Math.pow(1500 / 72, j / rings);
+    for (let i = 0; i <= sectors; i++) {
+      const a = (i % sectors) / sectors * Math.PI * 2, x = Math.cos(a) * r, z = Math.sin(a) * r;
       const inside = Math.abs(x) < edge && Math.abs(z) < edge;
-      pos.push(x, H(x, z) - (inside ? 4 : 0), z); nor.push(...normalAt(x, z, Math.max(0.15, r * 0.012)));
+      pos.set([x, H(x, z) - (inside ? 4 : 0), z], 3 * (j * stride + i));
     }
   }
-  for (let j = 0; j < R; j++) for (let i = 0; i < A; i++) { const a = j * (A + 1) + i, b = a + 1, c = a + A + 1, d = c + 1; idx.push(a, b, c, b, d, c); }
-  return { pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
+  // Take tangents from the actual mesh, wrapping at its angular seam; the skyline and its lighting
+  // then resolve the same ridges. Each vertex needs only one terrain sample.
+  for (let j = 0; j <= rings; j++) for (let i = 0; i <= sectors; i++) {
+    const vertex = j * stride + i;
+    const left = 3 * (j * stride + (i + sectors - 1) % sectors), right = 3 * (j * stride + (i + 1) % sectors);
+    const inner = 3 * (Math.max(0, j - 1) * stride + i), outer = 3 * (Math.min(rings, j + 1) * stride + i);
+    const ax = pos[right] - pos[left], ay = pos[right + 1] - pos[left + 1], az = pos[right + 2] - pos[left + 2];
+    const bx = pos[outer] - pos[inner], by = pos[outer + 1] - pos[inner + 1], bz = pos[outer + 2] - pos[inner + 2];
+    nor.set(norm([ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx]), 3 * vertex);
+    if (j < rings && i < sectors) idx.set([vertex, vertex + 1, vertex + stride, vertex + 1, vertex + stride + 1, vertex + stride], 6 * (j * sectors + i));
+  }
+  return { pos, nor, idx };
 }
 function waterMesh() {
   const S = 256, x0 = LAKE[0] - 46, z0 = -76, w = 92, d = LAKE[1] + 40 - z0, xz = [], levels = [], dep = [], idx = [];
