@@ -408,24 +408,28 @@ vec3 floraRamp(vec3 tip, float u){
   vec3 root = tip * 0.04 + vec3(0.008, 0.012, 0.02), body = tip * vec3(0.30, 0.31, 0.36);
   return u < 0.5 ? mix(root, body, u * 2.) : mix(body, tip * 0.9, (u - 0.5) * 2.);
 }
-vec3 floraLight(vec3 gc, vec3 tip, vec3 N, vec3 V, float u, float self, float stir){
-  if (dot(N, V) < 0.) N = -N;
+vec3 floraLight(vec3 gc, vec3 N, vec3 V, float u, float self, float stir){
+  // Both sides share diffuse light from the upper surface as the camera passes a leaf.
+  if (N.y < 0.) N = -N;
   float ndl = max(dot(N, uSunDir), 0.) * 0.72 + 0.28;
   vec3 lit = gc * (ambient(N) * 2.35 + uSunCol * ndl * 0.3);
   lit += uSunCol * gc * pow(clamp(dot(-V, uSunDir), 0., 1.), 3.) * u * 0.4;
-  lit += gc * self * (1. + 1.6 * uNight) * u * u;
-  lit += tip * tip * stir * uBio * (0.25 + 1.1 * u * u);
+  // Pigment also supplies the emission hue. Sunlit leaves read by diffuse light alone.
+  lit += gc * uNight * (self + 0.28 * stir) * u * u;
   return lit;
 }
-// where a surface meets the lake: wet and dark under the water, a lace of foam on the line, a damp band above it
+// Ripples leave irregular flecks of froth. The same noise breaks up the swash on rocks and open water.
+float shoreFroth(vec2 p){
+  vec2 drift = vec2(0.16, -0.09) * uTime;
+  float crest = vnoise(p * vec2(2.4, 4.) + drift + vnoise(p * 1.1 - drift));
+  return smoothstep(0.54, 0.84, crest) * smoothstep(0.23, 0.66, vnoise(p * 1.7 - drift));
+}
 vec3 waterline(vec3 alb, vec3 wp, out float wet){
   float wl = wp.y - (${WATER.toFixed(1)} + waterWave(wp.xz, uTime).x);
-  vec3 cb = cobble(wp.xz * 5.5 + wp.y * 3. + vec2(uTime * 0.12, -uTime * 0.09));
-  float lace = smoothstep(0.1, 0.0, cb.y) * (0.6 + 0.4 * vnoise(wp.xz * 3. + uTime * 0.3));
-  float line = smoothstep(0.13, 0.0, abs(wl - 0.03 * sin(uTime * 1.7 + wp.x * 2.)));
   wet = smoothstep(-0.06, 0.0, wl) * (1. - smoothstep(0.0, 0.22, wl));
-  alb = mix(alb * (1. - 0.45 * wet), alb * vec3(0.62, 0.78, 0.8), smoothstep(0.0, -0.25, wl));
-  return mix(alb, vec3(0.78, 0.84, 0.95), line * (0.45 + 0.55 * lace));
+  alb = mix(alb * (1. - 0.45 * wet), alb * vec3(0.62, 0.78, 0.8), 1. - smoothstep(-0.25, 0., wl));
+  float swash = 1. - smoothstep(0.015, 0.085, abs(wl));
+  return mix(alb, vec3(0.63, 0.74, 0.78), 0.32 * swash * shoreFroth(wp.xz));
 }
 `;
 
@@ -501,11 +505,12 @@ void main(){
   float cobZ = (1. - smoothstep(0.25, 0.7, y)) * smoothstep(-1.4, -0.9, y) * (1. - smoothstep(14., 32., dist)) * (1. - rk);
   if (cobZ > 0.01) {
     vec3 cb = cobble(p * 3.1), pb = cobble(p * 8.5 + 3.7);
-    float stone = smoothstep(0.015, 0.07, cb.y), peb = smoothstep(0.02, 0.08, pb.y);
+    float stone = (1. - smoothstep(0.20, 0.33, cb.x)) * smoothstep(0.02, 0.17, cb.y);
+    float peb = (1. - smoothstep(0.15, 0.31, pb.x)) * smoothstep(0.02, 0.13, pb.y);
     vec3 sc = mix(mix(vec3(0.20, 0.18, 0.24), vec3(0.32, 0.29, 0.36), cb.z), vec3(0.17, 0.23, 0.25), step(0.72, cb.z));
     sc *= 0.75 + 0.4 * (1. - cb.x * 1.3);
     vec3 pc2 = mix(vec3(0.14, 0.12, 0.17), vec3(0.28, 0.25, 0.3), pb.z) * mix(0.55, 1., peb);
-    vec3 cobA = mix(pc2, sc, stone * smoothstep(0.35, 0.6, vnoise(p * 0.7) + 0.3));
+    vec3 cobA = mix(mix(alb, pc2, peb), sc, stone * smoothstep(0.35, 0.6, vnoise(p * 0.7) + 0.3));
     float wcob = cobZ * (0.6 + 0.4 * vnoise(p * 0.45));
     alb = mix(alb, cobA, wcob); rough = mix(rough, 0.55, wcob);
   }
@@ -515,8 +520,7 @@ void main(){
   vec3 col = pbr(alb, rough, metal, N, V);
   // the last of the low sun catching the snowy peaks
   col += vec3(1., 0.52, 0.58) * 0.14 * snow * smoothstep(40., 110., y) * max(dot(N, uSunDir), 0.) * (1. - uNight);
-  col += glowCol(p) * uBio * glowI(glow) * 2.6 * (1. - 0.6 * under);
-  col += glowCol(p) * (0.006 + 0.05 * uNight) * (1. - shore) * (1. - rk) * (1. - under) * smoothstep(0.55, 0.9, n3);
+  col += moss * uNight * (0.18 + 2.2 * glowI(glow)) * (1. - rk) * (1. - shore);
   o = vec4(tonemap(fogged(col, vWP)), 0.);
 }`);
 
@@ -564,8 +568,8 @@ void main(){
     float wet = clamp(max(shoreWet, (texture(uGround, uv).r + uSheet) * inf), 0., 1.);
     alb *= (1. - 0.3 * wet) * mix(0.5, 1., smoothstep(-0.3, 0.4, vLoc.y));
     col = pbr(alb, mix(0.8 - 0.15 * lich, 0.14, wet * 0.9), 0., N, V);
-    col += glowCol(vWP.xz + vH * 13.) * (uBio * glowI(glow) * 2.3 * moss + (0.008 + 0.05 * uNight) * moss);
-    col += lichC * lich * (0.002 + 0.18 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
+    col += vec3(0.035, 0.085, 0.10) * moss * uNight * (0.28 + glowI(glow));
+    col += lichC * lich * (0.075 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
   }
   o = vec4(tonemap(fogged(col, vWP)), 0.);
 }`);
@@ -625,13 +629,14 @@ void main(){
   vec3 col = pbr(bark, mix(0.75, 0.5, dead), 0., N, V);
   vec3 tint = pigment(vHue * 0.55);
   float groove = smoothstep(0.23, 0.48, -grain) * (1. - dead);
-  col += tint * groove * (0.015 + 0.3 * uNight + 0.6 * (glowI(vStir)) * uBio) * (0.6 + 0.4 * sin(uTime * 0.7 + vW.y * 4. - vW.w * 9.));
+  col += tint * groove * (uNight * (0.045 + 0.08 * glowI(vStir))) * (0.6 + 0.4 * sin(uTime * 0.7 + vW.y * 4. - vW.w * 9.));
   o = vec4(tonemap(fogged(col, vWP)), 0.);
 }`);
 
+// Interpolate at a covered sample on thin foliage. A pixel center can fall far outside a subpixel triangle.
 const JLEAF = program(WORLD_VS + `
 in vec4 aR; in vec4 aD; in vec4 aM; in vec4 aB;
-out vec3 vWP; out float vU; out vec3 vN; out float vStir; out float vHue; out float vSeed;
+centroid out vec3 vWP; centroid out float vU; centroid out vec3 vN; centroid out float vStir; centroid out float vHue; centroid out float vSeed;
 void main(){
   int vid = gl_VertexID;
   float u = vid >= 12 ? 1. : float(vid / 2) / 6.;
@@ -643,7 +648,7 @@ void main(){
   float g = windWave(aB.xy) * uWind, flex = aR.w + 0.2 * u;
   p.xz += WIND_DIR * g * 0.05 * aB.z * flex * flex;
   p += sd * sin(uTime * 2.6 + seed * 40. + u * 3.) * 0.03 * u * L;
-  float w = W * sin(min(1., u * 2.5) * 1.5708) * (1. - 0.5 * u);
+  float w = W * (0.08 + 0.92 * sin(3.1416 * pow(u, 0.85)));
   vec3 wd = normalize(sd + up * 0.4 * (seed - 0.5));
   p += wd * side * w * 0.5;
   vec3 tang = normalize(dir + up * (lift * 3.1416 * cos(u * 3.1416) - 2. * droop * u));
@@ -652,13 +657,15 @@ void main(){
   vWP = p; vU = u; vHue = aB.w; vSeed = seed;
   gl_Position = project(p);
 }`,
-`uniform float uClip; in vec3 vWP; in float vU; in vec3 vN; in float vStir; in float vHue; in float vSeed; out vec4 o;
+`uniform float uClip; centroid in vec3 vWP; centroid in float vU; centroid in vec3 vN; centroid in float vStir; centroid in float vHue; centroid in float vSeed; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 tint = pigment(vHue * 0.55);
-  vec3 gc = floraRamp(tint, pow(vU, 1.15)) * (0.56 + 0.4 * vSeed);
+  tint *= mix(vec3(1.), tint, 0.45);
+  float u = clamp(vU, 0., 1.);
+  vec3 gc = floraRamp(tint, pow(u, 1.15)) * (0.56 + 0.4 * clamp(vSeed, 0., 1.));
   float pulse = 0.84 + 0.28 * windWave(vWP.xz);
-  vec3 lit = floraLight(gc, tint, normalize(vN), normalize(uCam - vWP), vU, 0.3 * pulse, glowI(vStir));
+  vec3 lit = floraLight(gc, normalize(vN), normalize(uCam - vWP), u, 0.19 * pulse, glowI(vStir));
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
@@ -668,7 +675,7 @@ void main(){
 // the tips you stirred. Instances are shuffled, so drawing a prefix is an even thinning (adaptive density).
 const GRASS = program(WORLD_VS + `
 in vec4 aG; in vec4 aR;
-out vec3 vWP; out vec2 vGA; out float vGH; out float vGlow; out float vWet; out vec3 vN; out float vPatch;
+centroid out vec3 vWP; centroid out vec2 vGA; centroid out float vGH; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
 void main(){
   int vid = gl_VertexID;
   float by = vid == 6 ? 1. : float(vid / 2) * 0.35;
@@ -690,7 +697,7 @@ void main(){
   vGA = vec2(by, aR.z); vGH = H; vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
   gl_Position = project(p);
 }`,
-`uniform float uClip; in vec3 vWP; in vec2 vGA; in float vGH; in float vGlow; in float vWet; in vec3 vN; in float vPatch; out vec4 o;
+`uniform float uClip; centroid in vec3 vWP; centroid in vec2 vGA; centroid in float vGH; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   float y = clamp(vGA.x, 0., 1.);
@@ -705,8 +712,7 @@ void main(){
   gc *= mix(0.8, 1.2, pn);
   gc = mix(gc, tip, smoothstep(0.55, 0.95, pn) * 0.2 * y);
   gc *= (0.88 + 0.24 * vGA.y) * mix(0.42, 1., smoothstep(0., 0.55, y)) * (1. - 0.35 * vWet);
-  vec3 lit = floraLight(gc, tip, normalize(vN), normalize(uCam - vWP), y, 0.17 + 0.035 * windWave(vWP.xz), 0.);
-  lit += glowCol(vWP.xz) * uBio * glowI(vGlow) * 2.6 * y * y;
+  vec3 lit = floraLight(gc, normalize(vN), normalize(uCam - vWP), y, 0.12, glowI(vGlow));
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
@@ -716,7 +722,7 @@ void main(){
 // plane; veins brighten at night and when you stir the ground beside them.
 const PLANT = program(WORLD_VS + `
 in vec4 aP; in vec4 aF; in vec4 aS2;
-out vec3 vWP; out float vU; out float vSide; out vec3 vN; out float vType; out float vStir; out float vSeed; out float vHue;
+centroid out vec3 vWP; centroid out float vU; centroid out float vSide; centroid out vec3 vN; centroid out float vType; centroid out float vStir; centroid out float vSeed; centroid out float vHue;
 // the centreline at u in [0, 1]: x out along the ground, y up
 vec2 path(float type, float u, float L, vec4 S){
   if (type < 2.5) return vec2(L * S.x * sin(u * 1.5708), L * (S.y * u + S.z * sin(u * 3.1416) - S.w * u * u));
@@ -755,29 +761,25 @@ void main(){
   vWP = p + aP.xyz; vU = u; vSide = side; vType = type; vSeed = seed; vHue = fract(aP.x * 0.21 + aP.z * 0.17);
   gl_Position = project(vWP);
 }`,
-`uniform float uClip; in vec3 vWP; in float vU; in float vSide; in vec3 vN; in float vType; in float vStir; in float vSeed; in float vHue; out vec4 o;
+`uniform float uClip; centroid in vec3 vWP; centroid in float vU; centroid in float vSide; centroid in vec3 vN; centroid in float vType; centroid in float vStir; centroid in float vSeed; centroid in float vHue; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
-  float u = vU, s = vSide;
+  float u = clamp(vU, 0., 1.), s = clamp(vSide, -1., 1.);
   if (vType > 0.5 && vType < 1.5 && abs(s) > 0.16 + 0.84 * smoothstep(0.1, 0.65, abs(sin(u * 3.1416 * 15.)))) discard;
   // each species is a pigment and a vein; the ramp and the light are everyone's
-  vec3 tip, vein;
-  if (vType < 0.5) { tip = mix(CRIMSON, MAGENTA, vHue * 0.6); vein = CYAN; }
-  else if (vType < 1.5) { tip = TEAL * 0.68; vein = TEAL; }
-  else if (vType < 2.5) { tip = mix(CYAN, vec3(1.), 0.35); vein = CYAN; }
-  else if (vType < 3.5) { tip = mix(VIOLET, CYAN, vHue * 0.4); vein = VIOLET; }
-  else { tip = mix(MAGENTA, VIOLET, vHue * 0.5); vein = mix(MAGENTA, vec3(1.), 0.25); }
+  vec3 tip;
+  if (vType < 0.5) tip = mix(CRIMSON, MAGENTA, vHue * 0.6);
+  else if (vType < 1.5) tip = TEAL * 0.68;
+  else if (vType < 2.5) tip = CYAN;
+  else if (vType < 3.5) tip = mix(VIOLET, CYAN, vHue * 0.4);
+  else tip = mix(MAGENTA, VIOLET, vHue * 0.5);
   vec3 gc = floraRamp(tip, pow(u, 1.1));
-  float stir = glowI(vStir);
-  vec3 lit = floraLight(gc, tip, normalize(vN), normalize(uCam - vWP), u, 0.06, 0.);
-  float midrib = (1. - smoothstep(0.05, 0.15, abs(s))) * step(vType, 1.5);
-  float edge = smoothstep(0.8, 0.98, abs(s)) * step(vType, 0.5);
-  float pulse = 0.80 + 0.34 * windWave(vWP.xz);
-  float em = (midrib * 0.9 + edge * 0.45) * (0.03 + 0.45 * uNight) * pulse;
-  if (vType > 1.5 && vType < 2.5) em += smoothstep(0.7, 1., u) * (0.12 + 1.1 * uNight) * pulse + 0.03;
-  if (vType > 2.5 && vType < 3.5) em += smoothstep(0.55, 1., u) * (1. - smoothstep(0.04, 0.3, abs(s))) * (0.05 + 0.7 * uNight) * pulse;
-  if (vType > 3.5) em += smoothstep(0.7, 0.86, u) * (0.08 + 0.75 * uNight) * pulse + 0.02;
-  lit += vein * (em + stir * uBio * (0.32 + 0.60 * midrib)) + tip * uNight * u * 0.065 * pulse;
+  float midrib = (1. - smoothstep(0.04, 0.18, abs(s))) * step(vType, 1.5);
+  float tissue = midrib * 0.38;
+  if (vType > 1.5 && vType < 2.5) tissue = smoothstep(0.7, 1., u);
+  if (vType > 2.5 && vType < 3.5) tissue = smoothstep(0.55, 1., u) * (1. - smoothstep(0.04, 0.3, abs(s)));
+  if (vType > 3.5) tissue = smoothstep(0.7, 0.86, u);
+  vec3 lit = floraLight(gc, normalize(vN), normalize(uCam - vWP), u, 0.06 + 0.37 * tissue, glowI(vStir));
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
@@ -829,14 +831,12 @@ void main(){
   hdr += vec3(0.5, 0.45, 0.6) * smoothstep(0.12, 0.0, d) * 0.1;
   vec3 col = tonemap(fogged(hdr, vWP));
   col = mix(col, refl, clamp(F * 0.9 + 0.08, 0., 1.)) + tonemap(gc * uBio * glowI(glow)) * 0.25;
-  // surf: lines of foam rolling up the shelf with the swell, torn into lace, thinning to a fringe where the water ends
-  vec3 cb = cobble(p * 4.5 + vec2(uTime * 0.15, -uTime * 0.11));
-  float lace = smoothstep(0.09, 0.0, cb.y) * (0.45 + 0.55 * vnoise(p * 2.2 + uTime * 0.2));
-  float swash = smoothstep(0.55, 0.95, sin(d * 22. - uTime * 2.0 + vnoise(p * 1.2) * 4. + vWave * 40.));
-  float foam = (1. - smoothstep(0.0, 0.45, d)) * (0.35 + 0.65 * swash) * lace + smoothstep(0.045, 0.0, d) * (0.25 + 0.55 * lace);
-  col = mix(col, vec3(0.74, 0.8, 0.92), clamp(foam, 0., 1.) * 0.5);
-  float alpha = clamp(max(F, smoothstep(0., 1.3, d) * 0.9 + 0.04) + glow * 0.5 + foam * 0.4, 0., 1.);
-  alpha *= smoothstep(-0.02, 0.03, d);
+  float depth = vDepth + vWave;
+  float swash = 1. - smoothstep(0.025, 0.22, abs(depth - 0.06));
+  float foam = swash * shoreFroth(p);
+  col = mix(col, vec3(0.68, 0.78, 0.84), foam * 0.33);
+  float alpha = clamp(max(F, smoothstep(0., 1.3, d) * 0.9 + 0.04) + glow * 0.5 + foam * 0.24, 0., 1.);
+  alpha *= smoothstep(-0.02, 0.035, depth);
   o = vec4(col, alpha);
 }`);
 
@@ -847,7 +847,7 @@ void main(){
   if (uRain == 1) { float t = fract(uTime * (0.08 + 0.05 * s) + aP.y); vec2 c = uCamXZ + mod(aP.xz - uCamXZ + 34., 68.) - 34.; p = vec3(c.x, 22. - t * 24., c.y); p.x += sin(uTime + s * 50.) * 0.6; p.z += cos(uTime * 0.7 + s * 31.) * 0.4; vA = smoothstep(0., 0.1, t) * (1. - smoothstep(0.85, 1., t)); s = 0.5; }
   else if (uRain == 2) {
     p += vec3(sin(uTime * 0.31 + s * 20.), sin(uTime * 0.47 + s * 13.) * 0.45, cos(uTime * 0.27 + s * 7.)) * 1.3 + vec3(WIND_DIR.x, 0., WIND_DIR.y) * sin(uTime * 0.11 + s * 3.) * 2.;
-    vA = (0.12 + 0.88 * uNight) * (0.45 + 0.55 * sin(uTime * (1.1 + s * 2.) + s * 50.)); s = 0.18 + 0.2 * fract(s * 31.);
+    vA = 0.48 * uNight * (0.55 + 0.45 * sin(uTime * (1.1 + s * 2.) + s * 50.)); s = 0.18 + 0.2 * fract(s * 31.);
   }
   else if (uRain == 3) vA = 0.30 + 0.37 * uNight;
   else vA = 1.;
@@ -1247,9 +1247,60 @@ function growJuniper(x, y, z, h, seed, W, Lf, leanTo) {
     }
   }
 }
+// Broadleaf groves have low, spreading forks and a windward slope to the whole crown.
+function growBroadleaf(x, y, z, h, seed, wood, leaves) {
+  const rand = rng(Math.floor(seed * 1e9) ^ 0x72ac);
+  const angle = (rand() - 0.5) * 1.6 + 0.5;
+  const dx = Math.cos(angle), dz = Math.sin(angle);
+  // A teal or orchid grove, with variation inside each family.
+  const hue = rand() < 0.5 ? 0.12 * rand() : 0.86 + 0.14 * rand();
+  const base = [x, z, h, hue];
+  const trunk = [[x, y, z], [x - dx * h * 0.025, y + h * 0.12, z - dz * h * 0.025],
+    [x + dx * h * 0.05, y + h * 0.32, z + dz * h * 0.05],
+    [x + dx * h * 0.25, y + h * 0.55, z + dz * h * 0.25],
+    [x + dx * h * 0.60, y + h * 0.83, z + dz * h * 0.60]];
+  tube(wood, trunk, [0.15, 0.092, 0.074, 0.046, 0.015].map(k => k * h), 10, 0, 0.76, base, seed);
+
+  function crown(center, radius, flex) {
+    // Stagger the leaves through the volume. Upper leaves catch more light, and the
+    // lower tier hangs below the bough so each crown reads as a mass at a distance.
+    const count = Math.ceil((touch ? 80 : 112) * (0.65 + Math.min(radius, 2) * 0.32));
+    for (let i = 0; i < count; i++) {
+      const az = i * 2.39996 + rand() * 0.35, cy = 2 * (i + rand()) / count - 1;
+      const side = Math.sqrt(1 - cy * cy), cx = Math.cos(az) * side, cz = Math.sin(az) * side;
+      const r = radius * (0.58 + 0.42 * rand()), len = radius * (0.49 + 0.32 * rand());
+      leaves.R.push(center[0] + r * (cx + 0.35 * dx * cy), center[1] + r * (0.74 * cy + 0.22 * (cx * dx + cz * dz)), center[2] + r * (cz + 0.35 * dz * cy), flex);
+      const heading = norm([cx + dx * 0.46, 0.28 + cy * 0.66, cz + dz * 0.46]);
+      leaves.D.push(...heading, len);
+      leaves.M.push(0.09 + 0.08 * rand(), 0.1 + 0.16 * rand(), len * (0.43 + 0.23 * rand()), 0.38 * rand() + 0.31 * (cy + 1));
+      leaves.B.push(...base);
+    }
+  }
+
+  crown(trunk[4], h * 0.30, 0.76);
+  const branches = h > 7 ? 8 : 6;
+  for (let i = 0; i < branches; i++) {
+    const joint = 1 + i % 3, start = trunk[joint], flex = joint * 0.19;
+    const az = angle + i * 2.39996 + rand() * 0.5;
+    const reach = h * (0.28 + rand() * 0.14);
+    const bx = reach * (Math.cos(az) + 0.38 * dx), bz = reach * (Math.sin(az) + 0.38 * dz);
+    const lift = h * (0.20 + 0.12 * rand());
+    const elbow = [start[0] + bx * 0.58, start[1] + lift * 0.27, start[2] + bz * 0.58];
+    const end = [start[0] + bx, start[1] + lift, start[2] + bz];
+    tube(wood, [start, elbow, end], [0.048 * h, 0.032 * h, 0.009 * h], 7, flex, flex + 0.26, base, seed + i);
+    crown(end, h * (0.21 + rand() * 0.07), flex + 0.26);
+    const fork = [elbow[0] + bx * 0.24 - bz * 0.32, elbow[1] + lift * 0.64, elbow[2] + bz * 0.24 + bx * 0.32];
+    tube(wood, [elbow, fork], [0.025 * h, 0.007 * h], 6, flex + 0.13, flex + 0.24, base, seed + i + 9);
+    crown(fork, h * 0.18, flex + 0.24);
+  }
+}
 function growForest(sc) {
   const W = { pos: [], nor: [], w: [], b: [], idx: [] }, Lf = { R: [], D: [], M: [], B: [] };
-  for (let q = 0; q < sc.trees.length; q += 5) growJuniper(sc.trees[q], sc.trees[q + 1], sc.trees[q + 2], sc.trees[q + 4], sc.trees[q + 3], W, Lf);
+  for (let q = 0; q < sc.trees.length; q += 5) {
+    const [x, y, z, seed, height] = sc.trees.subarray(q, q + 5);
+    const grow = height > 3 && seed < 0.54 ? growBroadleaf : growJuniper;
+    grow(x, y, z, height, seed, W, Lf);
+  }
   // one small juniper clinging to the top of the sea stack, leaning out over the water
   let top = 0;
   for (let i = 1; i < STACK_GEO.pos.length; i += 3) if (STACK_GEO.pos[i] > STACK_GEO.pos[top * 3 + 1]) top = (i - 1) / 3;
@@ -1707,7 +1758,7 @@ function common(p, eye, VP, mirror, t) {
   gl.uniformMatrix4fv(p.u('uVP'), false, VP);
   gl.uniform1f(p.u('uMirror'), mirror);
   gl.uniform3fv(p.u('uCam'), eye); gl.uniform3fv(p.u('uSunDir'), norm(SUN.map((v, i) => v * (1 - night) + PLANET[i] * night))); gl.uniform3fv(p.u('uSunCol'), SUNCOL.map((v, i) => v * (1 - night) + MOONCOL[i] * night)); gl.uniform3fv(p.u('uPlanetDir'), PLANET);
-  gl.uniform3fv(p.u('uStarDir'), SUN); gl.uniform1f(p.u('uNight'), night); gl.uniform1f(p.u('uBio'), 1 + 2.4 * night); gl.uniform1f(p.u('uHDR'), HDR ? 1 : 0);
+  gl.uniform3fv(p.u('uStarDir'), SUN); gl.uniform1f(p.u('uNight'), night); gl.uniform1f(p.u('uBio'), 0.16 + 0.84 * night); gl.uniform1f(p.u('uHDR'), HDR ? 1 : 0);
   gl.uniform1f(p.u('uTime'), t); gl.uniform1f(p.u('uExposure'), 0.95 + 0.3 * night); gl.uniform1f(p.u('uExtent'), EXTENT); gl.uniform1f(p.u('uSheet'), sheet); gl.uniform1f(p.u('uWind'), TEST ? 0.7 : (rain ? 1.15 : 0.7) + 0.2 * Math.sin(t * 0.13));
   gl.uniform1i(p.u('uGlow'), 0); gl.uniform1i(p.u('uGround'), 1); gl.uniform1i(p.u('uWear'), 7); gl.uniformMatrix3fv(p.u('uSky'), false, skyTurn);
   gl.uniform1f(p.u('uClip'), mirror < 0 ? WATER - 0.02 : -1e9);
@@ -1773,7 +1824,7 @@ function render(t, camOverride) {
   // particles: additive colour, and they cut themselves out of the sky mask so the rays never streak them
   gl.colorMask(true, true, true, true); gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE_MINUS_SRC_ALPHA);
   common(POINTS, cam.eye, VP, 1, t); gl.uniform1f(POINTS.u('uScale'), h * 0.9); gl.uniform2f(POINTS.u('uCamXZ'), cam.eye[0], cam.eye[2]);
-  if (!camOverride || camOverride.motes) { gl.uniform1i(POINTS.u('uRain'), 2); gl.bindVertexArray(vMotes); gl.drawArrays(gl.POINTS, 0, MOTE_N); }
+  if (night > 0.001 && (!camOverride || camOverride.motes)) { gl.uniform1i(POINTS.u('uRain'), 2); gl.bindVertexArray(vMotes); gl.drawArrays(gl.POINTS, 0, MOTE_N); }
   for (let i = 0; i < PODS; i++) stoneBuf.set([...podPosition(i, t), 0.36], i * 4);
   gl.bindBuffer(gl.ARRAY_BUFFER, stoneVbo); gl.bufferSubData(gl.ARRAY_BUFFER, 0, stoneBuf);
   gl.uniform1i(POINTS.u('uRain'), 3); gl.bindVertexArray(vStone); gl.drawArrays(gl.POINTS, 0, PODS);
