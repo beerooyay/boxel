@@ -64,6 +64,13 @@ export function terrainHeight(x, z, base) {
   }
   const radius = Math.hypot(x - summit[0], z - summit[1]);
   if (radius < startRadius + 4) {
+    // Three radiating buttresses and an exposed bench break up the lookout's round profile.
+    // The trail grade below still determines the tread and the flat summit.
+    const bearing = Math.atan2(z - summit[1], x - summit[0]);
+    const ridge = Math.cos(bearing * 3 + radius * 0.075) * 0.72 + Math.cos(bearing * 7 - 0.5) * 0.28;
+    const flank = smooth(2, 10, radius) * (1 - smooth(17, startRadius + 3, radius));
+    const strata = base + (x - summit[0]) * 0.16 - (z - summit[1]) * 0.08;
+    base += flank * (5.8 * ridge + 2.2 * smooth(7, 9.3, strata) - 1.3 * smooth(13, 16, strata));
     const grade = 1.6 + 24.4 * (1 - smooth(2.8, startRadius, radius));
     const path = 1 - smooth(0.85, 4, trailDistance(x, z));
     base += (grade - base) * Math.max(path, 1 - smooth(2, 4, radius));

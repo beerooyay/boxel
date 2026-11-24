@@ -1,3 +1,5 @@
+import { highCanopyMesh, highCanopySites } from './high-canopy.js';
+import { bakeShadows } from './shadows.js';
 // Tarnished Promise: four acres of lake shore on Tarn, under a ringed giant.
 //
 // The world remembers you through three boxel fields on the unbounded plane of 12.5 cm cells:
@@ -249,57 +251,56 @@ float inField(vec2 uv){ return step(0., uv.x) * step(0., uv.y) * step(uv.x, 1.) 
 const vec3 STAR_COL = vec3(2.7, 1.9, 1.35);
 vec3 skyBase(vec3 d){
   float h = d.y;
-  vec3 c = mix(vec3(0.36, 0.18, 0.32), vec3(0.06, 0.10, 0.22), smoothstep(0.0, 0.2, h));
-  c = mix(c, vec3(0.012, 0.018, 0.06), smoothstep(0.18, 0.9, h));
-  vec3 n = mix(vec3(0.035, 0.06, 0.17), vec3(0.012, 0.03, 0.11), smoothstep(0.0, 0.25, h));
-  n = mix(n, vec3(0.003, 0.007, 0.03), smoothstep(0.25, 0.95, h));
+  vec3 c = mix(vec3(0.52, 0.60, 0.66), vec3(0.16, 0.35, 0.58), smoothstep(-0.03, 0.32, h));
+  c = mix(c, vec3(0.054, 0.16, 0.36), smoothstep(0.23, 0.94, h));
+  vec3 n = mix(vec3(0.030, 0.040, 0.088), vec3(0.008, 0.014, 0.047), smoothstep(0.0, 0.35, h));
+  n = mix(n, vec3(0.0018, 0.003, 0.014), smoothstep(0.28, 0.94, h));
   c = mix(c, n, uNight);
   float s = max(dot(d, uStarDir), 0.);
   c += STAR_COL * (1. - uNight) * (0.05 * pow(s, 5.) + 0.25 * pow(s, 60.));
   c += vec3(0.10, 0.08, 0.20) * pow(max(dot(d, uPlanetDir), 0.), 4.) * 0.5;
-  return mix(c, vec3(0.05, 0.04, 0.08), smoothstep(0.0, -0.25, h));
+  return mix(c, vec3(0.05, 0.04, 0.08), (1. - smoothstep(-0.25, 0.0, h)));
 }
 ${companionWorlds}
-float cloudCover(vec3 d){
-  if (d.y <= 0.015) return 0.;
-  vec2 cu = d.xz / (d.y + 0.07) * 0.8 + WIND_DIR * uTime * 0.006;
-  float cl = fbm3(cu * 1.2) * 0.75 + fbm3(cu * 3.1 + 7.) * 0.25;
-  return smoothstep(0.56, 0.84, cl) * smoothstep(0.015, 0.2, d.y) * (1. - smoothstep(0.5, 0.9, d.y));
-}
-// what of the sky at d lets the stars through: the bodies hide them and the clouds dim them
-float starsSeen(vec3 d){
-  float o = 1. - cloudCover(d) * 0.85;
-  vec3 P[4] = vec3[4](uPlanetDir, ROSE_DIR, OCEAN_DIR, ICE_DIR);
-  float R[4] = float[4](0.175, 0.205, 0.15, 0.045);
-  for (int i = 0; i < 4; i++) { float c = dot(d, P[i]); if (c > 0. && length(cross(d, P[i])) < R[i] * c) o = 0.; }
-  return o;
+// Billowed cloud edges over a slower, broad weather pattern on Tarn's local sky.
+float cloudDensity(vec2 p, float weather) {
+  vec2 warp = vec2(vnoise(p * 0.83), vnoise(p * 0.83 + 18.)) - 0.5;
+  vec2 q = p * 3.3 + 1.5 * warp;
+  float lobes = 1. - abs(2. * vnoise(q) - 1.);
+  float erosion = fbm3(p * 16. + 3. * warp);
+  return smoothstep(0.475, 0.72, weather * 0.56 + lobes * 0.24 + erosion * 0.28 - 0.06);
 }
 vec3 skyColor(vec3 d){
   vec3 c = skyBase(d);
   gBehind = c;
+  starTransmission = 1.;
+  nearestMoonDepth = -100.;
   if (d.y > -0.02) {
     // the galaxy's band, baked once into a cube map in the sky's own frame, which turns about the pole
     vec3 mw = texture(uMilky, uSky * d).rgb;
-    c += mw * mw * (0.04 + 0.96 * uNight) * smoothstep(-0.02, 0.22, d.y) * 0.5;
+    c += mw * mw * uNight * smoothstep(-0.02, 0.22, d.y) * 0.5;
   }
   c += STAR_COL * (1. - uNight) * 3. * smoothstep(0.99935, 0.99965, dot(d, uStarDir));
   vec3 P = uPlanetDir; vec3 T = normalize(cross(P, vec3(0., 1., 0.))); vec3 B = cross(T, P);
   float dp = dot(d, P);
   if (dp > 0.7) {
     vec2 q = vec2(dot(d, T), dot(d, B)) / dp;
+    c = amberMoons(d, c, P, T, B, true);
     float R = 0.17, tilt = 0.38;
     vec2 rq = vec2(q.x * cos(tilt) + q.y * sin(tilt), -q.x * sin(tilt) + q.y * cos(tilt));
     float rr = length(vec2(rq.x, rq.y / 0.2));
-    float band = smoothstep(1.32 * R, 1.38 * R, rr) * (1. - smoothstep(2.2 * R, 2.28 * R, rr)) * (1. - 0.6 * smoothstep(1.7 * R, 1.75 * R, rr) * (1. - smoothstep(1.8 * R, 1.85 * R, rr)));
+    float band = amberRingDensity(rr / R);
     float aa = clamp(1. - fwidth(rr) * 90., 0., 1.);
-    vec3 ring = vec3(0.78, 0.84, 0.95) * band * mix(0.55, 0.55 + 0.45 * sin(rr * 95.) * sin(rr * 31.), aa) * 0.42;
     float ringDepth = -rq.y * sqrt(1. - 0.2 * 0.2) / 0.2;
+    vec3 ring = vec3(0.70, 0.75, 0.84) * mix(0.60, 0.60 + 0.24 * sin(rr * 395.) + 0.10 * sin(rr * 613.), aa);
     ring *= ringSun((q.x * T + q.y * B - ringDepth * P) / R);
+    ring += gBehind * 0.42;
     float pr = length(q);
     if (pr < R) {
       vec3 nw = normalize(q.x / R * T + q.y / R * B - sqrt(max(0., 1. - pr * pr / (R * R))) * P);
       vec3 axis = normalize(B * cos(tilt) - T * sin(tilt));
-      float lat = dot(nw, axis);
+      vec3 pole = axis * sqrt(1. - 0.2 * 0.2) - 0.2 * P;
+      float lat = dot(nw, pole);
       // a storm eye: the bands swirl round an oval vortex in the southern belt
       vec2 dv = (rq - vec2(0.05, -0.045)) * vec2(0.62, 1.); float rs = length(dv), sw = exp(-rs * rs / 0.0011);
       float ang = sw * 5.5; vec2 dvr = vec2(dv.x * cos(ang) - dv.y * sin(ang), dv.x * sin(ang) + dv.y * cos(ang));
@@ -311,22 +312,28 @@ vec3 skyColor(vec3 d){
       pc = mix(pc, vec3(0.92, 0.42, 0.28), smoothstep(0.03, 0.012, rs) * 0.6);
       pc = mix(pc, vec3(0.34, 0.1, 0.06), smoothstep(0.009, 0.0, rs) * 0.6);
       float viewCos = max(0., -dot(nw, P));
-      c = bodyLight(pc, nw, viewCos, 0.12) + step(R * viewCos, ringDepth) * ring;
+      starTransmission = 0.;
+      // Intersect the surface-to-sun ray with the same tilted ring plane.
+      float cosSun = dot(uStarDir, pole), shade = 0.;
+      if (abs(cosSun) > 0.0001) {
+        float travel = -dot(nw, pole) / cosSun;
+        if (travel > 0.) shade = 0.74 * amberRingDensity(length(nw + travel * uStarDir));
+      }
+      c = mix(bodyLight(pc, nw, viewCos, 0.12), pc * nightFill + gBehind * 0.42, shade);
+      band *= step(R * viewCos, ringDepth);
     } else {
-      c += ring + vec3(0.6, 0.42, 0.28) * exp(-(pr - R) * 95.) * 0.065 * max(dot(normalize(q.x * T + q.y * B), uStarDir), 0.);
+      c += vec3(0.6, 0.42, 0.28) * exp(-(pr - R) * 95.) * 0.065 * max(dot(normalize(q.x * T + q.y * B), uStarDir), 0.);
     }
-    // three moons: a grey one on an orbit in the ring plane past the rings, a small ochre one skimming the rings' edge,
-    // and a small icy one on an inclined orbit further out; each hidden while it passes behind
-    c = moon(d, c, P, T, B, R, tilt, 2.75, 0.2, uTime * 0.045, 0.15, vec3(0.66, 0.64, 0.72), 1.3);
-    c = moon(d, c, P, T, B, R, tilt, 2.6, 0.2, uTime * 0.08 + 4.24, 0.1, vec3(0.8, 0.64, 0.46), 5.1);
-    c = moon(d, c, P, T, B, R, tilt + 0.3, 3.3, 0.5, uTime * 0.03 + 6.22, 0.11, vec3(0.62, 0.72, 0.84), 8.9);
+    c = mix(c, ring, band * 0.74);
+    starTransmission *= 1. - band * 0.74;
+    c = amberMoons(d, c, P, T, B, false);
   }
   // a small ice world, like Europa: frost plains crossed by long rust-brown cracks, mottled chaos terrain and a
   // blue-white cap, turning slowly
   vec3 S = ICE_DIR, ST = normalize(cross(S, vec3(0., 1., 0.))), SB = cross(ST, S);
   float ds = dot(d, S);
   if (ds > 0.99) {
-    vec2 sq = vec2(dot(d, ST), dot(d, SB)) / ds; float Rs = 0.046, sr = length(sq), cov = smoothstep(Rs, Rs * 0.95, sr);
+    vec2 sq = vec2(dot(d, ST), dot(d, SB)) / ds; float Rs = 0.046, sr = length(sq), cov = 1. - smoothstep(Rs * 0.95, Rs, sr);
     if (cov > 0.) {
       vec2 u = sq / Rs; float z = sqrt(max(0., 1. - dot(u, u)));
       vec3 ns = normalize(u.x * ST + u.y * SB - z * S), ax = normalize(vec3(0.25, 0.95, 0.15));
@@ -344,27 +351,65 @@ vec3 skyColor(vec3 d){
       ic = mix(ic, vec3(0.45, 0.27, 0.18), cracks * 0.8);
       ic = mix(ic, vec3(0.74, 0.86, 1.0), smoothstep(0.65, 0.88, dot(sp, ax)) * 0.7);
       c = mix(c, bodyLight(ic, ns, z, 0.06), cov);
+      starTransmission *= 1. - cov;
     }
   }
   c = companions(d, c);
-  // clouds: soft wisps drifting downwind, lit warm on the star's side, silver-blue under the giant at night
   if (d.y > 0.015) {
-    vec2 cu = d.xz / (d.y + 0.07) * 0.8 + WIND_DIR * uTime * 0.006;
-    float cl = fbm3(cu * 1.2) * 0.75 + fbm3(cu * 3.1 + 7.) * 0.25;
-    float cov = smoothstep(0.56, 0.84, cl) * smoothstep(0.015, 0.2, d.y) * (1. - smoothstep(0.5, 0.9, d.y));
-    float sunS = pow(max(dot(d, uStarDir), 0.), 4.);
-    vec3 sb = skyBase(d);
-    vec3 cc = mix(sb * 1.35 + STAR_COL * 0.05 * sunS + vec3(0.02, 0.012, 0.03), sb * 1.6 + vec3(0.05, 0.07, 0.14) * pow(max(dot(d, uPlanetDir), 0.), 2.), uNight);
-    c = mix(c, cc, cov * 0.6);
+    vec2 cu = d.xz / (d.y + 0.08) * 0.94 + WIND_DIR * uTime * 0.004;
+    float weather = fbm3(cu * 0.77 + 4.1);
+    float density = cloudDensity(cu, weather);
+    float cov = density * smoothstep(0.015, 0.18, d.y) * mix(0.82, 0.44, uNight);
+    if (cov > 0.001) {
+      // A short second sample along the light direction distinguishes a bright lip from the shaded column.
+      vec3 light = normalize(mix(uStarDir, uPlanetDir, uNight));
+      float towardLight = cloudDensity(cu + light.xz * 0.11, weather);
+      float rim = clamp((density - towardLight) * 1.9 + 0.22 + 0.28 * (1. - density), 0., 1.);
+      vec3 cc = mix(vec3(0.21, 0.28, 0.39), vec3(1.04, 1.02, 0.92), rim);
+      cc += vec3(0.58, 0.33, 0.15) * pow(max(dot(d, uStarDir), 0.), 8.) * (1. - density);
+      cc = mix(cc, vec3(0.008, 0.013, 0.032) + vec3(0.045, 0.07, 0.13) * rim, uNight);
+      c = mix(c, cc, cov);
+      starTransmission *= 1. - cov;
+    }
   }
   return c;
 }
 vec3 ambient(vec3 n){
-  vec3 day = mix(vec3(0.02, 0.018, 0.035), vec3(0.05, 0.075, 0.15), n.y * 0.5 + 0.5) + vec3(0.05, 0.035, 0.09) * max(dot(n, uPlanetDir), 0.);
-  vec3 nite = mix(vec3(0.006, 0.01, 0.025), vec3(0.025, 0.045, 0.11), n.y * 0.5 + 0.5) + vec3(0.04, 0.06, 0.13) * max(dot(n, uPlanetDir), 0.);
+  vec3 day = mix(vec3(0.028, 0.030, 0.035), vec3(0.084, 0.12, 0.16), n.y * 0.5 + 0.5);
+  vec3 nite = mix(vec3(0.004, 0.007, 0.015), vec3(0.015, 0.026, 0.060), n.y * 0.5 + 0.5);
   return mix(day, nite, uNight);
 }
-vec3 pbr(vec3 albedo, float rough, float metal, vec3 N, vec3 V){
+// A ground-space irradiance map transfers a little of each colony's pigment onto
+// nearby diffuse surfaces. Height falloff keeps the crowns above it dark.
+uniform sampler2D uFloraSpill;
+vec3 floraSpill(vec3 wp){
+  if (uNight < 0.01) return vec3(0.);
+  vec2 uv = fieldUV(wp.xz);
+  vec4 sampleLight = texture(uFloraSpill, uv);
+  float height = sampleLight.a * 32. - 4.;
+  return sampleLight.rgb * (1. - smoothstep(0.25, 2.4, abs(wp.y - height))) * inField(uv) * uNight * uNight;
+}
+uniform highp sampler2DArrayShadow uShadows;
+uniform mat4 uLightVP[2];
+float shadowAt(vec3 wp, int layer){
+  vec3 uv = (uLightVP[layer] * vec4(wp, 1.)).xyz * 0.5 + 0.5;
+  if (any(lessThan(uv, vec3(0.))) || any(greaterThan(uv, vec3(1.)))) return 1.;
+  vec2 edge = min(uv.xy, 1. - uv.xy);
+  vec2 px = 1.25 / vec2(textureSize(uShadows, 0).xy);
+  vec4 q = vec4(uv.xy, float(layer), uv.z - 0.00046);
+  float light = 0.25 * (texture(uShadows, q + vec4(px.x, px.y * 0.35, 0., 0.)) +
+                         texture(uShadows, q - vec4(px.x, px.y * 0.35, 0., 0.)) +
+                         texture(uShadows, q + vec4(-px.x * 0.35, px.y, 0., 0.)) +
+                         texture(uShadows, q - vec4(-px.x * 0.35, px.y, 0., 0.)));
+  return mix(1., light, smoothstep(0., 0.025, min(edge.x, edge.y)));
+}
+float directLight(vec3 wp){
+  float day = 1., moon = 1.;
+  if (uNight < 0.999) day = mix(0.13, 1., shadowAt(wp, 0));
+  if (uNight > 0.001) moon = mix(0.32, 1., shadowAt(wp, 1));
+  return mix(day, moon, uNight);
+}
+vec3 pbr(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 wp){
   vec3 L = uSunDir; vec3 Hh = normalize(L + V);
   float NdL = max(dot(N, L), 0.), NdV = max(dot(N, V), 1e-3), NdH = max(dot(N, Hh), 0.), VdH = max(dot(V, Hh), 0.);
   float a = max(rough * rough, 0.002), a2 = a * a; float dd = NdH * NdH * (a2 - 1.) + 1.;
@@ -375,15 +420,15 @@ vec3 pbr(vec3 albedo, float rough, float metal, vec3 N, vec3 V){
   vec3 F = F0 + (1. - F0) * pow(1. - VdH, 5.);
   vec3 spec = D * G * F / (4. * NdV * NdL + 1e-4);
   vec3 kd = (1. - F) * (1. - metal);
-  vec3 col = (kd * albedo / PI + spec) * uSunCol * NdL;
+  vec3 col = (kd * albedo / PI + spec) * uSunCol * NdL * directLight(wp);
   vec3 R = reflect(-V, N);
   vec3 env = mix(skyBase(R), ambient(N) * 1.4, rough);
   vec3 Fa = F0 + (max(vec3(1. - rough), F0) - F0) * pow(1. - NdV, 5.);
-  return col + kd * albedo * ambient(N) * 2.4 + env * Fa * (1. - rough * 0.6);
+  return col + kd * albedo * (ambient(N) * 2.4 + floraSpill(wp)) + env * Fa * (1. - rough * 0.6);
 }
 vec3 fogged(vec3 col, vec3 wp){
   vec3 d = wp - uCam; float dist = length(d);
-  float f = (1. - exp(-dist * 0.0013)) * (1. - 0.6 * smoothstep(0., 160., wp.y));
+  float f = (1. - exp(-dist * mix(0.0036, 0.0019, uNight))) * (1. - 0.52 * smoothstep(0., 135., wp.y));
   // valley mist: thick near the water, thin on the slopes, heavier at night
   float mist = (1. - exp(-dist * 0.011)) * exp(-max(wp.y + 0.3, 0.) * 0.32) * (0.16 + 0.34 * uNight);
   vec3 vd = normalize(vec3(d.x, max(d.y, 0.02 * dist), d.z));
@@ -408,14 +453,26 @@ vec3 floraRamp(vec3 tip, float u){
   vec3 root = tip * 0.04 + vec3(0.008, 0.012, 0.02), body = tip * vec3(0.30, 0.31, 0.36);
   return u < 0.5 ? mix(root, body, u * 2.) : mix(body, tip * 0.9, (u - 0.5) * 2.);
 }
-vec3 floraLight(vec3 gc, vec3 N, vec3 V, float u, float self, float stir){
+// The midrib forks outward toward the tip. Fade the finest veins as a leaf becomes subpixel.
+float leafVeins(float u, float side, float seed){
+  float v = abs(side);
+  float rib = 1. - smoothstep(0.018, 0.068 + fwidth(side), v);
+  float row = u * (6. + seed * 2.) - v * (0.36 + 0.65 * v);
+  row += sign(side) * 0.17 + 0.075 * sin(17. * u + 3. * v + 6. * seed);
+  float footprint = max(fwidth(row), 0.012);
+  float veins = 1. - smoothstep(0.022, 0.065 + footprint, abs(fract(row + 0.5) - 0.5));
+  veins *= (1. - smoothstep(0.12, 0.50, footprint)) * (1. - v * v);
+  return max(rib * (1. - smoothstep(0.35, 1.1, fwidth(side))), veins * 0.64) * smoothstep(0.05, 0.23, u);
+}
+vec3 floraLight(vec3 gc, vec3 wp, vec3 N, vec3 V, float u, float self, float stir){
   // Both sides share diffuse light from the upper surface as the camera passes a leaf.
   if (N.y < 0.) N = -N;
   float ndl = max(dot(N, uSunDir), 0.) * 0.72 + 0.28;
-  vec3 lit = gc * (ambient(N) * 2.35 + uSunCol * ndl * 0.3);
-  lit += uSunCol * gc * pow(clamp(dot(-V, uSunDir), 0., 1.), 3.) * u * 0.4;
+  vec3 sunlight = uSunCol * directLight(wp);
+  vec3 lit = gc * (ambient(N) * 2.35 + sunlight * ndl * 0.3 + floraSpill(wp));
+  lit += sunlight * gc * pow(clamp(dot(-V, uSunDir), 0., 1.), 3.) * u * 0.4;
   // Pigment also supplies the emission hue. Sunlit leaves read by diffuse light alone.
-  lit += gc * uNight * (self + 0.28 * stir) * u * u;
+  lit += gc * smoothstep(0.1, 0.94, uNight) * (self + 0.42 * stir) * u * u;
   return lit;
 }
 // Ripples leave irregular flecks of froth. The same noise breaks up the swash on rocks and open water.
@@ -424,8 +481,8 @@ float shoreFroth(vec2 p){
   float crest = vnoise(p * vec2(2.4, 4.) + drift + vnoise(p * 1.1 - drift));
   return smoothstep(0.54, 0.84, crest) * smoothstep(0.23, 0.66, vnoise(p * 1.7 - drift));
 }
-vec3 waterline(vec3 alb, vec3 wp, out float wet){
-  float wl = wp.y - (${WATER.toFixed(1)} + waterWave(wp.xz, uTime).x);
+vec3 waterline(vec3 alb, vec3 wp, float level, out float wet){
+  float wl = wp.y - (level + waterWave(wp.xz, uTime).x);
   wet = smoothstep(-0.06, 0.0, wl) * (1. - smoothstep(0.0, 0.22, wl));
   alb = mix(alb * (1. - 0.45 * wet), alb * vec3(0.62, 0.78, 0.8), 1. - smoothstep(-0.25, 0., wl));
   float swash = 1. - smoothstep(0.015, 0.085, abs(wl));
@@ -447,12 +504,38 @@ uniform vec3 uR, uU, uF; uniform vec2 uTan; uniform float uMirror;
 out vec3 vDir;
 void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)) * 2. - 1.;
   vec3 d = uF + p.x * uTan.x * uR + p.y * uTan.y * uU; d.y *= uMirror; vDir = d; gl_Position = vec4(p, 1., 1.); }`,
-`in vec3 vDir; out vec4 o; void main(){ o = vec4(tonemap(skyColor(normalize(vDir))), 1.); }`);
+`in vec3 vDir; out vec4 o; void main(){ vec3 sky = skyColor(normalize(vDir)); o = vec4(tonemap(sky), starTransmission); }`);
+
+const HIGH_CANOPY = program(WORLD_VS + `
+in vec3 aPos, aNor; in float aTissue; in vec4 aSite;
+out vec3 vWP, vNormal; out float vTissue, vHue;
+void main(){
+  float seed = fract(dot(aSite.xz, vec2(0.75488, 0.56984)));
+  float a = seed * 6.2832, c = cos(a), s = sin(a);
+  mat2 rot = mat2(c, s, -s, c);
+  vec3 p = aPos;
+  p.xz = rot * p.xz;
+  p.xz += WIND_DIR * 0.012 * windWave(aSite.xz) * uWind * p.y * p.y;
+  vWP = aSite.xyz + p * aSite.w;
+  vNormal = aNor; vNormal.xz = rot * aNor.xz;
+  vHue = seed; vTissue = aTissue;
+  gl_Position = project(vWP);
+}`, `uniform float uClip;
+in vec3 vWP, vNormal; in float vTissue, vHue; out vec4 o;
+void main(){
+  if (vWP.y < uClip) discard;
+  vec3 n = normalize(vNormal);
+  vec3 leaf = mix(vec3(0.055, 0.23, 0.15), vec3(0.09, 0.31, 0.29), vHue);
+  leaf = mix(leaf, vec3(0.20, 0.095, 0.24), smoothstep(0.68, 0.98, vHue));
+  vec3 pigment = mix(vec3(0.082, 0.057, 0.071), leaf * (0.52 + vTissue), step(0.01, vTissue));
+  vec3 light = ambient(n) * 2.6 + uSunCol * (0.05 + 0.46 * max(dot(n, uSunDir), 0.)) * directLight(vWP);
+  o = vec4(tonemap(fogged(pigment * light, vWP)), 0.);
+}`);
 
 const TERRAIN = program(WORLD_VS + `
-in vec3 aPos; in vec3 aNor; in float aTrail; out float vTrail; out vec3 vWP; out vec3 vN;
-void main(){ vTrail = aTrail; vWP = aPos; vN = aNor; gl_Position = project(aPos); }`,
-`uniform float uClip; in float vTrail; in vec3 vWP; in vec3 vN; out vec4 o;
+in vec3 aPos; in vec3 aNor; in vec2 aGround; out vec2 vGround; out vec3 vWP; out vec3 vN;
+void main(){ vGround = aGround; vWP = aPos; vN = aNor; gl_Position = project(aPos); }`,
+`uniform float uClip; in vec2 vGround; in vec3 vWP; in vec3 vN; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec2 p = vWP.xz; vec2 uv = fieldUV(p); float inf = inField(uv);
@@ -460,7 +543,8 @@ void main(){
   float moist = min(1., gr.r + uSheet * inf), wear = gr.g;
   // the strip the lake keeps wet, breathing with the lapping
   float lap = 0.05 * sin(uTime * 0.9 + dot(vWP.xz, vec2(0.7, 0.4)) * 0.8) + 0.035 * sin(uTime * 1.7 + vWP.x * 1.3);
-  float wetBand = (1. - smoothstep(0.02, 0.2 + lap, vWP.y)) * step(-0.05, vWP.y);
+  float bank = vWP.y - vGround.y;
+  float wetBand = (1. - smoothstep(0.04, 0.25 + lap, bank)) * smoothstep(-0.16, -0.035, bank);
   moist = max(moist, wetBand * 0.85);
   float dist = length(vWP - uCam);
   vec3 N = normalize(vN);
@@ -470,7 +554,7 @@ void main(){
     N = normalize(N + dn * (1. - 0.7 * wear) * (1. - 0.6 * moist) * vec3(-(hx - h0), 0., -(hz - h0)) / e * 0.22);
   }
   // the mountains: once the mesh is too coarse to carry them, gullies and crags come from the slope of a ridged pattern
-  float far = smoothstep(55., 130., dist), slopeG = 1. - N.y;
+  float far = smoothstep(55., 130., dist), slopeG = 1. - normalize(vN).y;
   if (far > 0.) {
     vec2 m = p * 0.05; float ex = 0.04;
     float h0 = fbm3(m) + 0.4 * vnoise(m * 3.7), hx = fbm3(m + vec2(ex, 0.)) + 0.4 * vnoise((m + vec2(ex, 0.)) * 3.7), hz = fbm3(m + vec2(0., ex)) + 0.4 * vnoise((m + vec2(0., ex)) * 3.7);
@@ -480,44 +564,72 @@ void main(){
   // fine noise only where it can be seen; past that it just shimmers into grain
   float fine = 1. - smoothstep(30., 90., dist);
   float n1 = fbm3(p * 0.3), n2 = mix(0.5, vnoise(p * 2.7), fine), n3 = mix(0.45, vnoise(p * 9.), fine * fine);
-  vec3 moss = mix(vec3(0.045, 0.09, 0.12), vec3(0.15, 0.08, 0.22), smoothstep(0.3, 0.7, n1)) * (0.8 + 0.4 * n2);
-  vec3 sand = vec3(0.30, 0.22, 0.26) * (0.85 + 0.3 * n2);
-  vec3 bed = vec3(0.09, 0.11, 0.12) * (0.75 + 0.5 * n2);
-  vec3 rock = mix(vec3(0.15, 0.13, 0.20), vec3(0.30, 0.26, 0.34), n2);
+  float hummocks = smoothstep(0.24, 0.68, n1 + (n2 - 0.5) * 0.36);
+  vec3 moss = mix(vec3(0.034, 0.047, 0.041), vec3(0.088, 0.18, 0.092), hummocks) * (0.74 + 0.55 * n3);
+  vec3 sand = mix(vec3(0.16, 0.12, 0.083), vec3(0.41, 0.34, 0.22), n1) * (0.75 + 0.42 * n2);
+  vec3 bed = mix(vec3(0.060, 0.096, 0.082), vec3(0.24, 0.23, 0.16), n2) * (0.74 + 0.48 * n3);
+  vec3 rock = mix(vec3(0.095, 0.103, 0.117), vec3(0.33, 0.28, 0.25), n2 * 0.65 + n1 * 0.35);
   vec3 alb = moss; float rough = 0.88, metal = 0.;
-  float shore = 1. - smoothstep(0.12, 0.45 + 0.25 * n1, y);
+  float shore = 1. - smoothstep(0.12, 0.52 + 0.35 * n1, bank);
   alb = mix(alb, sand, shore); rough = mix(rough, 0.72, shore);
-  float under = 1. - smoothstep(-0.35, -0.05, y);
+  float under = 1. - smoothstep(-0.35, -0.05, bank);
   alb = mix(alb, bed, under);
-  float rk = max(smoothstep(0.3, 0.48, slope + 0.15 * n2), smoothstep(6., 12., y) * 0.8);
+  float rk = max(smoothstep(0.23, 0.53, mix(slopeG, slope, 0.22) + 0.13 * n2), smoothstep(6., 12., y) * 0.8);
   alb = mix(alb, rock, rk); rough = mix(rough, 0.62, rk);
-  alb = mix(alb, vec3(0.32, 0.20, 0.16) * (0.70 + 0.48 * n2), vTrail * 0.9);
+  // Discontinuous beds and runoff flutes break up the exposed valley cliffs at the scale
+  // visible across the lake. The height coordinate keeps detail on near-vertical faces.
+  float cliff = smoothstep(0.10, 0.46, slopeG) * smoothstep(3., 11., y) * (1. - smoothstep(34., 55., y)) * (1. - vGround.x);
+  if (cliff > 0.001) {
+    float lateral = dot(p, vec2(0.78, 0.62));
+    float bedHeight = y + dot(p, vec2(0.15, -0.09)) + 1.65 * n1;
+    float lithology = fbm3(vec2(lateral * 0.16, bedHeight * 0.72));
+    float flutes = vnoise(p * vec2(0.34, 0.23) + vec2(bedHeight * 0.10, n1));
+    float ledge = smoothstep(0.31, 0.69, lithology + (n1 - 0.5) * 0.33);
+    float runnel = smoothstep(0.44, 0.80, flutes) * (1. - 0.66 * ledge);
+    vec3 face = mix(vec3(0.078, 0.092, 0.103), vec3(0.38, 0.29, 0.20), ledge);
+    face = mix(face, vec3(0.050, 0.074, 0.065), runnel * 0.80);
+    alb = mix(alb, face * (0.78 + 0.38 * n1), cliff);
+    N = normalize(N + cliff * (vec3(0., 1., 0.) - N * N.y) * (0.68 * ledge - 0.26 - runnel * 0.20));
+  }
+  alb = mix(alb, vec3(0.32, 0.20, 0.16) * (0.70 + 0.48 * n2), vGround.x * 0.9);
   float vein = rk * smoothstep(0.74, 0.8, n3) * (1. - smoothstep(12., 28., dist));
-  metal = vein * 0.85; rough = mix(rough, 0.18, vein); alb = mix(alb, vec3(0.75, 0.62, 0.95), vein);
+  // Pale seams are silica in the bedrock, so they keep a broad dielectric highlight.
+  rough = mix(rough, 0.48, vein);
+  alb = mix(alb, vec3(0.33, 0.30, 0.29), vein * 0.44);
   // forest under the snow line on the far slopes, rock laid down in strata, and snow that settles on ledges and in
   // gullies while steep faces and the sharpest crests stay bare
   float treeline = far * smoothstep(9., 15., y) * (1. - smoothstep(24., 36., y + n1 * 8.)) * (1. - smoothstep(0.45, 0.7, slope));
   alb = mix(alb, vec3(0.045, 0.075, 0.085) * (0.75 + 0.5 * vnoise(p * 0.7)), treeline * 0.7);
-  alb *= mix(1., 0.84 + 0.16 * sin(y * 0.55 + n1 * 5.), rk * far);
+  // Broad, tilted beds cut across the relief. Narrow benches weather to a lighter colour.
+  float bedding = y * 0.45 + dot(p, vec2(0.048, -0.033)) + 3.4 * n1;
+  float bench = smoothstep(0.55, 0.95, sin(bedding + 0.65 * sin(bedding * 0.37)));
+  alb = mix(alb, mix(alb * vec3(0.74, 0.78, 0.90), alb * vec3(1.24, 1.14, 0.96), bench), rk * far);
   float snow = smoothstep(34., 58., y + n1 * 16.) * (1. - smoothstep(0.4, 0.62, slopeG + 0.12 * (fbm3(p * 0.03) - 0.5)));
   alb = mix(alb, vec3(0.82, 0.79, 0.95), snow); rough = mix(rough, 0.45, snow);
   // cobbles on the beach and under the shallows, pebbles between them; wet ones go dark and glossy
-  float cobZ = (1. - smoothstep(0.25, 0.7, y)) * smoothstep(-1.4, -0.9, y) * (1. - smoothstep(14., 32., dist)) * (1. - rk);
+  float cobZ = (1. - smoothstep(0.30, 0.83, bank)) * smoothstep(-1.6, -0.9, bank) * (1. - smoothstep(14., 32., dist)) * (1. - 0.6 * rk);
   if (cobZ > 0.01) {
-    vec3 cb = cobble(p * 3.1), pb = cobble(p * 8.5 + 3.7);
+    vec2 gravel = mat2(0.91, 0.41, -0.41, 0.91) * p * vec2(2.9, 3.8);
+    vec3 cb = cobble(gravel), pb = cobble(p * vec2(7.2, 9.3) + 3.7);
     float stone = (1. - smoothstep(0.20, 0.33, cb.x)) * smoothstep(0.02, 0.17, cb.y);
     float peb = (1. - smoothstep(0.15, 0.31, pb.x)) * smoothstep(0.02, 0.13, pb.y);
-    vec3 sc = mix(mix(vec3(0.20, 0.18, 0.24), vec3(0.32, 0.29, 0.36), cb.z), vec3(0.17, 0.23, 0.25), step(0.72, cb.z));
+    vec3 sc = mix(mix(vec3(0.09, 0.105, 0.11), vec3(0.38, 0.34, 0.28), cb.z), vec3(0.10, 0.18, 0.16), step(0.76, cb.z));
     sc *= 0.75 + 0.4 * (1. - cb.x * 1.3);
     vec3 pc2 = mix(vec3(0.14, 0.12, 0.17), vec3(0.28, 0.25, 0.3), pb.z) * mix(0.55, 1., peb);
     vec3 cobA = mix(mix(alb, pc2, peb), sc, stone * smoothstep(0.35, 0.6, vnoise(p * 0.7) + 0.3));
     float wcob = cobZ * (0.6 + 0.4 * vnoise(p * 0.45));
     alb = mix(alb, cobA, wcob); rough = mix(rough, 0.55, wcob);
+    // Soft moving caustic patches break across the sand and gravel in sunlit shallows.
+    float drift = dot(p, vec2(1.6, 1.0)) + uTime * 0.70 + 4.0 * n1;
+    float focus = 0.5 + 0.5 * sin(drift * 2.6 + sin(p.y * 1.7 - uTime * 0.43) * 2.8);
+    alb *= 1. + 0.48 * under * (1. - uNight) * directLight(vWP) * wcob * focus * focus * n2;
   }
   alb = mix(alb, vec3(0.21, 0.15, 0.19), smoothstep(0.03, 0.6, wear) * 0.75); rough = mix(rough, 0.75, wear);
-  alb *= 1. - 0.5 * moist; rough = mix(rough, 0.1, smoothstep(0.02, 0.5, moist) * 0.9);
+  // Keep wet sand granular; only a film of standing water gives a tight sky highlight.
+  alb *= 1. - 0.44 * moist;
+  rough = mix(rough, 0.30, smoothstep(0.04, 0.65, moist) * 0.87);
   vec3 V = normalize(uCam - vWP);
-  vec3 col = pbr(alb, rough, metal, N, V);
+  vec3 col = pbr(alb, rough, metal, N, V, vWP);
   // the last of the low sun catching the snowy peaks
   col += vec3(1., 0.52, 0.58) * 0.14 * snow * smoothstep(40., 110., y) * max(dot(N, uSunDir), 0.) * (1. - uNight);
   col += moss * uNight * (0.18 + 2.2 * glowI(glow)) * (1. - rk) * (1. - shore);
@@ -525,15 +637,16 @@ void main(){
 }`);
 
 const ROCK = program(WORLD_VS + `
-in vec3 aPos; in vec3 aNor; in vec4 aI; in vec4 aS;
+in vec3 aPos; in vec3 aNor; in vec4 aI; in vec4 aS; in float aLevel;
+flat out float vLevel;
 out vec3 vWP; out vec3 vN; out float vH; out vec3 vLoc; out vec3 vNl;
 void main(){
   float c = cos(aI.w), s = sin(aI.w);
   vec3 p = aPos * aS.xyz; p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
   vec3 n = aNor / aS.xyz; n = normalize(vec3(c * n.x - s * n.z, n.y, s * n.x + c * n.z));
-  vWP = p + aI.xyz; vN = n; vH = aS.w; vLoc = aPos * aS.xyz; vNl = aNor; gl_Position = project(vWP);
+  vWP = p + aI.xyz; vLevel = aLevel; vN = n; vH = aS.w; vLoc = aPos * aS.xyz; vNl = aNor; gl_Position = project(vWP);
 }`,
-`uniform float uClip; in vec3 vWP; in vec3 vN; in float vH; in vec3 vLoc; in vec3 vNl; out vec4 o;
+`uniform float uClip; flat in float vLevel; in vec3 vWP; in vec3 vN; in float vH; in vec3 vLoc; in vec3 vNl; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 N = normalize(vN); vec3 V = normalize(uCam - vWP);
@@ -553,22 +666,26 @@ void main(){
       N = normalize(N + near * vec3(-(hx - h0), 0., -(hz - h0)) / e * 0.07);
     }
     float n1 = vnoise(lp.xz * 0.9 + lp.y), n2 = vnoise(lp.xy * 6. + lp.z * 3.), speck = vnoise(lp.zx * 22. + lp.y * 9.);
-    vec3 alb = mix(vec3(0.15, 0.135, 0.19), vec3(0.27, 0.24, 0.29), n1);
+    vec3 alb = mix(vec3(0.077, 0.09, 0.11), vec3(0.29, 0.27, 0.24), n1);
     alb = mix(alb, vec3(0.31, 0.28, 0.27), smoothstep(0.55, 0.8, n2) * 0.5);
-    alb *= (0.85 + 0.3 * speck) * (0.92 + 0.08 * sin(vLoc.y * 9. + n1 * 4.));
+    float grain = sin(dot(vLoc, vec3(1.9, 8.5, -1.1)) + n1 * 5.3 + n2 * 1.8);
+    alb *= (0.84 + 0.28 * speck) * (0.86 + 0.14 * grain);
+    alb += vec3(0.073, 0.061, 0.048) * smoothstep(0.78, 0.98, grain) * n2 * near;
     alb *= mix(0.72, 1.12, smoothstep(-0.4, 0.8, N.y));      // weathered tops pale, overhangs shadowed
     alb *= 1. - 0.62 * crack;
     float lich = smoothstep(0.7, 0.76, vnoise(lp.xz * 7. + lp.y * 5.)) * smoothstep(0.35, 0.6, vnoise(lp.zx * 1.1)) * (1. - crack);
     vec3 lichC = mix(vec3(0.38, 0.32, 0.16), vec3(0.16, 0.36, 0.34), step(0.5, fract(vH * 7.3)));
     alb = mix(alb, lichC * (0.7 + 0.3 * speck), lich * 0.5);
-    float moss = smoothstep(0.5, 0.85, N.y) * smoothstep(0.35, 0.6, vnoise(vWP.xz * 1.4 + vH * 5.) + 0.15 * speck);
-    alb = mix(alb, vec3(0.035, 0.085, 0.10) * (0.8 + 0.4 * speck), moss);
+    float humus = vnoise(vWP.xz * 1.4 + vH * 5.);
+    float moss = smoothstep(0.28, 0.72, N.y + 0.38 * (humus - 0.5)) * smoothstep(0.29, 0.63, humus + 0.15 * speck);
+    vec3 mossTint = mix(vec3(0.027, 0.08, 0.052), vec3(0.12, 0.215, 0.103), n2);
+    alb = mix(alb, mossTint * (0.68 + 0.6 * speck), moss);
     float shoreWet;
-    alb = waterline(alb, vWP, shoreWet);
+    alb = waterline(alb, vWP, vLevel, shoreWet);
     float wet = clamp(max(shoreWet, (texture(uGround, uv).r + uSheet) * inf), 0., 1.);
     alb *= (1. - 0.3 * wet) * mix(0.5, 1., smoothstep(-0.3, 0.4, vLoc.y));
-    col = pbr(alb, mix(0.8 - 0.15 * lich, 0.14, wet * 0.9), 0., N, V);
-    col += vec3(0.035, 0.085, 0.10) * moss * uNight * (0.28 + glowI(glow));
+    col = pbr(alb, mix(0.8 - 0.15 * lich, 0.14, wet * 0.9), 0., N, V, vWP);
+    col += mossTint * moss * uNight * (0.28 + glowI(glow));
     col += lichC * lich * (0.075 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
   }
   o = vec4(tonemap(fogged(col, vWP)), 0.);
@@ -592,7 +709,7 @@ void main(){
   float veil = smoothstep(0.45, 0.8, vnoise(vec2(u * 7. + seed * 13., seed * 31. + dot(vWP, vec3(1.3, 0.4, 0.9)))));
   float milk = 1. - smoothstep(0., 0.55, u), shoreWet;
   vec3 body = deep * mix(0.07, 0.17, milk) * (0.8 + 0.35 * facet) * (1. - 0.3 * veil);
-  vec3 col = pbr(waterline(body, vWP, shoreWet), 0.08, 0., N, V);
+  vec3 col = pbr(waterline(body, vWP, 0., shoreWet), 0.08, 0., N, V, vWP);
   float inner = (0.025 + 0.22 * uNight * (0.45 + 0.7 * smoothstep(-0.7, 0.85, windWave(vWP.xz)))) * (smoothstep(0.3, 1., u) * 1.4 + 0.15) * (0.8 + 0.2 * bands);
   // and the star shining through it from behind
   float through = pow(clamp(dot(-V, uSunDir), 0., 1.), 2.) * (0.4 + 0.6 * u) * (1. - 0.7 * uNight);
@@ -626,7 +743,7 @@ void main(){
   vec3 bark = mix(vec3(0.07, 0.045, 0.06), vec3(0.15, 0.10, 0.12), smoothstep(-0.3, 0.7, grain)) * (0.8 + 0.4 * fine);
   bark = mix(bark, vec3(0.29, 0.24, 0.28) * (0.8 + 0.3 * fine), dead);
   N = normalize(N + vec3(0., 0.15 * grain, 0.) * (1. - dead));
-  vec3 col = pbr(bark, mix(0.75, 0.5, dead), 0., N, V);
+  vec3 col = pbr(bark, mix(0.75, 0.5, dead), 0., N, V, vWP);
   vec3 tint = pigment(vHue * 0.55);
   float groove = smoothstep(0.23, 0.48, -grain) * (1. - dead);
   col += tint * groove * (uNight * (0.045 + 0.08 * glowI(vStir))) * (0.6 + 0.4 * sin(uTime * 0.7 + vW.y * 4. - vW.w * 9.));
@@ -636,7 +753,7 @@ void main(){
 // Interpolate at a covered sample on thin foliage. A pixel center can fall far outside a subpixel triangle.
 const JLEAF = program(WORLD_VS + `
 in vec4 aR; in vec4 aD; in vec4 aM; in vec4 aB;
-centroid out vec3 vWP; centroid out float vU; centroid out vec3 vN; centroid out float vStir; centroid out float vHue; centroid out float vSeed;
+centroid out vec3 vWP; centroid out float vU; centroid out vec3 vN; centroid out float vStir; centroid out float vHue; centroid out float vSeed; centroid out float vSide;
 void main(){
   int vid = gl_VertexID;
   float u = vid >= 12 ? 1. : float(vid / 2) / 6.;
@@ -654,18 +771,21 @@ void main(){
   vec3 tang = normalize(dir + up * (lift * 3.1416 * cos(u * 3.1416) - 2. * droop * u));
   vN = normalize(normalize(cross(wd, tang)) + wd * side * 0.8);
   vStir = texture(uGlow, fieldUV(aB.xy)).r;
-  vWP = p; vU = u; vHue = aB.w; vSeed = seed;
+  vWP = p; vU = u; vHue = aB.w; vSeed = seed; vSide = side;
   gl_Position = project(p);
 }`,
-`uniform float uClip; centroid in vec3 vWP; centroid in float vU; centroid in vec3 vN; centroid in float vStir; centroid in float vHue; centroid in float vSeed; out vec4 o;
+`uniform float uClip; centroid in vec3 vWP; centroid in float vU; centroid in vec3 vN; centroid in float vStir; centroid in float vHue; centroid in float vSeed; centroid in float vSide; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 tint = pigment(vHue * 0.55);
   tint *= mix(vec3(1.), tint, 0.45);
   float u = clamp(vU, 0., 1.);
   vec3 gc = floraRamp(tint, pow(u, 1.15)) * (0.56 + 0.4 * clamp(vSeed, 0., 1.));
-  float pulse = 0.84 + 0.28 * windWave(vWP.xz);
-  vec3 lit = floraLight(gc, normalize(vN), normalize(uCam - vWP), u, 0.19 * pulse, glowI(vStir));
+  float veins = leafVeins(u, clamp(vSide, -1., 1.), vSeed);
+  gc *= 0.89 + 0.16 * veins;
+  float pulse = 0.09 + 0.02 * sin(uTime * 0.6 + vHue * 9.);
+  vec3 lit = floraLight(gc, vWP, normalize(vN), normalize(uCam - vWP), u, pulse, glowI(vStir));
+  lit += tint * uNight * veins * (0.035 + smoothstep(0.41, 0.88, vSeed) * 0.16);
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
@@ -704,19 +824,22 @@ void main(){
   float g = pow(y, 1.45);
   g *= mix(0.72, 1., smoothstep(0.03, 0.3, vGH));
   g = mix(0.45, g, 0.85);
-  // the meadow's colour drifts teal, cyan, violet across tens of metres, in a gradient, never a step
-  float hue = smoothstep(0.12, 0.88, vnoise(vWP.xz * 0.03 + 3.) * 0.8 + vnoise(vWP.xz * 0.09 - 5.) * 0.2) * 0.5 + (vPatch - 0.5) * 0.03;
-  vec3 tip = pigment(hue);
+  // The meadow grows in broad jade swaths with scattered plum heath.
+  float heath = vnoise(vWP.xz * 0.03 + 3.) * 0.8 + vnoise(vWP.xz * 0.09 - 5.) * 0.2;
+  float meadowVariation = vnoise(vWP.xz * 0.052 + 12.);
+  vec3 jade = mix(vec3(0.042, 0.32, 0.13), vec3(0.10, 0.54, 0.37), meadowVariation);
+  vec3 plum = mix(vec3(0.21, 0.13, 0.34), vec3(0.43, 0.22, 0.51), meadowVariation);
+  vec3 tip = mix(jade, plum, smoothstep(0.49, 0.68, heath + (vPatch - 0.5) * 0.06));
   vec3 gc = floraRamp(tip, g);
   float pn = vnoise(vWP.xz * 0.28) * 0.6 + vnoise(vWP.xz * 1.1) * 0.4;
   gc *= mix(0.8, 1.2, pn);
   gc = mix(gc, tip, smoothstep(0.55, 0.95, pn) * 0.2 * y);
   gc *= (0.88 + 0.24 * vGA.y) * mix(0.42, 1., smoothstep(0., 0.55, y)) * (1. - 0.35 * vWet);
-  vec3 lit = floraLight(gc, normalize(vN), normalize(uCam - vWP), y, 0.12, glowI(vGlow));
+  vec3 lit = floraLight(gc, vWP, normalize(vN), normalize(uCam - vWP), y, 0.12, glowI(vGlow));
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
-// understory: one blade, five plants. Rosettes (broad crimson leaves with a living midrib), ferns (fronds cut into
+// understory: one parametric strip shared by the meadow species. Rosettes (broad crimson leaves with a living midrib), ferns (fronds cut into
 // leaflets in the fragment shader), glow tubes (capsules whose tips are lamps), coilferns (stalks that roll their tips
 // into spirals) and lantern bells (arching stems that nod a glowing bulb). Each blade follows a centreline in its own
 // plane; veins brighten at night and when you stir the ground beside them.
@@ -732,7 +855,10 @@ vec2 path(float type, float u, float L, vec4 S){
     float k = (u - c) / (1. - c), a = k * 5.2, rad = L * 0.15 * (1. - 0.72 * k);
     return vec2(L * S.x * c + L * 0.15, L * S.y * c) + rad * vec2(-cos(a), sin(a));
   }
-  return vec2(L * S.x * (1. - cos(u * 1.7)) * 1.25, L * S.y * sin(u * 2.5));
+  if (type < 4.5) return vec2(L * S.x * (1. - cos(u * 1.7)) * 1.25, L * S.y * sin(u * 2.5));
+  // Radial lobes meet at a narrow throat, then flare into the scalloped rim of a waxy cup.
+  float flare = smoothstep(0.31, 0.94, u);
+  return L * vec2(S.x * (0.025 + 0.98 * flare), S.y * (u * 1.31 - 0.36 * flare) + S.z * sin(u * 3.1416));
 }
 void main(){
   int vid = gl_VertexID;
@@ -744,21 +870,28 @@ void main(){
   vec2 c = path(type, u, L, aS2), t2 = normalize(path(type, min(u + 0.01, 1.), L, aS2) - path(type, max(u - 0.01, 0.), L, aS2));
   vec3 p = dir * c.x + up * c.y;
   float flex = type > 1.5 && type < 2.5 ? 0.3 : 1.;
-  p.xz += WIND_DIR * windWave(aP.xz + dir.xz * c.x) * uWind * 0.18 * u * u * L * flex;
-  p += sd * sin(uTime * 2.3 + seed * 30. + u * 3.) * 0.02 * u * L * flex;
+  float flutter = type > 4.5 ? 0.12 : 1.;
+  p.xz += WIND_DIR * windWave(aP.xz + dir.xz * c.x * flutter) * uWind * 0.18 * u * u * L * flex;
+  p += sd * sin(uTime * 2.3 + seed * 30. + u * 3.) * 0.02 * u * L * flex * flutter;
   float w;
   if (type < 0.5) w = W * sin(min(1., u * 2.4) * 1.5708) * (1. - 0.6 * u * u);
   else if (type < 1.5) w = W * (1. - 0.72 * u) * sin(min(1., u * 4.) * 1.5708);
   else if (type < 2.5) w = W * (u < 0.85 ? 1. : sqrt(max(0., 1. - pow((u - 0.85) / 0.15, 2.))));
   else if (type < 3.5) w = W * (1. - 0.55 * u);
-  else w = W * (0.28 + 1.2 * sin(clamp((u - 0.72) / 0.28, 0., 1.) * 3.1416));
+  else if (type < 4.5) w = W * (0.28 + 1.2 * sin(clamp((u - 0.72) / 0.28, 0., 1.) * 3.1416));
+  else {
+    w = W * (0.05 + smoothstep(0.30, 0.77, u)) * (1. - 0.84 * smoothstep(0.79, 1., u));
+    // Each lobe curls back at the lip; the joined bases form the fluted throat.
+    p += dir * L * (0.055 * sin(3.1416 * u) + 0.07 * smoothstep(0.83, 1., u));
+    p.y -= L * (0.10 + 0.025 * sin(phi * 3.)) * smoothstep(0.8, 1., u);
+  }
   float tw = (seed - 0.5) * 1.6 * u * step(type, 1.5);
   vec3 wdir = normalize(sd * cos(tw) + up * sin(tw));
   p += wdir * side * w * 0.5;
   vec3 tang = normalize(dir * t2.x + up * t2.y);
   vN = normalize(normalize(cross(wdir, tang)) + wdir * side * (type > 1.5 ? 1.6 : 0.7));
   vStir = texture(uGlow, fieldUV(aP.xz)).r;
-  vWP = p + aP.xyz; vU = u; vSide = side; vType = type; vSeed = seed; vHue = fract(aP.x * 0.21 + aP.z * 0.17);
+  vWP = p + aP.xyz; vU = u; vSide = side; vType = type; vSeed = seed; vHue = type > 4.5 ? aS2.w : fract(aP.x * 0.21 + aP.z * 0.17);
   gl_Position = project(vWP);
 }`,
 `uniform float uClip; centroid in vec3 vWP; centroid in float vU; centroid in float vSide; centroid in vec3 vN; centroid in float vType; centroid in float vStir; centroid in float vSeed; centroid in float vHue; out vec4 o;
@@ -772,14 +905,32 @@ void main(){
   else if (vType < 1.5) tip = TEAL * 0.68;
   else if (vType < 2.5) tip = CYAN;
   else if (vType < 3.5) tip = mix(VIOLET, CYAN, vHue * 0.4);
-  else tip = mix(MAGENTA, VIOLET, vHue * 0.5);
+  else if (vType < 4.5) tip = mix(MAGENTA, VIOLET, vHue * 0.5);
+  else tip = mix(vec3(0.085, 0.72, 0.62), vec3(0.94, 0.22, 0.34), smoothstep(0.40, 0.57, vHue));
   vec3 gc = floraRamp(tip, pow(u, 1.1));
-  float midrib = (1. - smoothstep(0.04, 0.18, abs(s))) * step(vType, 1.5);
-  float tissue = midrib * 0.38;
-  if (vType > 1.5 && vType < 2.5) tissue = smoothstep(0.7, 1., u);
-  if (vType > 2.5 && vType < 3.5) tissue = smoothstep(0.55, 1., u) * (1. - smoothstep(0.04, 0.3, abs(s)));
-  if (vType > 3.5) tissue = smoothstep(0.7, 0.86, u);
-  vec3 lit = floraLight(gc, normalize(vN), normalize(uCam - vWP), u, 0.06 + 0.37 * tissue, glowI(vStir));
+  float veins = leafVeins(u, s, vSeed);
+  float tissue = veins * 0.52;
+  if (vType > 1.5 && vType < 2.5) tissue = 0.65 * smoothstep(0.70, 0.97, u);
+  if (vType > 2.5 && vType < 3.5) tissue = smoothstep(0.44, 0.78, u) * (1. - smoothstep(0.20, 0.67, abs(s)));
+  if (vType > 3.5 && vType < 4.5) {
+    float lobe = smoothstep(0.70, 0.88, u);
+    float ribs = 0.5 + 0.5 * cos(9. * s + 1.7 * sin(u * 12. + vSeed));
+    tissue = lobe * (0.17 + 0.34 * (1. - s * s) + 0.21 * ribs + 0.21 * veins);
+    gc *= 1. - lobe * (0.15 + 0.23 * (1. - ribs));
+  }
+  if (vType > 4.5) {
+    float rim = smoothstep(0.83, 0.97, u);
+    float striae = 0.5 + 0.5 * cos(s * 16. + u * 7. + vSeed);
+    float throat = smoothstep(0.24, 0.43, u) * (1. - smoothstep(0.54, 0.73, u));
+    tissue = (0.11 + 0.68 * veins) * throat + veins * 0.50 + rim * 0.72;
+    gc = tip * (0.065 + 0.23 * u + 0.08 * veins + 0.10 * rim);
+    gc *= (0.70 + 0.30 * striae) * (0.75 + 0.25 * abs(s));
+  } else gc *= 0.86 + veins * 0.25;
+  float stir = glowI(vStir);
+  vec3 lit = floraLight(gc, vWP, normalize(vN), normalize(uCam - vWP), u, 0.04, stir);
+  // The circulating pulse stays inside the living tissue and carries the leaf's own pigment.
+  float breath = 0.92 + 0.08 * sin(uTime * 0.74 + vHue * 11. - 3.2 * u);
+  lit += tip * smoothstep(0.10, 0.94, uNight) * tissue * breath * (0.56 + 0.68 * stir);
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
@@ -790,7 +941,7 @@ void main(){
   vWave = waterWave(aXZ, uTime).x;
   vWP = vec3(aXZ.x, aLevel + vWave, aXZ.y); vDepth = aDepth; gl_Position = project(vWP);
 }`,
-`uniform sampler2D uRefl; uniform vec2 uRes; uniform vec4 uRip[12];
+`uniform sampler2D uRefl; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel; uniform vec4 uRip[12];
 in vec3 vWP; in float vDepth; in float vWave; out vec4 o;
 vec2 waveGrad(vec2 p){
   vec2 g = waterWave(p, uTime).yz;
@@ -814,29 +965,42 @@ vec2 waveGrad(vec2 p){
 void main(){
   vec2 p = vWP.xz; vec2 uv = fieldUV(p);
   float glow = texture(uGlow, uv).r * inField(uv);
-  vec2 g = waveGrad(p); vec3 N = normalize(vec3(-g.x, 1., -g.y));
-  vec3 V = normalize(uCam - vWP); float NdV = max(dot(N, V), 0.);
-  float F = 0.02 + 0.98 * pow(1. - NdV, 5.);
-  vec2 suv = gl_FragCoord.xy / uRes + N.xz * 0.035;
-  float stream = smoothstep(0., 0.22, vWP.y - vWave);
-  vec3 refl = mix(texture(uRefl, suv).rgb, tonemap(skyBase(reflect(-V, N))), stream);
-  float d = max(vDepth + vWave, 0.);
-  vec3 body = mix(vec3(0.03, 0.15, 0.17), vec3(0.008, 0.025, 0.07), smoothstep(0., 3., d));
-  vec3 Hh = normalize(uSunDir + V); float spec = pow(max(dot(N, Hh), 0.), 900.) * 25.;
-  vec3 hdr = body * (ambient(N) * 3. + uSunCol * 0.12) + uSunCol * spec * F * 4. * (1. - 0.75 * uNight);
-  vec3 gc = pow(glowCol(p * 1.3 + 7.), vec3(1.7));
-  float current = sin(p.y * 4.0 - uTime * 3.5 + fbm3(p * 1.7) * 6.);
-  hdr += stream * (0.025 + 0.07 * smoothstep(0.8, 1., current)) * vec3(0.25, 0.78, 0.82);
-  hdr += gc * uBio * glowI(glow) * 1.9;
-  hdr += vec3(0.5, 0.45, 0.6) * smoothstep(0.12, 0.0, d) * 0.1;
-  vec3 col = tonemap(fogged(hdr, vWP));
-  col = mix(col, refl, clamp(F * 0.9 + 0.08, 0., 1.)) + tonemap(gc * uBio * glowI(glow)) * 0.25;
-  float depth = vDepth + vWave;
-  float swash = 1. - smoothstep(0.025, 0.22, abs(depth - 0.06));
-  float foam = swash * shoreFroth(p);
-  col = mix(col, vec3(0.68, 0.78, 0.84), foam * 0.33);
-  float alpha = clamp(max(F, smoothstep(0., 1.3, d) * 0.9 + 0.04) + glow * 0.5 + foam * 0.24, 0., 1.);
-  alpha *= smoothstep(-0.02, 0.035, depth);
+  float level = vWP.y - vWave, depth = vDepth + vWave;
+  float stream = smoothstep(0.03, 0.7, level);
+  vec2 g = waveGrad(p);
+  float flow = p.y * 3.3 - uTime * 3.1 + vnoise(p * 1.3 - vec2(0., uTime * 0.21)) * 3.8;
+  g += stream * vec2(0.012 * sin(flow * 0.71), 0.028 * cos(flow));
+  vec3 N = normalize(vec3(-g.x, 1., -g.y));
+  vec3 V = normalize(uCam - vWP); float NdV = clamp(dot(N, V), 0., 1.);
+  float F = 0.022 + 0.978 * pow(1. - NdV, 5.);
+  vec2 forward = vec2(uRightXZ.y, -uRightXZ.x);
+  vec2 distortion = vec2(dot(N.xz, uRightXZ) * uRes.y / uRes.x, dot(N.xz, forward));
+  vec2 suv = gl_FragCoord.xy / uRes;
+  vec2 warped = suv + distortion * mix(0.065, 0.16, NdV);
+  float edge = min(min(warped.x, warped.y), min(1. - warped.x, 1. - warped.y));
+  float planar = (1. - smoothstep(0.08, 0.85, abs(level - uMirrorLevel))) * smoothstep(0., 0.025, edge);
+  vec3 refl = mix(tonemap(skyBase(reflect(-V, N))), texture(uRefl, clamp(warped, 0., 1.)).rgb, planar);
+
+  // At a grazing angle the ray travels farther through water. Alpha carries the
+  // fraction blocked by reflection and extinction; the actual bed shows through the rest.
+  float path = max(0., depth) / max(0.18, NdV);
+  float absorb = 1. - exp(-path * 0.66);
+  float scatter = (1. - F) * absorb;
+  vec3 body = mix(vec3(0.045, 0.28, 0.19), vec3(0.010, 0.087, 0.115), absorb);
+  float sun = directLight(vWP);
+  body *= ambient(N) * 2.8 + uSunCol * sun * (0.12 + 0.14 * max(uSunDir.y, 0.));
+  float alpha = F + scatter;
+  vec3 col = (F * refl + scatter * tonemap(fogged(body, vWP))) / max(alpha, 0.022);
+  vec3 Hh = normalize(uSunDir + V);
+  float sunGlint = pow(clamp(dot(N, Hh), 0., 1.), 510.) * 3.5;
+  col += tonemap(uSunCol * sun * sunGlint * F) * (1. - 0.85 * uNight);
+
+  float swash = 1. - smoothstep(0.025, 0.21, abs(depth - 0.06));
+  float foam = (swash + 0.38 * stream * smoothstep(0.7, 1., sin(flow))) * shoreFroth(p);
+  float light = uBio * glowI(glow);
+  col = mix(col, tonemap(vec3(0.68, 0.78, 0.81) * (ambient(N) * 2.4 + uSunCol * sun * 0.16)), foam * 0.48);
+  col += tonemap(glowCol(p * 1.3 + 7.) * light * (0.5 + 1.3 * uNight));
+  alpha = min(1., alpha + foam * 0.2 + light * 0.40) * smoothstep(-0.02, 0.035, depth);
   o = vec4(col, alpha);
 }`);
 
@@ -863,20 +1027,20 @@ void main(){
 const STARS = program(`
 in vec4 aS; in vec4 aC;
 uniform mat4 uVP; uniform mat3 uSky; uniform vec3 uCam; uniform float uMirror, uTime, uNight, uPx;
-out vec3 vC; out float vI; out vec3 vDir;
+out vec3 vC; out float vI;
 void main(){
   vec3 d = aS.xyz * uSky;
   vec4 c = uVP * vec4(uCam.x + d.x * 2000., (uCam.y + d.y * 2000.) * uMirror, uCam.z + d.z * 2000., 1.);
   gl_Position = vec4(c.xy, c.w * 0.99999, c.w);
   float bright = pow(10., -0.4 * (aS.w - 1.5));
   float tw = 1. - (0.12 + 0.3 * smoothstep(0.5, 0., d.y)) * (0.5 + 0.5 * sin(uTime * (2.5 + aC.w * 6.) + aC.w * 60.));
-  vI = clamp(0.2 + 0.7 * pow(bright, 0.28), 0., 1.6) * tw * smoothstep(-0.03, 0.22, d.y) * (0.55 + 0.45 * smoothstep(0., 0.5, d.y)) * (0.06 + 0.94 * uNight);
-  vC = aC.rgb; vDir = d;
+  vI = clamp(0.2 + 0.7 * pow(bright, 0.28), 0., 1.6) * tw * smoothstep(-0.03, 0.22, d.y) * (0.55 + 0.45 * smoothstep(0., 0.5, d.y)) * uNight * uNight;
+  vC = aC.rgb;
   gl_PointSize = (2. + 2.6 * pow(min(bright, 8.), 0.3)) * uPx;
-}`, `in vec3 vC; in float vI; in vec3 vDir; out vec4 o;
+}`, `in vec3 vC; in float vI; out vec4 o;
 void main(){
   vec2 q = gl_PointCoord - 0.5; float r2 = dot(q, q) * 4.;
-  float a = (exp(-r2 * 7.) + exp(-r2 * 2.2) * 0.22) * vI * starsSeen(normalize(vDir));
+  float a = (exp(-r2 * 7.) + exp(-r2 * 2.2) * 0.22) * vI;
   o = vec4(tonemap(vC * a * 1.5), 0.);
 }`);
 // the band in the galaxy's own coordinates (x toward the core, y its pole): a meandering disc, fatter toward the core,
@@ -905,7 +1069,9 @@ void main(){
   float lane = exp(-sq((bb - 0.012 + (fbmv(g * 9. + 3.3, 3) - 0.5) * 0.07) / 0.034)) * smoothstep(-1.25, -0.15, l) * (1. - smoothstep(0.9, 1.6, l));
   float dpatch = smoothstep(0.56, 0.82, fbmv(g * 13. + 9., 4)) * smoothstep(0., 0.5, disc + bulge * 0.4);
   float coal = smoothstep(0.62, 0.9, fbmv(g * 30. + 4., 3)) * disc;
-  float dust = clamp(lane * 0.88 + dpatch * 0.6 + coal * 0.5, 0., 0.94);
+  float streak = bb + 0.065 + (fbmv(g * 11. + 7., 4) - 0.5) * 0.16;
+  float threads = exp(-sq(streak / 0.013)) + 0.58 * exp(-sq((streak + 0.022) / 0.007));
+  float dust = clamp(lane * 0.86 + dpatch * 0.56 + coal * 0.46 + threads * disc * 0.58, 0., 0.96);
   I *= (1. - dust) * (0.8 + 0.4 * fbmv(g * 170., 2));
   vec3 col = mix(vec3(0.52, 0.66, 1.0), vec3(1.0, 0.8, 0.52), clamp(exp(-sq(bulgeR / 0.5)) * 1.2, 0., 1.));
   col = mix(col, vec3(0.62, 0.5, 1.0), (1. - disc) * 0.4);
@@ -919,17 +1085,18 @@ void main(){
 // ---------------------------------------------------------------- geometry
 const NEAR = { S: 384, half: HALF + 16 };
 function terrainNear() {
-  const { S, half } = NEAR, st = 2 * half / S, hs = new Float32Array((S + 1) * (S + 1)), path = new Float32Array(hs.length), pos = [], nor = [], idx = [];
+  const { S, half } = NEAR, st = 2 * half / S, hs = new Float32Array((S + 1) * (S + 1)), ground = new Float32Array(hs.length * 2), pos = [], nor = [], idx = [];
   for (let j = 0; j <= S; j++) for (let i = 0; i <= S; i++) hs[j * (S + 1) + i] = H(-half + i * st, -half + j * st);
   const at = (i, j) => hs[Math.min(S, Math.max(0, j)) * (S + 1) + Math.min(S, Math.max(0, i))];
   for (let j = 0; j <= S; j++) for (let i = 0; i <= S; i++) {
-    path[j * (S + 1) + i] = trailCover(-half + i * st, -half + j * st);
-    pos.push(-half + i * st, at(i, j), -half + j * st);
+    const x = -half + i * st, z = -half + j * st, k = 2 * (j * (S + 1) + i);
+    ground[k] = trailCover(x, z); ground[k + 1] = waterLevel(x, z);
+    pos.push(x, at(i, j), z);
     const hx = at(i + 1, j) - at(i - 1, j), hz = at(i, j + 1) - at(i, j - 1), l = Math.hypot(hx, 2 * st, hz);
     nor.push(-hx / l, 2 * st / l, -hz / l);
   }
   for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) { const a = j * (S + 1) + i, b = a + 1, c = a + S + 1, d = c + 1; idx.push(a, c, b, b, c, d); }
-  return { path, pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
+  return { ground, pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
 }
 function terrainFar() {
   const rings = touch ? 150 : 190, sectors = touch ? 320 : 512, stride = sectors + 1, edge = NEAR.half - 0.5;
@@ -1102,7 +1269,8 @@ function scatter() {
   const G = [], R = [];
   for (let gz = 0; gz < n; gz++) for (let gx = 0; gx < n; gx++) {
     const x = (gx + r()) * cellG - HALF, z = (gz + r()) * cellG - HALF, y = nearH(x, z), ld = lakeD(x, z);
-    if (trailCover(x, z) > 0.18 || y < waterLevel(x, z) - 0.12) continue;
+    const waterY = waterLevel(x, z);
+    if (trailCover(x, z) > 0.18 || y < waterY - 0.12) continue;
     let hm;
     if (ld > 10.0 && ld < 12.6 && y > -0.38 && y < 0.55) { if (r() > 0.2) continue; hm = 1.9 + r() * 1.1; }   // reeds: the shoreline and the shallows
     else {
@@ -1112,13 +1280,19 @@ function scatter() {
       const tall = sm(0.5, 0.78, fbm(x * 0.028 + 21, z * 0.028 - 9, 3));
       hm = (0.45 + 0.55 * Math.min(1, grow * 1.2)) * (0.7 + 0.75 * fbm(x * 0.06 + 11, z * 0.06 - 4, 3) + 0.2 * r()) * (1 + 0.65 * tall);
     }
-    G.push(x, z, y - 0.015, r()); R.push(r(), r(), r(), hm);
+    const seed = r(), angle = r(), height = r(), tint = r();
+    if (waterY > 0.02 && y < waterY + 0.80) {
+      const growth = sm(0.04, 0.80, y - waterY);
+      if (hash2(gx, gz) > 0.035 + 0.965 * growth) continue;
+      hm *= 0.20 + 0.80 * growth;
+    }
+    G.push(x, z, y - 0.015, seed); R.push(angle, height, tint, hm);
   }
 
   // rocks: clusters with one big stone each, a broken field on the outcrop, monoliths on the rim, the sea stack, stones
   // in the shallows, pebbles on the shore
   const rv = [[], [], [], [], []], rs = [[], [], [], [], []];
-  const add = (v, x, z, sx, sy, sz, sink) => { const y = H(x, z); rv[v].push(x, y - sink, z, r() * 6.28); rs[v].push(sx, sy, sz, r()); };
+  const add = (v, x, z, sx, sy, sz, sink, rand = r) => { const y = H(x, z); rv[v].push(x, y - sink, z, rand() * 6.28); rs[v].push(sx, sy, sz, rand()); };
   const cluster = (cx, cz, big, m) => {
     for (let q = 0; q < m; q++) {
       const s0 = q === 0 ? big : big * (0.18 + 0.42 * r()), a = r() * 6.28, d = q === 0 ? 0 : big * (0.7 + r() * 0.9);
@@ -1153,6 +1327,41 @@ function scatter() {
     if (q < 1000) do { x = LAKE[0] + (r() * 2 - 1) * 34; z = LAKE[1] + (r() * 2 - 1) * 28; k++; } while ((lakeD(x, z) < 9.6 || lakeD(x, z) > 12.4) && k < 60);
     else { x = (r() * 2 - 1) * (HALF - 2); z = (r() * 2 - 1) * (HALF - 2); }
     const s0 = 0.04 + Math.pow(r(), 2) * 0.18; add(3, x, z, s0, s0 * 0.7, s0 * (0.8 + 0.4 * r()), 0.01);
+  }
+
+  // Exposed ribs on the lookout have a cap of blocky stone and a fan of smaller
+  // fragments below. Keep the whole footprint of each slab off the switchbacks.
+  const cliffRand = rng(45780);
+  for (let group = 0; group < 65; group++) {
+    const angle = cliffRand() * Math.PI * 2, radius = 6 + cliffRand() * 19;
+    const cx = summit[0] + radius * Math.cos(angle), cz = summit[1] + radius * Math.sin(angle);
+    const normal = normalAt(cx, cz);
+    if (normal[1] > 0.89 || H(cx, cz) < 3.8) continue;
+    const downhill = Math.hypot(normal[0], normal[2]), dx = normal[0] / downhill, dz = normal[2] / downhill;
+    for (let j = 0; j < 6; j++) {
+      const scale = j === 0 ? 1.25 + 1.3 * cliffRand() : 0.23 + 0.85 * cliffRand();
+      const fall = j === 0 ? 0 : j * 0.82 + cliffRand(), spread = j === 0 ? 0 : (cliffRand() - 0.5) * 0.9 * fall;
+      const x = cx + dx * fall - dz * spread, z = cz + dz * fall + dx * spread;
+      const reach = scale * 1.15;
+      if (trailCover(x, z) > 0.001 || Math.hypot(x - summit[0], z - summit[1]) < 3.5 + reach) continue;
+      let crossesTrail = false;
+      for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4;
+        if (trailCover(x + reach * Math.cos(a), z + reach * Math.sin(a)) > 0.001) { crossesTrail = true; break; }
+      }
+      if (!crossesTrail) add(group % 2, x, z, scale * 1.10, scale * (0.57 + 0.17 * cliffRand()), scale * 0.83, scale * 0.30, cliffRand);
+    }
+  }
+
+  // Low shingle bars follow the outside bends. Each has a few exposed slate slabs among the gravel.
+  const gravelRand = rng(31527);
+  for (let group = 0; group < 27; group++) {
+    const cz = -67 + gravelRand() * 51, side = Math.sin(cz * 0.13) < 0 ? -1 : 1;
+    for (let stone = 0; stone < (touch ? 9 : 15); stone++) {
+      const z = cz + (gravelRand() - 0.5) * 4.6, x = riverX(z) + side * (1.55 + 1.72 * gravelRand());
+      const radius = stone === 0 ? 0.43 + gravelRand() * 0.42 : 0.07 + gravelRand() ** 2 * 0.27;
+      add(stone === 0 ? group % 2 : 3, x, z, radius, radius * (0.47 + 0.26 * gravelRand()), radius * 1.24, radius * 0.12, gravelRand);
+    }
   }
 
   // crystal clusters along the shore, grown later (see growCrystals): [x, z, hue, crystals, size]
@@ -1261,6 +1470,15 @@ function growBroadleaf(x, y, z, h, seed, wood, leaves) {
     [x + dx * h * 0.60, y + h * 0.83, z + dz * h * 0.60]];
   tube(wood, trunk, [0.15, 0.092, 0.074, 0.046, 0.015].map(k => k * h), 10, 0, 0.76, base, seed);
 
+  // Buttresses spread down the slope into the root flare; sample the land at each anchor.
+  for (let i = 0; i < 5; i++) {
+    const az = angle + i * 1.2566 + 0.16 * Math.sin(seed * 30 + i);
+    const rx = Math.cos(az) * h, rz = Math.sin(az) * h;
+    const toe = [x + rx * 0.36, H(x + rx * 0.36, z + rz * 0.36) - 0.04, z + rz * 0.36];
+    const knee = [x + rx * 0.13, H(x + rx * 0.13, z + rz * 0.13) + h * 0.07, z + rz * 0.13];
+    tube(wood, [[x, y + h * 0.25, z], knee, toe], [h * 0.058, h * 0.062, h * 0.016], 6, 0, 0, base, seed + i);
+  }
+
   function crown(center, radius, flex) {
     // Stagger the leaves through the volume. Upper leaves catch more light, and the
     // lower tier hangs below the bough so each crown reads as a mass at a distance.
@@ -1292,6 +1510,24 @@ function growBroadleaf(x, y, z, h, seed, wood, leaves) {
     const fork = [elbow[0] + bx * 0.24 - bz * 0.32, elbow[1] + lift * 0.64, elbow[2] + bz * 0.24 + bx * 0.32];
     tube(wood, [elbow, fork], [0.025 * h, 0.007 * h], 6, flex + 0.13, flex + 0.24, base, seed + i + 9);
     crown(fork, h * 0.18, flex + 0.24);
+    // Pendant epiphytes hang below the old crowns. Paired blades grow on the lower runner.
+    if (h > 5 && joint > 1 && i % 2 === 0) {
+      const root = end, drop = Math.min(h * (0.26 + 0.10 * rand()), root[1] - H(root[0], root[2]) - 0.35);
+      if (drop < 0.55) continue;
+      const runner = [];
+      for (let k = 0; k <= 6; k++) {
+        const u = k / 6;
+        const pos = [root[0] + h * 0.048 * (Math.sin(u * 4.8 + az) - Math.sin(az)), root[1] - drop * u, root[2] + h * 0.035 * u * Math.cos(az + u * 3.)];
+        runner.push(pos);
+        if (k < 2) continue;
+        const ph = az + k * 2.4;
+        leaves.R.push(...pos, flex + 0.26);
+        leaves.D.push(...norm([Math.cos(ph), -0.95, Math.sin(ph)]), h * (0.09 + 0.04 * u));
+        leaves.M.push(0.08, 0.13, h * 0.028, 0.88);
+        leaves.B.push(...base);
+      }
+      tube(wood, runner, runner.map((_, k) => h * (0.008 - 0.0007 * k)), 5, flex + 0.26, flex + 0.26, base, seed + i);
+    }
   }
 }
 function growForest(sc) {
@@ -1357,6 +1593,32 @@ function plantScatter(sc) {
     for (let i = 0; i < m; i++) {
       const x = at[0] + (r() - 0.5) * 0.8, z = at[1] + (r() - 0.5) * 0.8, y = H(x, z), sc0 = 0.9 + r() * 0.4, phi = r() * 6.2832, L = 0.62 + r() * 0.4, W = 0.05 + r() * 0.02, arch = 0.45 + r() * 0.3;
       for (const ph of [phi, phi + 1.5708]) { P.push(x, y - 0.02, z, sc0); F.push(ph, L, W, 4); S2.push(arch, 0.95, 0, 0); }
+    }
+  }
+  // Tidecups colonize the wet margin in small families. Sharing a strip mesh with the
+  // ferns keeps them in the same instanced reflection and foliage draws.
+  for (let colony = 0; colony < 100 * k; colony++) {
+    const patch = place(() => r() < 0.70 ? shoreP(10.9, 14.1) : nearA(1.25, 3.2));
+    if (!patch) continue;
+    const count = 3 + Math.floor(r() * 4), tint = r();
+    for (let n = 0; n < count; n++) {
+      const x = patch[0] + (r() - 0.5) * 1.8, z = patch[1] + (r() - 0.5) * 1.8;
+      if (!ok(x, z)) continue;
+      const y = H(x,z) - 0.025, height = (n === 0 ? 0.9 : 0.32) + 0.43 * r();
+      const yaw = r() * 6.2832, lobes = 12, radius = 0.50 + r() * 0.12;
+      for (let j = 0; j < lobes; j++) {
+        const phi = yaw + 6.2832 * j / lobes, wave = Math.cos(phi * 3. + yaw);
+        P.push(x, y, z, 1);
+        F.push(phi, height, 0.55 * height * radius, 5);
+        S2.push(radius, 0.94 + 0.08 * wave, 0.045, tint);
+      }
+      // Slender pollen-bearing filaments rise from the center of the cup.
+      for (let j = 0; j < 5; j++) {
+        const phi = yaw + j * 2.39996;
+        P.push(x, y, z, 1);
+        F.push(phi, height * 0.92, height * 0.031, 2);
+        S2.push(0.17, 1.04 + 0.08 * Math.sin(phi), 0.05, 0.04);
+      }
     }
   }
   return { P: new Float32Array(P), F: new Float32Array(F), S2: new Float32Array(S2) };
@@ -1456,7 +1718,7 @@ class Tiled {
     for (const t of this.tiles) {
       const dx = Math.max(t.x0 - eye[0], 0, eye[0] - t.x0 - TILE_M), dz = Math.max(t.z0 - eye[2], 0, eye[2] - t.z0 - TILE_M), d = Math.hypot(dx, dz);
       const f = d < this.near ? 1 : Math.max(this.least, Math.pow(this.near / d, 1.5)), n = Math.floor(t.count * f * density);
-      if (n <= 0 || this.hidden(VP, t, mirror)) continue;
+      if (n <= 0 || outsideView(VP, t, mirror, TILE_M)) continue;
       for (const a of this.attrs) { gl.bindBuffer(gl.ARRAY_BUFFER, a.buf); gl.vertexAttribPointer(a.loc, 4, gl.FLOAT, false, 0, t.start * 16); }
       gl.uniform1f(lodW, Math.min(2.2, 1 / Math.sqrt(f * density)));
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, this.verts, n);
@@ -1465,32 +1727,58 @@ class Tiled {
     gl.uniform1f(lodW, 1);
     return drawn;
   }
-  /** True when the tile's box lies wholly outside one plane of the view (the mirror pass flips it in the water). */
-  hidden(M, t, mirror) {
-    let left = 0, right = 0, low = 0, high = 0, behind = 0;
-    for (let c = 0; c < 8; c++) {
-      const x = t.x0 + ((c & 1) ? TILE_M + t.pad : -t.pad), y = ((c & 2) ? t.y1 : t.y0) * mirror, z = t.z0 + ((c & 4) ? TILE_M + t.pad : -t.pad);
-      const cx = M[0] * x + M[4] * y + M[8] * z + M[12], cy = M[1] * x + M[5] * y + M[9] * z + M[13], cw = M[3] * x + M[7] * y + M[11] * z + M[15];
-      if (cw <= 0) behind++;
-      if (cx < -cw) left++; if (cx > cw) right++; if (cy < -cw) low++; if (cy > cw) high++;
-    }
-    return behind === 8 || left === 8 || right === 8 || low === 8 || high === 8;
+}
+/** True when the tile's box lies wholly outside one plane of the view (the mirror pass flips it in the water). */
+function outsideView(M, t, mirror, width) {
+  let left = 0, right = 0, low = 0, high = 0, behind = 0;
+  for (let c = 0; c < 8; c++) {
+    const x = t.x0 + ((c & 1) ? width + t.pad : -t.pad), y = ((c & 2) ? t.y1 : t.y0) * mirror, z = t.z0 + ((c & 4) ? width + t.pad : -t.pad);
+    const cx = M[0] * x + M[4] * y + M[8] * z + M[12], cy = M[1] * x + M[5] * y + M[9] * z + M[13], cw = M[3] * x + M[7] * y + M[11] * z + M[15];
+    if (cw <= 0) behind++;
+    if (cx < -cw) left++; if (cx > cw) right++; if (cy < -cw) low++; if (cy > cw) high++;
   }
+  return behind === 8 || left === 8 || right === 8 || low === 8 || high === 8;
 }
 
 // ---------------------------------------------------------------- build the scene
 const loc = (p, n) => gl.getAttribLocation(p, n);
 const near = terrainNear(), far = terrainFar(), wm = waterMesh(), sc = scatter(), forest = growForest(sc), pl = plantScatter(sc), motes = moteScatter();
 const rockGeos = [rockMesh(1.3, 3, false), rockMesh(4.1, 3, false), rockMesh(7.7, 3, true), rockMesh(2.2, 1, false), STACK_GEO], crystals = growCrystals(sc.crystalSites);
-const vNear = vao([{ loc: loc(TERRAIN, 'aPos'), size: 3, data: near.pos }, { loc: loc(TERRAIN, 'aNor'), size: 3, data: near.nor }, { loc: loc(TERRAIN, 'aTrail'), size: 1, data: near.path }], near.idx);
+const highTrees = highCanopyMesh(rng(9942));
+const highSites = highCanopySites(H, vnoise, rng(914), HALF, trailCover, waterLevel);
+const canopySiteAttribute = { loc: loc(HIGH_CANOPY, 'aSite'), size: 4, data: highSites.instances, div: 1 };
+const vHighTrees = vao([
+  { loc: loc(HIGH_CANOPY, 'aPos'), size: 3, data: highTrees.position },
+  { loc: loc(HIGH_CANOPY, 'aNor'), size: 3, data: highTrees.normal },
+  { loc: loc(HIGH_CANOPY, 'aTissue'), size: 1, data: highTrees.tissue },
+  canopySiteAttribute,
+], highTrees.index);
+function drawHighCanopy(VP, mirror = 1) {
+  gl.bindVertexArray(vHighTrees);
+  gl.bindBuffer(gl.ARRAY_BUFFER, canopySiteAttribute.buffer);
+  for (const tile of highSites.tiles) {
+    if (VP && outsideView(VP, tile, mirror, highSites.width)) continue;
+    gl.vertexAttribPointer(canopySiteAttribute.loc, 4, gl.FLOAT, false, 0, tile.start * 16);
+    gl.drawElementsInstanced(gl.TRIANGLES, highTrees.index.length, gl.UNSIGNED_SHORT, 0, tile.count);
+  }
+}
+const vNear = vao([{ loc: loc(TERRAIN, 'aPos'), size: 3, data: near.pos }, { loc: loc(TERRAIN, 'aNor'), size: 3, data: near.nor }, { loc: loc(TERRAIN, 'aGround'), size: 2, data: near.ground }], near.idx);
 const vFar = vao([{ loc: loc(TERRAIN, 'aPos'), size: 3, data: far.pos }, { loc: loc(TERRAIN, 'aNor'), size: 3, data: far.nor }], far.idx);
 const vWater = vao([{ loc: loc(WATERP, 'aXZ'), size: 2, data: wm.xz }, { loc: loc(WATERP, 'aLevel'), size: 1, data: wm.levels }, { loc: loc(WATERP, 'aDepth'), size: 1, data: wm.dep }], wm.idx);
-const vRocks = rockGeos.map((g, k) => vao([{ loc: loc(ROCK, 'aPos'), size: 3, data: g.pos }, { loc: loc(ROCK, 'aNor'), size: 3, data: g.nor }, { loc: loc(ROCK, 'aI'), size: 4, data: sc.rv[k], div: 1 }, { loc: loc(ROCK, 'aS'), size: 4, data: sc.rs[k], div: 1 }], g.idx));
+const vRocks = rockGeos.map((g, k) => {
+  const instances = sc.rv[k];
+  const levels = Float32Array.from({ length: instances.length / 4 }, (_, i) => waterLevel(instances[i * 4], instances[i * 4 + 2]));
+  return vao([
+    { loc: loc(ROCK, 'aPos'), size: 3, data: g.pos }, { loc: loc(ROCK, 'aNor'), size: 3, data: g.nor },
+    { loc: loc(ROCK, 'aI'), size: 4, data: instances, div: 1 }, { loc: loc(ROCK, 'aS'), size: 4, data: sc.rs[k], div: 1 },
+    { loc: loc(ROCK, 'aLevel'), size: 1, data: levels, div: 1 },
+  ], g.idx);
+});
 const vCrys = vao([{ loc: loc(CRYSTAL, 'aPos'), size: 3, data: crystals.pos }, { loc: loc(CRYSTAL, 'aNor'), size: 3, data: crystals.nor }, { loc: loc(CRYSTAL, 'aC'), size: 4, data: crystals.c }]);
 const vWood = vao([{ loc: loc(WOOD, 'aPos'), size: 3, data: forest.pos }, { loc: loc(WOOD, 'aNor'), size: 3, data: forest.nor }, { loc: loc(WOOD, 'aW'), size: 4, data: forest.w }, { loc: loc(WOOD, 'aB'), size: 4, data: forest.b }], forest.idx);
 const grass = new Tiled(GRASS, { aG: sc.G, aR: sc.R }, (i) => [sc.G[i * 4], sc.G[i * 4 + 2], sc.G[i * 4 + 1]], 1.4, 7, 18, 0.06);
 const leaves = new Tiled(JLEAF, { aR: forest.R, aD: forest.D, aM: forest.M, aB: forest.B }, (i) => [forest.R[i * 4], forest.R[i * 4 + 1], forest.R[i * 4 + 2]], (i) => 1.5 * forest.D[i * 4 + 3] + 1, 13, 40, 0.3);
-const plants = new Tiled(PLANT, { aP: pl.P, aF: pl.F, aS2: pl.S2 }, (i) => [pl.P[i * 4], pl.P[i * 4 + 1], pl.P[i * 4 + 2]], 1.2, 25, 24, 0.12);
+const plants = new Tiled(PLANT, { aP: pl.P, aF: pl.F, aS2: pl.S2 }, (i) => [pl.P[i * 4], pl.P[i * 4 + 1], pl.P[i * 4 + 2]], 1.65, 25, 24, 0.12);
 let grassDensity = 1;
 const stars = starScatter(), vStars = vao([{ loc: loc(STARS, 'aS'), size: 4, data: stars.S }, { loc: loc(STARS, 'aC'), size: 4, data: stars.C }]);
 bakeMilkyWay();
@@ -1516,6 +1804,8 @@ function clearTexture(tex) {
 }
 
 let reflTex = null, reflFbo = null, reflDepth = null, reflW = 0, reflH = 0;
+let reflectionLevel = WATER;
+const reflectionVP = new Float32Array(16);
 function ensureRefl(w, h) {
   if (reflW === w && reflH === h) return;
   reflW = w; reflH = h;
@@ -1623,7 +1913,7 @@ function postProcess(VP, eye, b, w, h) {
   gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, post.res); gl.uniform1i(P_FINAL.u('tScene'), 4);
   gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, post.mips[0].t); gl.uniform1i(P_FINAL.u('tBloom'), 5);
   gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, post.rays.t); gl.uniform1i(P_FINAL.u('tRays'), 6);
-  gl.uniform1f(P_FINAL.u('uBloom'), 0.085); gl.uniform1f(P_FINAL.u('uRays'), (HDR ? 1.1 : 0.8) * (1. - night)); gl.uniform1f(P_FINAL.u('uHDRf'), HDR ? 1 : 0);
+  gl.uniform1f(P_FINAL.u('uBloom'), 0.085); gl.uniform1f(P_FINAL.u('uRays'), (HDR ? 0.68 : 0.48) * (1. - night)); gl.uniform1f(P_FINAL.u('uHDRf'), HDR ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
 }
@@ -1743,9 +2033,67 @@ function stepStones(dt) {
 }
 
 // ---------------------------------------------------------------- render
-const SUN = norm([-0.86, 0.14, -0.33]), SUNCOL = [2.7, 1.9, 1.35], PLANET = skyBodies.amber, MOONCOL = [0.3, 0.42, 0.82];
+const SUN = norm([-0.86, 0.40, -0.33]), SUNCOL = [3.0, 2.54, 2.04], PLANET = skyBodies.amber, MOONCOL = [0.19, 0.29, 0.55];
 let night = 0, nightTarget = 0, sheet = 0, grassDrawn = 0;
 function norm(v) { const l = Math.hypot(...v); return v.map((x) => x / l); }
+function bakeFloraSpill(plants) {
+  const size = 256, perMetre = size / EXTENT;
+  const energy = new Float32Array(size * size * 5);
+  for (let i = 0; i < plants.P.length; i += 4) {
+    const type = plants.F[i + 3];
+    if (type !== 5 && type !== 4) continue;
+    const [x, y, z] = plants.P.subarray(i, i + 3);
+    // One source per cup or bell, irrespective of how many strips form its petals.
+    if (i && x === plants.P[i - 4] && z === plants.P[i - 2]) continue;
+    const extent = plants.F[i + 1] * plants.P[i + 3], radius = extent * (type === 5 ? 1.45 : 0.70);
+    const warm = sm(0.40, 0.57, plants.S2[i + 3]);
+    const pigment = type === 4 ? [0.80, 0.29, 0.83] : [0.085 + 0.855 * warm, 0.72 - 0.50 * warm, 0.62 - 0.28 * warm];
+    const cx = (x + HALF) * perMetre - 0.5, cz = (z + HALF) * perMetre - 0.5, r = radius * perMetre;
+    for (let j = Math.max(0, Math.ceil(cz - r)); j <= Math.min(size - 1, cz + r); j++) {
+      for (let k = Math.max(0, Math.ceil(cx - r)); k <= Math.min(size - 1, cx + r); k++) {
+        const weight = Math.max(0, 1 - ((cx-k)**2 + (cz-j)**2) / (r*r)) ** 2 * (type === 5 ? 0.56 : 0.18);
+        const q = (j * size + k) * 5;
+        for (let channel = 0; channel < 3; channel++) energy[q + channel] += pigment[channel] * weight;
+        energy[q + 3] += (y + extent * 0.65) * weight;
+        energy[q + 4] += weight;
+      }
+    }
+  }
+  const rgba = new Uint8Array(size * size * 4);
+  for (let i = 0; i < size * size; i++) {
+    const k = 5 * i, w = energy[k + 4];
+    for (let c = 0; c < 3; c++) rgba[4*i + c] = Math.round(255 * (1 - Math.exp(-energy[k+c])));
+    if (w) rgba[4*i + 3] = Math.round(255 * Math.min(1, Math.max(0, (energy[k + 3] / w + 4) / 32)));
+  }
+  const tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE10);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+}
+bakeFloraSpill(pl);
+const valleyShadows = bakeShadows(gl, touch ? 1024 : 2048, [SUN, PLANET], [
+  { source: TERRAIN, draw() { gl.bindVertexArray(vNear); gl.drawElements(gl.TRIANGLES, near.idx.length, gl.UNSIGNED_INT, 0); } },
+  { source: ROCK, draw() {
+    rockGeos.forEach((geo, k) => {
+      gl.bindVertexArray(vRocks[k]);
+      gl.drawElementsInstanced(gl.TRIANGLES, geo.idx.length, gl.UNSIGNED_INT, 0, sc.rv[k].length / 4);
+    });
+  } },
+  { source: HIGH_CANOPY, draw: drawHighCanopy },
+  { source: WOOD, draw() { gl.bindVertexArray(vWood); gl.drawElements(gl.TRIANGLES, forest.idx.length, gl.UNSIGNED_INT, 0); } },
+  { source: JLEAF, draw() {
+    gl.bindVertexArray(leaves.vao);
+    for (const a of leaves.attrs) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, a.buf);
+      gl.vertexAttribPointer(a.loc, 4, gl.FLOAT, false, 0, 0);
+    }
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, leaves.verts, leaves.count);
+  } },
+]);
 // the night sky turns about a tilted pole, once in about fifteen minutes
 const POLE = norm([0.25, 0.8, 0.55]), skyTurn = new Float32Array(9);
 function turnSky(t) {
@@ -1756,12 +2104,15 @@ function turnSky(t) {
 function common(p, eye, VP, mirror, t) {
   gl.useProgram(p);
   gl.uniformMatrix4fv(p.u('uVP'), false, VP);
+  gl.uniform1i(p.u('uShadows'), 9);
+  gl.uniform1i(p.u('uFloraSpill'), 10);
+  gl.uniformMatrix4fv(p.u('uLightVP[0]'), false, valleyShadows.matrices);
   gl.uniform1f(p.u('uMirror'), mirror);
   gl.uniform3fv(p.u('uCam'), eye); gl.uniform3fv(p.u('uSunDir'), norm(SUN.map((v, i) => v * (1 - night) + PLANET[i] * night))); gl.uniform3fv(p.u('uSunCol'), SUNCOL.map((v, i) => v * (1 - night) + MOONCOL[i] * night)); gl.uniform3fv(p.u('uPlanetDir'), PLANET);
   gl.uniform3fv(p.u('uStarDir'), SUN); gl.uniform1f(p.u('uNight'), night); gl.uniform1f(p.u('uBio'), 0.16 + 0.84 * night); gl.uniform1f(p.u('uHDR'), HDR ? 1 : 0);
   gl.uniform1f(p.u('uTime'), t); gl.uniform1f(p.u('uExposure'), 0.95 + 0.3 * night); gl.uniform1f(p.u('uExtent'), EXTENT); gl.uniform1f(p.u('uSheet'), sheet); gl.uniform1f(p.u('uWind'), TEST ? 0.7 : (rain ? 1.15 : 0.7) + 0.2 * Math.sin(t * 0.13));
   gl.uniform1i(p.u('uGlow'), 0); gl.uniform1i(p.u('uGround'), 1); gl.uniform1i(p.u('uWear'), 7); gl.uniformMatrix3fv(p.u('uSky'), false, skyTurn);
-  gl.uniform1f(p.u('uClip'), mirror < 0 ? WATER - 0.02 : -1e9);
+  gl.uniform1f(p.u('uClip'), mirror < 0 ? reflectionLevel - 0.02 : -1e9);
 }
 function drawScene(eye, b, VP, mirror, t, opts) {
   gl.depthMask(false); gl.disable(gl.DEPTH_TEST);
@@ -1770,9 +2121,9 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   gl.uniform3fv(SKY.u('uR'), b.r); gl.uniform3fv(SKY.u('uU'), b.u); gl.uniform3fv(SKY.u('uF'), b.f); gl.uniform2f(SKY.u('uTan'), opts.tanX, opts.tanY);
   gl.uniform1i(SKY.u('uMilky'), 8);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
-  // the stars, added over the sky; the sky's alpha, the mask the rays march through, is left alone
+  // Each star pixel inherits the transmittance written by the actual globe, moon, ring and cloud shaders.
   common(STARS, eye, VP, mirror, t); gl.uniform1f(STARS.u('uPx'), opts.px);
-  gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
+  gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.DST_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
   gl.bindVertexArray(vStars); gl.drawArrays(gl.POINTS, 0, STAR_N); gl.disable(gl.BLEND); gl.bindVertexArray(null);
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
   gl.enable(gl.CULL_FACE); gl.frontFace(mirror < 0 ? gl.CW : gl.CCW);
@@ -1783,6 +2134,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   for (let k = 0; k < rockGeos.length; k++) { if (!sc.rv[k].length || (k === 3 && mirror < 0)) continue; gl.bindVertexArray(vRocks[k]); gl.drawElementsInstanced(gl.TRIANGLES, rockGeos[k].idx.length, gl.UNSIGNED_INT, 0, sc.rv[k].length / 4); }
   common(CRYSTAL, eye, VP, mirror, t); gl.bindVertexArray(vCrys); gl.drawArrays(gl.TRIANGLES, 0, crystals.count);
   gl.disable(gl.CULL_FACE);
+  common(HIGH_CANOPY, eye, VP, mirror, t); drawHighCanopy(VP, mirror);
   common(WOOD, eye, VP, mirror, t); gl.bindVertexArray(vWood); gl.drawElements(gl.TRIANGLES, forest.idx.length, gl.UNSIGNED_INT, 0);
   common(JLEAF, eye, VP, mirror, t); leaves.draw(VP, eye, mirror);
   common(PLANT, eye, VP, mirror, t); plants.draw(VP, eye, mirror);
@@ -1802,13 +2154,18 @@ function render(t, camOverride) {
   gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, texWear);
   sheet = groundF ? groundF.sheet : 0;
   turnSky(t);
-  // reflection: the same scene mirrored in the lake plane, half resolution, no grass
+  // One planar reflection shared by the lake and the uphill river. Near the stream it
+  // follows the local water elevation. Reaches at other heights blend into a sky reflection.
+  const channelX = riverX(cam.eye[2]), channelLevel = waterLevel(channelX, cam.eye[2]);
+  reflectionLevel = channelLevel * (1 - sm(5, 14, Math.abs(cam.eye[0] - channelX)));
+  reflectionVP.set(VP);
+  for (let i = 0; i < 4; i++) reflectionVP[12 + i] += 2 * reflectionLevel * VP[4 + i];
   const rw = Math.max(1, w >> 1), rh = Math.max(1, h >> 1);
   ensureRefl(rw, rh);
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, null);
   gl.bindFramebuffer(gl.FRAMEBUFFER, reflFbo); gl.viewport(0, 0, rw, rh);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  drawScene([cam.eye[0], 2 * WATER - cam.eye[1], cam.eye[2]], b, VP, -1, t, { tanX, tanY, grass: false, px: rh / 800 });
+  drawScene([cam.eye[0], 2 * reflectionLevel - cam.eye[1], cam.eye[2]], b, reflectionVP, -1, t, { tanX, tanY, grass: false, px: rh / 800 });
   ensurePost(w, h);
   gl.bindFramebuffer(gl.FRAMEBUFFER, post.ms || post.resF); gl.viewport(0, 0, w, h);
   gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -1818,6 +2175,7 @@ function render(t, camOverride) {
   common(WATERP, cam.eye, VP, 1, t);
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, reflTex);
   gl.uniform1i(WATERP.u('uRefl'), 2); gl.uniform2f(WATERP.u('uRes'), w, h);
+  gl.uniform2f(WATERP.u('uRightXZ'), b.r[0], b.r[2]); gl.uniform1f(WATERP.u('uMirrorLevel'), reflectionLevel);
   const rip = new Float32Array(48); ripples.forEach((r, i) => rip.set(r, i * 4)); gl.uniform4fv(WATERP.u('uRip'), rip);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
   gl.bindVertexArray(vWater); gl.drawElements(gl.TRIANGLES, wm.idx.length, gl.UNSIGNED_INT, 0);
