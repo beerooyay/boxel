@@ -2,8 +2,8 @@
  *
  * A field is a value on every cell of the integer plane that spreads to its four neighbours
  * and fades, stepped as  u' = (1 - 4*spread - fade)*u + spread*(sum of neighbours).
- * No cell ever differs from computing every cell by more than `tolerance`, and only the
- * 16 x 16 blocks that could hold more than half of it exist at all.
+ * The reported bound limits the error against the full computation. Compare it with the
+ * requested tolerance. The field steps only the 16 x 16 blocks inside its active window.
  *
  * Handles are opaque. Pointers returned into a field stay valid until the next call that
  * changes it (a deposit, drain, rain or step). Link against boxel_ffi (static or shared). */
@@ -23,7 +23,7 @@ typedef struct BoxelGrid BoxelGrid;
 typedef struct BoxelStats {
     double steps, deposits, merged, retired, stepped, violations;
     double blocks, peak_blocks, live, bytes;
-    double bound; /* the certified bound right now, never above the tolerance */
+    double bound; /* current error bound; may exceed tolerance under heavy load */
     double sheet; /* the uniform part, added to every cell */
 } BoxelStats;
 
@@ -33,6 +33,7 @@ typedef struct BoxelStats {
 BoxelField *boxel_field_new(float spread, float fade, float tolerance, uint32_t events);
 void boxel_field_free(BoxelField *f);
 
+/* Amounts must be finite and positive. Other amounts leave the field unchanged. */
 void boxel_deposit(BoxelField *f, int32_t x, int32_t y, uint32_t radius, float amount);
 void boxel_drain(BoxelField *f, int32_t x, int32_t y, uint32_t radius, float amount);
 void boxel_rain(BoxelField *f, float amount);
@@ -53,7 +54,7 @@ void boxel_forget_freed(BoxelField *f);
 
 const BoxelStats *boxel_stats(BoxelField *f);
 
-/* The full computation over [x0, x0 + side)^2, for checking and comparison. */
+/* The full computation over [x0, x0 + side) by [y0, y0 + side), for checking and comparison. */
 BoxelGrid *boxel_grid_new(float spread, float fade, int32_t x0, int32_t y0, uint32_t side);
 void boxel_grid_free(BoxelGrid *g);
 void boxel_grid_deposit(BoxelGrid *g, int32_t x, int32_t y, uint32_t radius, float amount);

@@ -20,16 +20,20 @@ export function verify({ gl, layers, scripted, denseMode, boxelMode, size, toler
   });
   const boxel = scripted(boxelMode, 900, view);
   const image = pixels();
-  const maxFieldErrors = layers().map((layer, k) => {
-    let max = 0;
+  const fields = layers().map((layer, k) => {
+    const bound = layer.f.stats().bound;
+    let largestDeficit = 0, largestExcess = 0;
     for (let y = 0; y < size; y++) {
       for (let x = 0; x < size; x++) {
         const value = layer.f.sample(x - size / 2, y - size / 2);
-        max = Math.max(max, Math.abs(value - grids[k][y * size + x]));
+        const deficit = grids[k][y * size + x] - value;
+        largestDeficit = Math.max(largestDeficit, deficit);
+        largestExcess = Math.max(largestExcess, -deficit);
       }
     }
-    return max;
+    return { bound, largestDeficit, largestExcess };
   });
+  const maxFieldErrors = fields.map(({ largestDeficit, largestExcess }) => Math.max(largestDeficit, largestExcess));
 
   let squaredError = 0, peak = 0, overTwo = 0;
   for (let i = 0; i < image.length; i += 4) {
@@ -45,7 +49,9 @@ export function verify({ gl, layers, scripted, denseMode, boxelMode, size, toler
   const pixelCount = image.length / 4;
   const glError = gl.getError();
   return {
-    dense, boxel, maxFieldErrors, glError,
+    dense, boxel, fields, maxFieldErrors, glError,
+    withinBound: fields.every(({ bound, largestDeficit, largestExcess }) => largestExcess === 0 && largestDeficit <= bound),
+    boundWithinTolerance: fields.every(({ bound }) => bound <= tolerance),
     withinTolerance: maxFieldErrors.every(error => error <= tolerance),
     width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
     psnr: squaredError === 0 ? Infinity : 10 * Math.log10(255 ** 2 * pixelCount * 3 / squaredError),

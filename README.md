@@ -1,91 +1,88 @@
 # boxel
 
-Fields that cost what happens in them, not the size of the world they cover. With a proof.
+Boxel runs persistent, two-dimensional diffusion fields for games. A footstep can wake moss,
+rain can wet a whole valley, and both effects can keep evolving after the camera leaves.
 
-A field is a number on every cell of a grid that spreads to its neighbours and fades: the glow
-a footstep leaves in moss, how wet the ground is, heat, smoke, the scent a guard follows, the
-noise a gunshot makes, fog of war. Games simulate fields like these in one of two ways.
+The engine computes a conservative envelope for a disturbance on its actual five-point grid.
+It uses those envelopes to decide which 16 × 16 blocks need storage and tracks the error that
+can remain in cells it skips. Call `field.bound()` for the current upper bound against the full
+calculation. The requested tolerance is a target. Concentrated events or accumulated rounding
+can exhaust its budget, in which case the reported bound can exceed the target. The retirement
+audit separately counts blocks observed above their allowance. [Certificate and assumptions](docs/certificate.md)
 
-- **Everywhere.** It's correct, but it costs the whole world every frame and stores every cell.
-  So it only ever runs on a small square around the camera, and everything outside that square
-  is forgotten.
-- **Where it looks busy.** It's cheap, but nobody knows what was thrown away, and the errors
-  show up as seams, pops and trails that stop dead.
+Blaize Rouyea and Corey Bourgeois developed the underlying theory in their October 2026 alphaXiv preprint. [*Certified Locality in Diffusive Simulation*](https://www.alphaxiv.org/abs/2610.diffusive-simulation-tolerance-footprints)
 
-Boxel does the second with the guarantee of the first. You pick a tolerance (1/255: one shade
-of an 8-bit texture). No cell ever differs from computing every cell by more than that, on
-every step, for as long as it runs and however large the world is. The cells it can prove
-don't matter are never computed and never stored.
+## What distinguishes Boxel
 
-It's an engine for the certified locality of Rouyea & Bourgeois,
-[*Certified Locality in Diffusive Simulation*](https://www.alphaxiv.org/abs/2610.diffusive-simulation-tolerance-footprints)
-(2026), taken from the paper's theorems to something a game can ship.
+Museth’s VDB stores sparse, changing volumes. Kloster and Gleich gave a deterministic local
+method for graph heat diffusion. Boxel combines a computed lattice envelope, regional accounting for live and
+retired events, a rounding allowance for the actual f32 update, and deterministic event replay in
+native code and WebAssembly. The same renderer can run the sparse and dense simulations so
+their fields and pictures can be compared directly. [Museth on sparse volumes](https://www.museth.org/Ken/Publications_files/Museth_TOG13.pdf) · [Kloster and Gleich on local graph diffusion](https://arxiv.org/abs/1403.3148)
 
-## What it does that nothing else did
+**The measured advantage is strongest on quiet ground.** In the 512 × 512 walking-glow
+fixture, Boxel stepped 13,723 cells per frame on average and the dense reference stepped
+262,144. On an Apple M4 Max, deposits and field stepping took 0.004 ms versus 0.036 ms.
+In the spore storm, Boxel took 0.051 ms and dense took 0.036 ms. Rendering has its own
+frame budget. [One-acre measurements](docs/results.md#the-demos-fields-on-one-acre)
 
-**Open worlds stop costing their size.** A thousand walkers leave glowing trails on worlds of
-every size: [results](docs/results.md#open-worlds), one core, 12.5 cm cells. The last two columns
-are extrapolated from a measured 2048² grid (0.53 ns per cell per step, two f32 buffers), since
-nothing here could hold 128 GB.
+**Scaling with activity.** An earlier single-core cloud run put 1,000 walkers on maps of
+increasing size with 12.5 cm cells. The sparse field took 22–24 ms per step across the
+three maps. The dense estimates extrapolate 0.53 ns per cell per step from a timed 2048²
+grid and assume two f32 buffers. [Open-world measurements](docs/results.md#open-worlds)
 
-| world | boxel | memory | computing every cell | its memory |
-|---|---|---|---|---|
-| 1 km × 1 km | 22.2 ms | 91 MB | 36 ms | 512 MB |
-| 4 km × 4 km | 24.2 ms | 94 MB | 569 ms | 8 GB |
-| 16 km × 16 km | 24.1 ms | 94 MB | 9.1 s | 128 GB |
+| square map, side | Boxel time | Boxel storage estimate | dense time estimate | dense buffers |
+|---|---:|---:|---:|---:|
+| 1,024 m | 22.2 ms | 91 MiB | 36 ms | 512 MiB |
+| 4,096 m | 24.2 ms | 94 MiB | 569 ms | 8 GiB |
+| 16,384 m | 24.1 ms | 94 MiB | 9.1 s | 128 GiB |
 
-The cost grows with the number of walkers and nothing else: 10 walkers cost 0.07 ms, 100 cost
-1.7 ms, and 10 000 on 4 km still beat computing every cell (401 ms in 894 MB, against 569 ms in
-8 GB). The certified bound stayed under the tolerance in every run, no block was ever caught
-over its bound, and checked cell by cell against a full grid that was actually run (a thousand
-walkers on 256 m), the largest error was 0.08 of the tolerance.
+In a separate 256 m run with 1,000 walkers, every cell was compared with a running dense
+reference once a second for 20 seconds. The largest observed error was 0.00033, about 8% of
+the requested tolerance of 1/255.
 
-**The lattice certificate the paper left open.** The paper proves tight windows in the
-continuum. On the actual grid it either proves loose ones (10 to 40 times too large) or proves
-nothing (without fade). Boxel computes the cone of the grid scheme itself and makes that
-computation a proof. On the paper's own test cases it certifies within 3 to 6% of the cells
-an event ever touches: [docs/certificate.md](docs/certificate.md#3-the-cone-computed-new-the-papers-open-problems-2-and-3).
+**A tighter window on the actual grid.** For each supported fixed step, Boxel constructs
+a conservative bound from the lattice impulse response. On three point-event fixtures
+from Tables 2 and 4 of the preprint, its footprint contained 3.3–5.5% more cells than
+the measured above-threshold footprint. These figures describe those three cases.
+[Construction and assumptions](docs/certificate.md#3-the-computed-lattice-cone)
 
-| fade | cells ever above ε | boxel, certified | the paper's diamond, certified |
-|---|---|---|---|
-| 0 | 845 | 889 | none |
-| 0.002 | 577 | 609 | 23 981 |
-| 0.02 | 241 | 249 | 2 381 |
+| fade | cells measured above ε | computed footprint | exponential diamond |
+|---|---:|---:|---:|
+| 0 | 845 | 889 | unavailable |
+| 0.002 | 577 | 609 | 23,981 |
+| 0.02 | 241 | 249 | 2,381 |
 
-**A proof that survives the machine.** The theorems are about exact arithmetic; a game runs in
-f32. Boxel builds its table from the exact f32 weights it steps with, bounds the table's own
-f64 rounding, and carries a live rounding term inside the promise. So the guarantee is about
-the numbers a game holds: the field never reads above computing every cell in the same
-arithmetic, and never below it by more than the bound. What is assumed is IEEE-754 doing what
-it says. Nothing here is machine-checked; interval arithmetic over the table is the step that
-would make it so. [Section 8](docs/certificate.md#8-floating-point-accounted-for-new) has the
-analysis.
+**Floating-point error is part of the budget.** Boxel builds the table from its f32 stencil
+weights, allows for the table’s f64 rounding, and tracks the rounding introduced by edits
+and simulation steps. The argument assumes IEEE-754 arithmetic. Dense regression fixtures
+exercise its implementation. The analytical argument awaits independent formal verification.
+[Arithmetic assumptions](docs/certificate.md#8-floating-point-accounting)
 
-**A bound that does not grow with the number of events.** The paper's global error is a sum
-over every event ever made. Boxel keeps that sum per district of 1024 × 1024 cells and proves
-that a cell only pays for the nine around it. Ten thousand walkers carry the same guarantee as
-ten.
+**Regional error accounting.** Boxel accumulates local event budgets in districts of 1024 × 1024
+cells. A cell pays for its own district, eight neighbours and a bounded far-field term. Spreading
+activity over more districts can therefore cost less of the local error budget than concentrating
+the same activity in one district.
 
-**The same bits everywhere.** No transcendental functions at run time, an integer ledger, the
-same float operations in the same order. One session hashes identically on x86 with SSE2, x86
-with AVX2 and FMA, and wasm. Two machines that see the same events hold the same field, so a
-multiplayer game can send the events and not the field. In the storm test that is 237
-bytes a second against 12.6 MB a second of texture tiles.
+**Replay across builds.** A 30-second storm produced the same field hash on native ARM64
+and WebAssembly. Earlier SSE2 and AVX2 runs on x86-64 reported the same hash. That makes
+event replay worth testing for multiplayer replication. The replay script fails on a hash
+mismatch. [Replay method and results](docs/results.md#cross-platform-replay)
 
-**Memory follows the window.** Blocks outside the window have no storage at all: that is the
-paper's windowed simulation (Theorem 6.5) taken literally. The plane has no edge. Two events a
-hundred thousand cells apart cost what two events cost.
+**Storage follows the active area.** A field allocates pages as blocks wake and reuses them
+after blocks retire. Two distant footprints can evolve without filling the space between
+them. Peak allocations, event records and the certificate table also contribute to memory.
 
 ## The demo: Tarnished Promise
 
 [Play Tarnished Promise in your browser](https://beerooyay.github.io/boxel/).
 
-Tarn is a four-acre lakeshore in a valley under a snowy range, beneath an amber giant and its three
-moons, a storm-swirled rose giant and its moon, and a cloud-swirled ocean world with crossed rings. At night the galaxy rises over the
-peaks: twelve thousand stars and a band painted once into a cube map, turning with the sky. A
-river carries glowing pods down to the lake. A winding trail climbs the
-western hill to a 26 m lookout. Walk, wade or throw a glowstone to disturb the glow, moisture
-and wear fields. Press **N** for night and **M** to restart the fields under the other engine.
+Tarn is a 128 m square of playable lakeshore and upland trail. Sailwings glide between habitats
+and leave ripples and light where they skim the water. Disturb the moss with a footstep or
+glowstone and its filaments pick up the local glow field. Cloud shadows cross the valley by
+day, and the pigments in leaves and wetland flowers set the colour of their light at night.
+Four worlds share the same stellar light direction above the mountains. Press **N** for night
+and **M** to restart the fields under the other engine. Touch controls offer both actions.
 
 The browser renderer uses WebGL2 and the Rust field engine compiled to WebAssembly.
 The [river comparison](docs/results.md#the-picture) includes a repeatable full-map field check.
@@ -122,7 +119,7 @@ whatever it draws with.
   thousand walkers ([cores](docs/results.md#cores)).
 - **Unity, Unreal, Godot, C, C++**: link `boxel_ffi` (static or shared) through
   [`ffi/boxel.h`](ffi/boxel.h). Upload `boxel_block_data` into a texture region per block.
-- **The web**: [`ffi/boxel.js`](ffi/boxel.js) over the wasm build, about 60 KB. The demo is the
+- **The web**: [`ffi/boxel.js`](ffi/boxel.js) over the wasm build, about 63 KiB. The demo is the
   example.
 - **Bevy** can step one field per entity in `FixedUpdate` with the optional
   [Boxel plugin](integrations/bevy/src/lib.rs). Match the fixed clock to the field spec.
@@ -140,14 +137,15 @@ fog of war are the same three calls with different numbers.
 | `src/` | the engine: `cone` (the computed lattice cone), `ledger` (integer block ledger), `field` (events, window, pages, districts), `grid` (the full computation, as reference), `spec` |
 | `tests/` | the promise against the full computation, on random histories |
 | `ffi/` | the C ABI, its header, and the JavaScript binding |
-| `bench/` | every number in `docs/results.md`, and the wasm replay |
+| `bench/` | native benchmark fixtures and the wasm replay |
 | `demo/` | Tarnished Promise |
 | `integrations/bevy/` | standalone Bevy plugin: fields as components, windows as textures |
 | `docs/` | [the certificate](docs/certificate.md), [results](docs/results.md) |
 
 ```sh
 cargo test --release
-cargo run --release -p boxel-bench -- cone      # the paper's tables, certified
+node --test tests/field-texture.mjs             # encoded tile updates and cache invalidation
+cargo run --release -p boxel-bench -- cone      # compare lattice footprint counts with the preprint
 cargo run --release -p boxel-bench -- acre      # the demo's fields: boxel, dense, guessing
 cargo run --release -p boxel-bench -- world     # open worlds
 cargo run --release -p boxel-bench --features parallel -- cores   # one thread against all of them
@@ -160,12 +158,11 @@ cargo run --release -p boxel-bench -- replay replay.json && node bench/replay.mj
   fields, around 30 ms for slow ones.
 - **Linear spread and fade, nonnegative deposits.** Saturation and drains keep the bound.
   Wind, nonlinear reactions and negative sources are outside it.
-- **No fade makes everything expensive.** That is the physics: an undamped event's footprint
-  is A/(eε) cells however slowly it spreads.
-- **Where activity covers the whole world, computing everything wins.** A block costs about
-  twice what a dense cell row does per cell. In a spore storm over an entire acre boxel takes
-  0.15 ms against 0.09 ms, and a thousand walkers crammed onto 256 m cost it 11 ms against 2.
-  The promise holds either way.
+- **Undamped fields can retain events longer.** An undamped point event’s footprint
+  grows as the threshold falls. For a point event in the two-dimensional continuum its area is A/(eε).
+- **Dense activity can favor a dense grid.** Stepping a block costs
+  more per cell than a dense update in these fixtures. The M4 Max field timings above show the
+  crossover between the walking and storm workloads.
 - **The bookkeeping is serial.** Stepping blocks splits across cores, but placing events,
   ageing, retiring and closing blocks stay on one, which is what holds the speedup near 2.5× on
   four cores. The web build runs on one thread, since the page cannot share memory between

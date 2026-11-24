@@ -1,9 +1,8 @@
 //! The full computation: every cell of a square region, every step.
 //!
-//! This is what a certified field promises to stay within tolerance of, so it uses the same
-//! arithmetic in the same order: inside the window the two agree bit for bit, and any
-//! difference between them is the window's doing and nothing else. Outside the region the
-//! plane is held at zero, so keep events well inside it when comparing.
+//! The dense reference applies the same stencil operations in the same order as the sparse
+//! field. An omitted neighbor can influence later steps inside the active window. The
+//! reference holds its own exterior at zero, so keep events well inside it when comparing.
 //!
 //! Uniform rain is kept as a sheet here too. A uniform field has zero laplacian, so stepping
 //! it cell by cell and stepping it once give the same numbers; keeping it apart only spares
@@ -42,16 +41,16 @@ impl Grid {
     }
 
     #[inline]
-    fn at(&self, x: i32, y: i32) -> Option<usize> {
-        let (cx, cy) = (x - self.x0, y - self.y0);
-        let s = self.side as i32;
+    fn at(&self, x: i64, y: i64) -> Option<usize> {
+        let (cx, cy) = (x - i64::from(self.x0), y - i64::from(self.y0));
+        let s = self.side as i64;
         (cx >= 0 && cy >= 0 && cx < s && cy < s).then(|| (cy as usize + 1) * (self.side + 2) + cx as usize + 1)
     }
 
     fn each_cell(&mut self, x: i32, y: i32, r: u32, mut f: impl FnMut(&mut f32)) {
-        let r = r.min(crate::field::MAX_RADIUS) as i32;
+        let (x, y, r) = (i64::from(x), i64::from(y), i64::from(r.min(crate::field::MAX_RADIUS)));
         for dy in -r..=r {
-            let span = ((r * r - dy * dy) as u64).isqrt() as i32;
+            let span = ((r * r - dy * dy) as u64).isqrt() as i64;
             for dx in -span..=span {
                 if let Some(i) = self.at(x + dx, y + dy) {
                     f(&mut self.now[i]);
@@ -61,20 +60,22 @@ impl Grid {
     }
 
     pub fn deposit(&mut self, x: i32, y: i32, radius: u32, amount: f32) {
-        let amount = amount.min(1.0);
-        if amount > 0.0 {
+        if amount.is_finite() && amount > 0.0 {
+            let amount = amount.min(1.0);
             let room = (1.0 - self.sheet).max(0.0);
             self.each_cell(x, y, radius, |v| *v = (*v + amount).min(room));
         }
     }
 
     pub fn drain(&mut self, x: i32, y: i32, radius: u32, amount: f32) {
-        self.each_cell(x, y, radius, |v| *v = (*v - amount).max(0.0));
+        if amount.is_finite() && amount > 0.0 {
+            self.each_cell(x, y, radius, |v| *v = (*v - amount).max(0.0));
+        }
     }
 
     pub fn rain(&mut self, amount: f32) {
-        if amount > 0.0 {
-            self.sheet += amount;
+        if amount.is_finite() && amount > 0.0 {
+            self.sheet = (self.sheet + amount).min(f32::MAX);
         }
     }
 
@@ -96,17 +97,17 @@ impl Grid {
         }
         core::mem::swap(&mut self.now, &mut self.next);
         let s = self.sheet;
-        self.sheet = flush(c0 * s + a * (s + s + s + s));
+        self.sheet = crate::spec::step_sheet(s, c0, a);
     }
 
     /// The field at a cell, sheet included.
     pub fn sample(&self, x: i32, y: i32) -> f32 {
-        self.at(x, y).map_or(0.0, |i| self.now[i]) + self.sheet
+        self.at(x.into(), y.into()).map_or(0.0, |i| self.now[i]) + self.sheet
     }
 
     /// Row `y` of the region, `side` cells from `x0`, without the sheet.
     pub fn row(&self, y: i32) -> &[f32] {
-        let i = self.at(self.x0, y).expect("row inside the region");
+        let i = self.at(self.x0.into(), y.into()).expect("row inside the region");
         &self.now[i..i + self.side]
     }
 }

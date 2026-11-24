@@ -20,7 +20,7 @@ pub struct Spec {
     pub spread: f32,
     /// Fraction of the field lost per step.
     pub fade: f32,
-    /// The promise: no cell ever differs from the full computation by more than this.
+    /// Target cellwise error. Compare the live [`Field::bound`](crate::Field::bound) with this value.
     pub tolerance: f32,
     /// Live events a district (1024 × 1024 cells) keeps before its two closest merge.
     pub events: usize,
@@ -109,4 +109,14 @@ impl fmt::Display for Error {
             Error::NeverForgets => "the field keeps events too long to certify; raise fade or tolerance",
         })
     }
+}
+
+/// Ordinary sheets use the same f32 operations as the stencil. At extreme intensities
+/// the neighbour sum can overflow even though its weighted result is representable.
+pub(crate) fn step_sheet(s: f32, centre: f32, spread: f32) -> f32 {
+    if s > f32::MAX * 0.25 {
+        return ((centre as f64 + 4.0 * spread as f64) * s as f64) as f32;
+    }
+    let next = centre * s + spread * (s + s + s + s);
+    if next < 1e-12 { 0.0 } else { next }
 }

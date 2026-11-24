@@ -1,27 +1,27 @@
 //! # boxel
 //!
-//! Diffusive fields that cost what happens in them, not what they cover, with a proof.
+//! Sparse diffusion fields with a computable error bound.
 //!
 //! A field is a value on every cell of the integer plane (glow, wetness, heat, scent) that
 //! spreads to its neighbours and fades. Simulating it everywhere costs the whole world every
-//! step. Simulating it only where something is going on is what games already do, by feel,
-//! and by feel means nobody knows what was lost. Boxel does the second with the guarantee of
-//! the first: no cell ever differs from the full computation by more than a tolerance you
-//! choose, every step, however long it runs and however large the plane.
+//! step. Boxel allocates blocks around disturbances and lets quiet blocks retire.
+//! Boxel computes a conservative error bound for the omitted cells and tracks it through
+//! each step. Compare [`Field::bound`] with the requested tolerance to check the current
+//! guarantee, including the effect of rounding and event crowding.
 //!
 //! The method is the certified locality of Rouyea & Bourgeois, *Certified Locality in
 //! Diffusive Simulation* (2026), carried to a running engine:
 //!
-//! - [`Cone`] computes the tolerance light cone of the lattice scheme itself, which makes the
-//!   paper's windows rigorous on the lattice, with or without dissipation, and within a few
-//!   percent of the cells an event ever actually touches.
+//! - [`Cone`] bounds the impulse response of a fixed lattice step with or without dissipation.
+//!   On three point-event fixtures its footprint contained 3.3–5.5% more cells than the
+//!   measured above-threshold footprint.
 //! - [`Field`] keeps a ledger of those bounds per 16 × 16 block, gives storage only to blocks
 //!   the ledger cannot clear, steps only those, retires events into a decaying budget and
 //!   merges them when there are too many. Memory and work both follow the window.
 //! - [`Grid`] is the full computation, in the same arithmetic, to check the promise against.
 //!
-//! The crate is `no_std`, has no dependencies, and uses no transcendental functions at run
-//! time, so a field gives the same bits on every machine.
+//! The default crate is `no_std` and dependency-free. The replay fixture checks field bits
+//! across native and WebAssembly builds using the same event history.
 //!
 //! With the `parallel` feature it uses `std` threads to step a large window's blocks across
 //! cores. Every block is computed exactly as it is on one core and the bookkeeping stays serial,

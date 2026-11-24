@@ -149,20 +149,28 @@ impl Cone {
         self.starts.len()
     }
 
-    /// Lattice cells a point event of `mass` is certified never to push above `level`.
+    /// Cells whose envelope for a point event of this mass exceeds the level. Returns
+    /// `u64::MAX` if the table cannot certify a finite footprint or the count overflows.
     pub fn footprint(&self, mass: f64, level: f64) -> u64 {
-        let mut reach = 0u32;
-        while mass * self.envelope(0, reach) > level {
-            reach += 1;
+        if mass * self.peak(0) <= level || mass.is_nan() || level.is_nan() {
+            return 0;
         }
-        let r = reach as i64;
-        let mut count = 0;
-        for y in -r..=r {
-            for x in -r..=r {
-                if mass * self.envelope(0, ((x * x + y * y) as u64).isqrt() as u32) > level {
-                    count += 1;
-                }
-            }
+        let above = |radius| mass * self.envelope(0, radius) > level;
+        if above(u32::MAX) {
+            return u64::MAX;
+        }
+        // The first omitted ring has radius r. Exactly the cells with x²+y² < r²
+        // are included, so each horizontal span can be counted by an integer root.
+        let (mut lo, mut hi) = (0, u32::MAX);
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if above(mid) { lo = mid } else { hi = mid }
+        }
+        let limit = u64::from(hi).pow(2) - 1;
+        let mut count = 2 * u64::from(lo) + 1;
+        for y in 1..hi as u64 {
+            let span = (limit - y * y).isqrt();
+            count = count.saturating_add(4 * span + 2);
         }
         count
     }
@@ -402,6 +410,22 @@ mod tests {
         let cone = Cone::new(0.0, 0.01, 1e-4).unwrap();
         assert_eq!(cone.envelope(0, 1), 0.0);
         assert!(cone.peak(cone.bins() - 1) <= 1e-4 * HEADROOM + FLOOR);
+    }
+
+    #[test]
+    fn footprint_handles_a_constant_exterior_bound() {
+        let cone = Cone::new(0.2, 0.0, 0.01).unwrap();
+        assert_eq!(cone.footprint(1.0, cone.wall * 0.5), u64::MAX);
+        assert_eq!(cone.footprint(0.0, 0.01), 0);
+        let level = 0.04;
+        let mut count = 0;
+        for y in -32i32..=32 {
+            for x in -32i32..=32 {
+                let r = ((x * x + y * y) as u32).isqrt();
+                count += u64::from(cone.envelope(0, r) > level);
+            }
+        }
+        assert_eq!(cone.footprint(1.0, level), count);
     }
 
     #[test]

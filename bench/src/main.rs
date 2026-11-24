@@ -445,20 +445,6 @@ fn replay() {
     let bits = |v: f32| v.to_bits();
     let script: Vec<String> =
         drops.iter().map(|d| format!("[{},{},{},{},{}]", d.frame, d.x, d.y, d.r, bits(d.a))).collect();
-    std::fs::write(
-        &path,
-        format!(
-            "{{\"spec\":[{},{},{},{}],\"rain\":[600,{}],\"frames\":{},\"drops\":[{}]}}",
-            bits(spec.spread),
-            bits(spec.fade),
-            bits(spec.tolerance),
-            spec.events,
-            bits(0.1),
-            (30.0 * FPS) as u32,
-            script.join(",")
-        ),
-    )
-    .unwrap();
     let mut field = Field::new(spec).unwrap();
     let (mut q, mut moved) = (0, 0u64);
     for frame in 0..(30.0 * FPS) as u32 {
@@ -485,6 +471,21 @@ fn replay() {
         }
     }
     h.eat(&field.sheet().to_bits().to_le_bytes());
+    std::fs::write(
+        &path,
+        format!(
+            "{{\"spec\":[{},{},{},{}],\"rain\":[600,{}],\"frames\":{},\"drops\":[{}],\"hash\":\"{:016x}\"}}",
+            bits(spec.spread),
+            bits(spec.fade),
+            bits(spec.tolerance),
+            spec.events,
+            bits(0.1),
+            (30.0 * FPS) as u32,
+            script.join(","),
+            h.0
+        ),
+    )
+    .unwrap();
     println!("native: {} blocks, hash {:016x}", blocks.len(), h.0);
     let event_bytes = drops.len() as f64 * 13.0 / 30.0;
     let state_bytes = moved as f64 * 256.0 / 30.0;

@@ -2,6 +2,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Tarnished Promise</title>
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAATklEQVR42mPkF1ZmIAWwYAp1zNgBZ1dkeKDJMjGQCGivgZEcT4vlxcD5ryYtSXmzC86dI+ImmugP576ev3G4eBoNKMfEw9l3lywchjENAB8bEDdwzcfsAAAAAElFTkSuQmCC">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;800&family=IBM+Plex+Mono:wght@400;500&family=Figtree:wght@400;500;600&display=swap">
@@ -38,10 +39,12 @@ body { background: var(--void); color: var(--ink); font-family: var(--body); ove
 #intro p { margin: 0; color: var(--dim); line-height: 1.55; font-size: 1rem; max-width: 62ch; }
 #intro .keys { font-family: var(--mono); font-size: 0.78rem; color: var(--dim); display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; }
 #intro .keys b { color: var(--ink); font-weight: 500; }
-#intro .go { font-family: var(--display); font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--glow); font-size: 0.9rem; }
+#intro .go { justify-self: start; background: transparent; border: 0; padding: 7px 0; cursor: pointer; font-family: var(--display); font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--glow); font-size: 0.9rem; }
+#intro .go:focus-visible { outline: 2px solid var(--glow); outline-offset: 4px; }
 #intro .status { font-family: var(--mono); font-size: 0.75rem; color: var(--dim); }
 
 #hud {
+  box-sizing: border-box;
   position: fixed; z-index: 10; top: calc(env(safe-area-inset-top, 0px) + 12px); left: max(12px, env(safe-area-inset-left, 0px));
   width: min(22rem, calc(100vw - 24px)); padding: 10px 12px; border-radius: 10px;
   background: var(--glass); border: 1px solid var(--edge); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
@@ -49,7 +52,6 @@ body { background: var(--void); color: var(--ink); font-family: var(--body); ove
 }
 #hud .mode { font-family: var(--display); font-weight: 800; letter-spacing: 0.12em; font-size: 12px; text-transform: uppercase; color: var(--glow); display: flex; justify-content: space-between; gap: 8px; }
 #hud .mode.dense { color: var(--warn); }
-#hud .mode.act { color: var(--spore); }
 #hud .row { display: flex; justify-content: space-between; gap: 10px; color: var(--dim); }
 #hud .row b { color: var(--ink); font-weight: 500; }
 #hud .bar { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.07); margin: 4px 0 6px; overflow: hidden; }
@@ -88,9 +90,9 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
   <div class="row"><span>a dense engine would step</span><b id="hDense">—</b></div>
   <div class="row"><span>blocks: glow · moisture · wear</span><b id="hAwake">—</b></div>
   <div class="row"><span>field sim / frame</span><b id="hMs">—</b></div>
-  <div class="row"><span>memory</span><b id="hMem">—</b></div>
+  <div class="row"><span>field storage (est.)</span><b id="hMem">—</b></div>
   <div class="row"><span>texture upload / frame</span><b id="hUp">—</b></div>
-  <div class="row"><span>the promise</span><b id="hPromise">—</b></div>
+  <div class="row"><span>field error bound</span><b id="hPromise">—</b></div>
   <div class="note" id="hNote"></div>
 </div>
 
@@ -106,7 +108,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 <div id="intro">
   <div class="card">
     <h1>T<span>A</span>RNISHED<br>PROMISE</h1>
-    <p>Follow the glowing river into Tarn’s lake, or take the winding trail up the western hill for a view of the three giants. Footsteps wake the moss, wet feet darken the sand, and drifting pods leave light in the current. Press M to compare the boxel fields with a dense simulation.</p>
+    <p>Follow the river to the lake and watch for sailwings skimming the water. Take the western trail after dark, or throw a glowstone and watch the moss wake where it lands.</p>
     <div class="keys" id="keys">
       <b>WASD</b><span>walk · Shift to run</span>
       <b>mouse</b><span>look (click to capture)</span>
@@ -116,7 +118,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
       <b>M</b><span>switch engine: boxel · dense</span>
       <b>H</b><span>hide the readout</span>
     </div>
-    <div class="go" id="go">Click to step onto the shore</div>
+    <button class="go" id="go" type="button">Step onto the shore</button>
     <div class="status" id="status">loading the field engine…</div>
   </div>
 </div>

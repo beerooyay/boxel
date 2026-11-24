@@ -46,14 +46,18 @@ fn run(spec: Spec, steps: usize, seed: u64, rain: bool) -> Outcome {
         field.step();
         grid.step();
         if s % 25 == 0 {
+            let bound = field.bound();
+            let mut max_now = 0.0f64;
             for y in -192..192 {
                 for x in -192..192 {
                     let (v, u) = (field.sample(x, y) as f64, grid.sample(x, y) as f64);
-                    worst = worst.max((v - u).abs());
+                    max_now = max_now.max((v - u).abs());
                     above = above.max(v - u);
                 }
             }
-            assert!(field.bound() <= spec.tolerance as f64 + 1e-12, "bound {} over tolerance", field.bound());
+            worst = worst.max(max_now);
+            assert!(max_now <= bound, "step {s}: sampled error {max_now} exceeds reported bound {bound}");
+            assert!(bound <= spec.tolerance as f64 + 1e-12, "bound {bound} over tolerance");
         }
     }
     Outcome { worst, above, field }
@@ -134,4 +138,76 @@ fn far_apart_is_free() {
 fn unstable_specs_are_refused() {
     let bad = Spec { spread: 0.3, ..glow() };
     assert_eq!(Field::new(bad).err(), Some(Error::NotMonotone));
+}
+
+#[test]
+fn amount_inputs_preserve_the_one_sided_field() {
+    let mut f = Field::new(glow()).unwrap();
+    let mut g = Grid::new(glow(), -16, -16, 32).unwrap();
+    f.deposit(0, 0, 0, 0.25);
+    g.deposit(0, 0, 0, 0.25);
+    for a in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        f.deposit(1, 1, 0, a);
+        g.deposit(1, 1, 0, a);
+        f.drain(0, 0, 0, a);
+        g.drain(0, 0, 0, a);
+        f.rain(a);
+        g.rain(a);
+    }
+    assert_eq!(f.stats().deposits, 1);
+    assert_eq!(f.sample(0, 0), 0.25);
+    assert_eq!(g.sample(0, 0), 0.25);
+    assert_eq!(f.sample(1, 1), 0.0);
+    assert_eq!(g.sample(1, 1), 0.0);
+    for _ in 0..2 {
+        f.rain(f32::MAX);
+        g.rain(f32::MAX);
+    }
+    f.step();
+    g.step();
+    assert!(f.sheet().is_finite() && f.bound().is_finite());
+    assert_eq!(f.sheet(), g.sheet());
+}
+
+#[test]
+fn cell_limits_preserve_local_coordinates() {
+    let (x, y) = (i32::MAX, i32::MIN);
+    let mut edge = Field::new(glow()).unwrap();
+    let mut local = Field::new(glow()).unwrap();
+    let mut grid = Grid::new(glow(), x - 63, y, 64).unwrap();
+    edge.deposit(x, y, 4, 0.75);
+    local.deposit(-1, 0, 4, 0.75);
+    grid.deposit(x, y, 4, 0.75);
+    assert_eq!(grid.sample(x, y), 0.75);
+    assert_eq!(grid.sample(i32::MIN, i32::MAX), 0.0);
+    edge.drain(x, y, 1, 0.25);
+    local.drain(-1, 0, 1, 0.25);
+    for _ in 0..40 {
+        edge.step();
+        local.step();
+        for j in 0..6 {
+            for i in 0..6 {
+                assert_eq!(edge.sample(x - i, y + j), local.sample(-1 - i, j));
+            }
+        }
+    }
+}
+
+#[test]
+fn retiring_an_overloaded_district_preserves_propagated_uncertainty() {
+    let mut f = Field::new(Spec { events: 1, ..glow() }).unwrap();
+    for y in [0, 400, 800] {
+        for x in [0, 400, 800] {
+            f.deposit(x, y, 0, 1e-6);
+        }
+    }
+    let before = f.bound();
+    assert!(before > f.spec().tolerance as f64);
+    f.step();
+    assert_eq!(f.live(), 0);
+    assert!(f.bound() >= before * 0.99);
+    for _ in 0..450 {
+        f.step();
+    }
+    assert!(f.bound() < f.spec().tolerance as f64);
 }

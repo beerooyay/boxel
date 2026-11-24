@@ -1,9 +1,9 @@
 # The certificate
 
-This is what boxel promises, the assumptions under it, and why it holds. It follows
-*Certified Locality in Diffusive Simulation: Tolerance Light Cones and Logarithmic Event
-Footprints* (Rouyea & Bourgeois, 2026), cited below by theorem number. Sections 3 to 9 below
-are new; each says what it adds to the paper.
+This document gives the assumptions and argument behind Boxel’s current error bound.
+The theorem numbers refer to the October 2026 alphaXiv preprint by Rouyea and Bourgeois.
+Sections 3–9 describe the implementation and its extensions to the preprint.
+[*Certified Locality in Diffusive Simulation*](https://www.alphaxiv.org/abs/2610.diffusive-simulation-tolerance-footprints.pdf)
 
 The promise is made twice. First about exact arithmetic, the setting of the paper's theorems.
 Then about the machine: the f32 numbers a game actually holds and the f64 table the
@@ -36,13 +36,15 @@ only inside a window and holds zero outside. The promise compares the two.
 
 ## 2. The promise
 
-> For every cell `x` and every step `n`:  `0 ≤ uⁿ(x) - vⁿ(x) ≤ B ≤ ε`,
+> For every cell `x` and every step `n`:  `0 ≤ uⁿ(x) - vⁿ(x) ≤ B`,
 >
 > where `u` is the full computation and `v` the boxel field, both in exact arithmetic, or both
 > in the same f32 arithmetic (section 8).
 
 `ε` is the tolerance. `B` is reported live by `Field::bound()` and is built from five parts:
-Theorem 6.7's three, and two that are new.
+Theorem 6.7's three, and two that are new. The requested accuracy holds while `B ≤ ε`.
+Excess live events in a district, accumulated rounding, or the precision of a large
+uniform sheet can raise the reported bound above the target.
 
 | part | default share | what it covers |
 |---|---|---|
@@ -55,7 +57,7 @@ Theorem 6.7's three, and two that are new.
 The field only ever reads low: outside the window it is zero, and inside it the error is a
 weighted average of errors that are already in `[0, B]`.
 
-## 3. The cone, computed (new: the paper's open problems 2 and 3)
+## 3. The computed lattice cone
 
 Every event of mass `A` evolves as `A·Kₙ`, with `Kₙ` the scheme's point kernel. The certificate
 needs its future envelope `Eₘ(z) = sup over n ≥ m of Kₙ(z)`. The paper offers two closed forms.
@@ -94,9 +96,10 @@ On the paper's own test cases (D = 0.2, A = 9, ε = 1/255; `boxel-bench cone`):
 | 0.002 | 577 | 609 (1.06×) | 23 981 (42×) |
 | 0.02 | 241 | 249 (1.03×) | 2 381 (10×) |
 
-The undamped lattice, where the paper proves nothing, now has a certificate. It is
-computer-assisted and holds for one step size, not a closed form; within that scope it is
-within 6% of the truth.
+Section 9 of the preprint asks for near-sharp undamped lattice footprints and tighter damped
+windows. Here the undamped fixture retains 889 cells for 845 observed. The construction applies
+to an individual fixed scheme and threshold for which a table can be built. How tight its
+window will be across other parameter choices remains an open question.
 
 ## 4. Events and the ledger
 
@@ -119,17 +122,22 @@ from the new bin. Windows shrink as events age, which is the lattice version of 
 alternative ("summing") applied cell by cell. It is never looser than summing masses over a
 union of supports, and it handles Remark 4.3's ghost bridges without special cases.
 
-## 5. The window, stored literally (new)
+## 5. The active window
 
 A block is in the window exactly when its ledger reaches `θ`. Only blocks in the window have
 storage, and only they are stepped. Everywhere else the field is zero, which is precisely the
 windowed solution of Theorem 6.5 (`v = 0` off the window). The theorem's error bound is the sup
 of `u` outside the window. Outside, `u` is at most the ledger plus the dropped tails, the
-retired pools and the far part. That is `B`.
+retired pools and the far part. This bounds what can be discarded now. An error already
+inside a surviving block can persist even after a neighboring district's budget shrinks.
+For each step we take the maximum of the inherited spatial error and the outside bounds
+immediately before and after changing the window, then multiply by the contraction
+`1 − f` rounded upward. The live bound takes the larger of this propagated error and the
+current outside bound, plus the floating-point terms.
 
-So memory is proportional to the window, as well as work. A block that leaves the window is
-audited on the way out: its largest value must sit under its ledger plus `B - θ`. The count of
-failures is `Stats::violations`. It has been zero in every run.
+When a block leaves the window, the audit compares its largest residual with the block's
+ledger plus the current tail, pool, far, dust and rounding allowances. Each failure increments
+`Stats::violations`.
 
 ## 6. Retirement and merging
 
@@ -145,25 +153,26 @@ and the younger age, each an upper bound. Old events have little left to bound, 
 is nearly free. Merges never produce a disc wider than 128 cells. Without fade, they never
 produce a mass over 4096.
 
-## 7. Districts: a bound that does not grow with the number of events (new)
+## 7. Regional bounds
 
 Theorem 6.7 bounds the error by a sum over every event there has ever been. On an open world
 with thousands of walkers that sum is the whole problem. Boxel keeps the tail and retirement
 budgets per district of 1024 × 1024 cells. Each district has its own capacity `C` and its own
-pool. A cell pays for the nine districts around its own:
+pool. For a cell and the nine districts around it, the instantaneous spatial allowance is
 
 ```
-B = θ + 9·(max events in a district · c + max pool) + far + dust + ρ,   c = (ε/5) / (9C)
+S = θ + 9·(max events in a district · c + max pool) + far + dust,   c = (ε/5) / (9C)
 ```
 
 An event's support stays within 128 cells of its district. So anything in a district that is
 not a neighbour is at least 896 cells away, where the cone is below `E₀(896)`: 5·10⁻³⁴ for the
-demo's moisture, 10⁻⁵⁴ for its glow. `far` is that number times the total mass ever deposited. It is tracked
-exactly and must stay under a sliver of 10⁻⁶ ε. `dust` holds the pools of districts that
-emptied and were dropped, still decaying. Without fade the exterior bound never decays, so the
-field is a single district and the bound is the paper's.
+demo's moisture, 10⁻⁵⁴ for its glow. `far` uses an upward-rounded total deposited mass
+and a budget of 10⁻⁶ ε. `dust` holds the still-decaying pools from retired districts.
+Without fade the exterior bound stays constant, so the field uses a single global district.
+The final `B` takes the maximum of `S` and the inherited spatial error from section 5,
+then adds the rounding allowances from section 8.
 
-## 8. Floating point, accounted for (new)
+## 8. Floating-point accounting
 
 The theorems above are about exact arithmetic. A game runs in f32, and the table is built in
 f64. Four facts carry the promise across, assuming IEEE-754 round-to-nearest. Rust never
@@ -196,7 +205,9 @@ contracts into fused multiply-adds on its own, and wasm forbids flush-to-zero.
    under the sum `ρ` defined by
    `ρ' = (1 - fade)·ρ + 2γ·(1 - fade) + 2·2⁻²⁴·m + 2·10⁻¹²`, where `m` is the most deposits and
    drains that reached any one block that step. `Field::rounding()` keeps `ρ` and `bound()`
-   includes it. In steady state it is `2γ/fade` plus the deposit term: for the demo's fields
+   includes it. Between steps the bound also counts pending edits conservatively. Adding
+   the identical rain sheet to the residual can cost one more f32 ulp in the final sample;
+   the bound includes that ulp when the rounded totals can differ. In steady state it is `2γ/fade` plus the deposit term: for the demo's fields
    about 3% to 6% of 1/255, inside the tenth of the tolerance it is given
    (`rounding_stays_inside_its_share`). A field that deposits on one block far faster than it
    fades will see `bound()` report more than the tolerance. Without fade, `ρ` grows without
@@ -210,7 +221,7 @@ arithmetic over the table would remove the analysis in fact 2, at the price of d
 rounding, which Rust does not expose. That is the next step if a machine-checked certificate
 is wanted.
 
-## 9. Determinism (new)
+## 9. Determinism
 
 Nothing at run time uses a transcendental function. The cone's exterior factor comes from
 Newton iterations on a quadratic. Distances use integer square roots. The ledger is integer.
@@ -223,7 +234,8 @@ x86-64 with AVX2 and FMA, and on wasm32 with SIMD128 (`boxel-bench replay`, `ben
 
 - **The step is fixed.** The cone is computed for one `(spread, fade)`. A host that wants time
   to run faster takes more steps. The paper's forcing invariance (Corollary 6.6) then holds
-  trivially: forcing changes how many steps are taken, never their size.
+  for a change in how many whole steps the host takes. Variable step sizes would require
+  their own bounds.
 - **Linear diffusion with linear dissipation, nonnegative deposits.** Saturation and drains are
   monotone and only lower the field, so they keep the bound. Advection, nonlinear reactions and
   negative sources are outside it, as in the paper's §9.

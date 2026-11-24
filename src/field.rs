@@ -3,8 +3,8 @@
 //! Every deposit is an event. Its future is bounded by the cone, and the ledger adds those
 //! bounds block by block. A block whose ledger reaches the window level is the only kind
 //! that has storage, and the only kind that is stepped; everywhere else the field is zero,
-//! exactly as in the windowed simulation of the paper (Theorem 6.5), and the ledger proves
-//! the zero is within tolerance. Memory and work follow the window, and the window follows
+//! exactly as in the windowed simulation of the paper (Theorem 6.5). The ledger bounds the
+//! error of that omission. Memory and work follow the window, and the window follows
 //! what has happened.
 //!
 //! The paper's global error (Theorem 6.7) is a sum over every event there has ever been. On
@@ -12,7 +12,7 @@
 //! per district of 1024 × 1024 cells: each district has its own event capacity and its own
 //! retirement budget, and a cell only ever pays for the nine districts around it. Anything
 //! further away is at least 896 cells off, where the cone has decayed past any mass a game
-//! could deposit; that remainder is counted exactly and kept inside a sliver of the budget.
+//! could normally deposit. The bound includes an upper estimate for that remainder.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -115,9 +115,8 @@ pub struct Field {
     near: f64,
     /// A block is in the window from this many ledger units up.
     window: u64,
-    /// Merges never produce an event heavier or wider than these.
+    /// Maximum event mass after merging.
     heaviest: f64,
-    widest: u32,
     /// The most a unit of mass in a far district can ever put on a cell.
     far: f64,
     /// Total mass ever deposited: bounds what all far districts hold together.
@@ -126,6 +125,10 @@ pub struct Field {
     dust: f64,
     /// What f32 rounding can have moved this field from exact arithmetic, at most, so far.
     rounding: f64,
+    /// Largest spatial error that could have propagated into a surviving page.
+    inherited: f64,
+    max_events: usize,
+    max_pool: f64,
     /// Relative rounding of one step of the scheme.
     gamma: f64,
     /// Blocks each deposit or drain since the last step reached, one entry per reach.
@@ -224,6 +227,9 @@ impl Field {
             spread,
             centre,
             rounding: 0.0,
+            inherited: 0.0,
+            max_events: 0,
+            max_pool: 0.0,
             // five roundings on the longest path of the stencil, or one when it has no spread
             gamma: if spread == 0.0 { U32 } else { 5.000001 * U32 },
             touched: Vec::new(),
@@ -232,7 +238,6 @@ impl Field {
             near,
             window: (budget.window * UNIT) as u64,
             heaviest: if local { f64::INFINITY } else { MASS_LIMIT },
-            widest: if local { WIDEST } else { u32::MAX },
             far,
             deposited: 0.0,
             dust: 0.0,
@@ -266,10 +271,10 @@ impl Field {
 
     /// Add `amount` to every cell within `radius` of (x, y). The field saturates at 1.
     pub fn deposit(&mut self, x: i32, y: i32, radius: u32, amount: f32) {
-        let amount = amount.min(1.0);
-        if amount.is_nan() || amount <= 0.0 {
+        if !amount.is_finite() || amount <= 0.0 {
             return;
         }
+        let amount = amount.min(1.0);
         let r = radius.min(MAX_RADIUS);
         let mass = amount as f64 * disc(r) as f64;
         let e = self.event(x, y, r, mass, amount as f64, self.step);
@@ -279,17 +284,21 @@ impl Field {
         self.districts[d].events.push(e);
         let room = (1.0 - self.sheet).max(0.0);
         self.each_cell(x, y, r, |v| *v = (*v + amount).min(room));
-        self.deposited += mass;
+        self.deposited = (self.deposited + mass).next_up();
         self.touch(x, y, r);
         self.stats.deposits += 1;
         if self.districts[d].events.len() > self.spec.events {
             self.merge(d);
         }
+        self.max_events = self.max_events.max(self.districts[d].events.len());
     }
 
     /// Take up to `amount` from every cell within `radius` of (x, y). Removing mass only
     /// lowers the field, so every bound still holds and the ledger is left alone.
     pub fn drain(&mut self, x: i32, y: i32, radius: u32, amount: f32) {
+        if !amount.is_finite() || amount <= 0.0 {
+            return;
+        }
         let r = radius.min(MAX_RADIUS);
         self.each_cell(x, y, r, |v| *v = (*v - amount).max(0.0));
         self.touch(x, y, r);
@@ -297,22 +306,25 @@ impl Field {
 
     /// A uniform deposit over the whole plane, kept in closed form as the sheet.
     pub fn rain(&mut self, amount: f32) {
-        if amount > 0.0 {
-            self.sheet += amount;
+        if amount.is_finite() && amount > 0.0 {
+            self.sheet = (self.sheet + amount).min(f32::MAX);
         }
     }
 
     /// Advance one step.
     pub fn step(&mut self) {
+        let old_window = self.spatial_bound();
         self.age();
         self.retire();
         self.sweep();
+        let keep = (1.0 - self.spec.fade as f64).next_up();
+        self.inherited = (self.inherited.max(old_window).max(self.spatial_bound()) * keep).next_up();
         self.step_blocks();
         core::mem::swap(&mut self.now, &mut self.next);
         let (a, c0, s) = (self.spread, self.centre, self.sheet);
-        self.sheet = flush(c0 * s + a * (s + s + s + s));
+        self.sheet = crate::spec::step_sheet(s, c0, a);
         // everything that only decays is rounded up as it decays, so it never decays too fast
-        let keep = (1.0 - self.spec.fade as f64).next_up();
+        self.max_pool = (self.max_pool * keep).next_up();
         for d in &mut self.districts {
             d.pool = (d.pool * keep).next_up();
         }
@@ -422,29 +434,31 @@ impl Field {
     }
 
     /// The certified bound right now: no cell differs from the full computation by more.
-    /// Under the tolerance unless a district was pushed past its capacity with nothing it
-    /// could merge, in which case this says by how much.
+    /// Compare this live bound with the requested tolerance. Heavy event crowding or
+    /// accumulation in a slowly fading field can push it above that target.
     pub fn bound(&self) -> f64 {
-        self.budget.window + self.beyond_window()
+        let sheet = self.sheet;
+        // The sheet is identical in both engines. Rounding the two final additions can
+        // add one ulp at their largest magnitude. If both endpoints round alike it adds zero.
+        let top = sheet + 1.0;
+        let sample_rounding = if sheet > 0.0 && top > sheet { (top.next_up() - top) as f64 } else { 0.0 };
+        (self.inherited.max(self.spatial_bound()) + self.rounding() + sample_rounding).next_up()
     }
 
-    /// What f32 rounding can have moved the field by, at most, so far. Part of [`bound`](Field::bound).
+    /// Rounding accumulated through the last step, plus pending deposits/drains. A disc
+    /// touches a block at most once; until the next crowding count the list length is conservative.
     pub fn rounding(&self) -> f64 {
-        self.rounding
+        self.rounding + 2.0 * U32 * self.touched.len() as f64
     }
 
-    /// The bound less the window level: what a block outside the window may hold beyond its
-    /// own ledger.
-    fn beyond_window(&self) -> f64 {
-        let (mut count, mut pool) = (0usize, 0.0f64);
-        for d in &self.districts {
-            count = count.max(d.events.len());
-            pool = pool.max(d.pool);
-        }
-        (self.near * (count as f64 * self.cut + pool)
+    fn spatial_bound(&self) -> f64 {
+        self.budget.window + self.outside_terms()
+    }
+
+    fn outside_terms(&self) -> f64 {
+        (self.near * (self.max_events as f64 * self.cut + self.max_pool)
             + self.deposited * self.far * (1.0 + 1e-12)
-            + self.dust
-            + self.rounding)
+            + self.dust)
             * (1.0 + 1e-15)
     }
 
@@ -469,10 +483,10 @@ impl Field {
 
     /// Note the blocks a disc at (x, y) of radius r reaches, for the rounding account.
     fn touch(&mut self, x: i32, y: i32, r: u32) {
-        let r = r as i32;
+        let (x, y, r) = (i64::from(x), i64::from(y), i64::from(r));
         for by in (y - r) >> 4..=(y + r) >> 4 {
             for bx in (x - r) >> 4..=(x + r) >> 4 {
-                self.touched.push(key(bx, by));
+                self.touched.push(key(bx as i32, by as i32));
             }
         }
     }
@@ -543,20 +557,21 @@ impl Field {
     fn imprint(&mut self, e: &Event, from: Option<usize>, to: Option<usize>) {
         let reach = match (from.and_then(|b| self.reach(e, b)), to.and_then(|b| self.reach(e, b))) {
             (None, None) => return,
-            (a, b) => a.max(b).unwrap() as i32,
+            (a, b) => i64::from(a.max(b).unwrap()),
         };
-        let (bx0, bx1) = ((e.x - reach) >> 4, (e.x + reach) >> 4);
-        let (by0, by1) = ((e.y - reach) >> 4, (e.y + reach) >> 4);
+        let (x, y) = (i64::from(e.x), i64::from(e.y));
+        let (bx0, bx1) = ((x - reach) >> 4, (x + reach) >> 4);
+        let (by0, by1) = ((y - reach) >> 4, (y + reach) >> 4);
         for by in by0..=by1 {
-            let ny = e.y.clamp(by * 16, by * 16 + 15);
+            let ny = y.clamp(by * 16, by * 16 + 15);
             for bx in bx0..=bx1 {
-                let nx = e.x.clamp(bx * 16, bx * 16 + 15);
-                let (dx, dy) = ((nx - e.x) as i64, (ny - e.y) as i64);
+                let nx = x.clamp(bx * 16, bx * 16 + 15);
+                let (dx, dy) = (nx - x, ny - y);
                 let d2 = (dx * dx + dy * dy) as u64;
                 let old = from.map_or(0, |b| self.term(e, b, d2));
                 let new = to.map_or(0, |b| self.term(e, b, d2));
                 if old != new {
-                    self.post(bx, by, new as i64 - old as i64);
+                    self.post(bx as i32, by as i32, new as i64 - old as i64);
                 }
             }
         }
@@ -617,14 +632,19 @@ impl Field {
         }
         let floor = self.budget.slack * 1e-6;
         let mut dust = 0.0;
+        self.max_events = 0;
+        self.max_pool = 0.0;
         self.districts.retain(|d| {
+            self.max_events = self.max_events.max(d.events.len());
             let keep = !d.events.is_empty() || d.pool > floor;
-            if !keep {
-                dust += d.pool;
+            if keep {
+                self.max_pool = self.max_pool.max(d.pool);
+            } else {
+                dust = (dust + d.pool).next_up();
             }
             keep
         });
-        self.dust += dust;
+        self.dust = (self.dust + dust).next_up();
     }
 
     /// Over capacity: replace two events by one holding both (the paper's Proposition 4.2:
@@ -642,12 +662,12 @@ impl Field {
             let mut cheapest = u32::MAX;
             for j in 0..events.len() {
                 let (a, b) = (&events[i], &events[j]);
-                if i == j || a.mass + b.mass > self.heaviest {
+                if i == j || a.mass + b.mass > self.heaviest || a.x.abs_diff(b.x).max(a.y.abs_diff(b.y)) > 2 * WIDEST {
                     continue;
                 }
                 let disc = enclose(a, b);
                 let cost = disc.2.saturating_sub(a.r.max(b.r)) + 4 * a.bin.abs_diff(b.bin) as u32;
-                if disc.2 <= self.widest && cost < cheapest {
+                if disc.2 <= WIDEST && cost < cheapest {
                     cheapest = cost;
                     best = Some((i.min(j), i.max(j), disc));
                 }
@@ -658,7 +678,7 @@ impl Field {
         }
         let Some((i, j, (x, y, r))) = best else { return };
         let (a, b) = (events[i], events[j]);
-        let merged = self.event(x, y, r, a.mass + b.mass, a.cap + b.cap, a.born.max(b.born));
+        let merged = self.event(x, y, r, (a.mass + b.mass).next_up(), (a.cap + b.cap).next_up(), a.born.max(b.born));
         self.imprint(&a, Some(a.bin), None);
         self.imprint(&b, Some(b.bin), None);
         self.imprint(&merged, None, Some(merged.bin));
@@ -707,7 +727,7 @@ impl Field {
         if self.falling.is_empty() {
             return;
         }
-        let beyond = self.beyond_window();
+        let beyond = self.outside_terms() + self.rounding();
         while let Some(k) = self.falling.pop() {
             let Some(slot) = self.blocks.find(k) else { continue };
             let Entry { ledger, page, .. } = *self.blocks.get(slot);
@@ -742,14 +762,14 @@ impl Field {
 
     /// Apply `f` to every stored cell of the disc; cells outside the window are skipped.
     fn each_cell(&mut self, x: i32, y: i32, r: u32, mut f: impl FnMut(&mut f32)) {
-        let r = r as i32;
+        let (x, y, r) = (i64::from(x), i64::from(y), i64::from(r));
         for dy in -r..=r {
-            let span = ((r * r - dy * dy) as u64).isqrt() as i32;
+            let span = ((r * r - dy * dy) as u64).isqrt() as i64;
             let cy = y + dy;
             let mut cx = x - span;
             while cx <= x + span {
                 let end = (cx | 15).min(x + span);
-                let p = self.blocks.page(key(cx >> 4, cy >> 4));
+                let p = self.blocks.page(key((cx >> 4) as i32, (cy >> 4) as i32));
                 if p != NONE {
                     let row = &mut self.now[p as usize][((cy & 15) * 16) as usize..][..16];
                     for c in cx..=end {

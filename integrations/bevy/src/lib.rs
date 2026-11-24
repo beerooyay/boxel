@@ -8,7 +8,7 @@
 //! With the `image` feature (on by default), give an entity a [BoxelImage] beside its field and
 //! the plugin keeps an R8 texture of a window of the plane current, one 16 × 16 block at a time:
 //! the blocks the engine holds are copied in, the ones it lets go are cleared. Sample it in any
-//! material. A host that keeps its own tile cache instead reads `freed()` and calls
+//! material and add [`boxel::Field::sheet`] for the uniform rain component. A host that keeps its own tile cache instead reads `freed()` and calls
 //! `forget_freed()` itself.
 //!
 //! ```
@@ -80,18 +80,29 @@ mod image {
         }
 
         /// Copy the blocks the engine holds into `texels`, clear the ones it let go.
-        fn paint(&self, field: &mut boxel::Field, texels: &mut [u8]) {
-            let side = self.side as i32;
+        fn paint(&self, field: &mut boxel::Field, texels: &mut [u8], reset: bool) {
+            let side = i64::from(self.side);
+            if (self.side as usize).checked_mul(self.side as usize) != Some(texels.len()) {
+                return;
+            }
+            if reset {
+                texels.fill(0);
+            }
             let mut put = |bx: i32, by: i32, values: Option<&[f32; 256]>| {
-                let (x0, y0) = (bx * 16 - self.origin.x, by * 16 - self.origin.y);
-                if x0 < 0 || y0 < 0 || x0 + 16 > side || y0 + 16 > side {
+                let x = i64::from(bx) * 16 - i64::from(self.origin.x);
+                let y = i64::from(by) * 16 - i64::from(self.origin.y);
+                let first = (-x).clamp(0, 16);
+                let last = (side - x).clamp(0, 16);
+                if first >= last {
                     return;
                 }
-                for r in 0..16 {
-                    let row = &mut texels[((y0 + r) * side + x0) as usize..][..16];
+                for r in (-y).clamp(0, 16)..(side - y).clamp(0, 16) {
+                    let to = (y + r) as usize * self.side as usize + (x + first) as usize;
+                    let row = &mut texels[to..to + (last - first) as usize];
                     match values {
                         Some(v) => {
-                            for (t, &c) in row.iter_mut().zip(&v[r as usize * 16..][..16]) {
+                            let src = &v[(16 * r + first) as usize..(16 * r + last) as usize];
+                            for (t, &c) in row.iter_mut().zip(src) {
                                 *t = (c * 255.0 + 0.5).min(255.0) as u8;
                             }
                         }
@@ -110,12 +121,13 @@ mod image {
     }
 
     /// Bring every window up to date, once a frame, after whatever steps the frame took.
-    pub(crate) fn paint(mut fields: Query<(&mut BoxelField, &BoxelImage)>, mut images: ResMut<Assets<Image>>) {
+    pub(crate) fn paint(mut fields: Query<(&mut BoxelField, Ref<BoxelImage>)>, images: Option<ResMut<Assets<Image>>>) {
+        let Some(mut images) = images else { return };
         for (mut field, window) in &mut fields {
             if let Some(mut image) = images.get_mut(&window.image)
                 && let Some(texels) = image.data.as_mut()
             {
-                window.paint(&mut field.0, texels);
+                window.paint(&mut field.0, texels, window.is_changed());
             }
         }
     }
@@ -151,5 +163,35 @@ mod tests {
         assert_eq!(at(10, -20), (field.sample(10, -20) * 255.0 + 0.5).min(255.0) as u8);
         assert_eq!(at(-100, 100), 0);
         assert!(field.bound() <= 1.0 / 255.0);
+    }
+
+    #[test]
+    fn moving_an_unaligned_window_repaints_its_edges_and_clears_old_texels() {
+        let mut app = App::new();
+        app.add_plugins(BoxelPlugin).init_resource::<Assets<Image>>();
+        let spec = Spec { spread: 0.13, fade: 0.005, tolerance: 1.0 / 255.0, events: 64 };
+        let mut glow = Field::new(spec).unwrap();
+        glow.deposit(3, 3, 2, 0.8);
+        glow.deposit(20, 20, 2, 0.4);
+        let window = BoxelImage::new(IVec2::splat(3), 19, &mut app.world_mut().resource_mut::<Assets<Image>>());
+        let handle = window.image.clone();
+        let entity = app.world_mut().spawn((BoxelField(glow), window)).id();
+        for origin in [3, 17, -200] {
+            app.world_mut().get_mut::<BoxelImage>(entity).unwrap().origin = IVec2::splat(origin);
+            app.world_mut().run_schedule(PostUpdate);
+            let field = &app.world().get::<BoxelField>(entity).unwrap().0;
+            let texels = app.world().resource::<Assets<Image>>().get(&handle).unwrap().data.as_ref().unwrap();
+            for (i, &value) in texels.iter().enumerate() {
+                let (x, y) = (origin + (i % 19) as i32, origin + (i / 19) as i32);
+                assert_eq!(value, (field.sample(x, y) * 255.0 + 0.5) as u8);
+            }
+        }
+    }
+
+    #[test]
+    fn simulation_only_app_can_run_without_image_assets() {
+        let mut app = App::new();
+        app.add_plugins(BoxelPlugin);
+        app.update();
     }
 }

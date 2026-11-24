@@ -8,7 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { load } from '../ffi/boxel.js';
 
 const [script, wasm] = process.argv.slice(2);
-const { spec, rain, frames, drops } = JSON.parse(await readFile(script, 'utf8'));
+const { spec, rain, frames, drops, hash: nativeHash } = JSON.parse(await readFile(script, 'utf8'));
 const f32 = (bits) => new Float32Array(new Uint32Array([bits]).buffer)[0];
 const boxel = await load(await readFile(wasm));
 const field = boxel.field({ spread: f32(spec[0]), fade: f32(spec[1]), tolerance: f32(spec[2]), events: spec[3] });
@@ -32,4 +32,6 @@ const eat = (bytes) => { for (const b of bytes) h = ((h ^ BigInt(b)) * 0x1000000
 const word = (n) => new Uint8Array(new Int32Array([n]).buffer);
 for (const [x, y, bytes] of blocks) { eat(word(x)); eat(word(y)); eat(bytes); }
 eat(new Uint8Array(new Float32Array([field.stats().sheet]).buffer));
-console.log(`wasm:   ${blocks.length} blocks, hash ${h.toString(16).padStart(16, '0')}`);
+const hash = h.toString(16).padStart(16, '0');
+console.log(`wasm:   ${blocks.length} blocks, hash ${hash}`);
+if (nativeHash !== undefined && hash !== nativeHash) throw new Error(`native replay hash ${nativeHash} differs from wasm ${hash}`);
