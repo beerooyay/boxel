@@ -69,7 +69,9 @@ function H(x, z) {
   const range = e * scale, m = sm(84, 520, range);
   if (m > 0) {
     const mx = x * scale, mz = z * scale;
-    h += m * m * (18 + 115 * ridged(mx * 0.0035 + 2, mz * 0.0035 - 4)) + sm(84, 170, range) * 6 * fbm(mx * 0.02, mz * 0.02);
+    // broad ridges, and on their crests a second, sharper set: crags, horns and notches
+    const rg = ridged(mx * 0.0035 + 2, mz * 0.0035 - 4), crag = ridged(mx * 0.013 + 7, mz * 0.013 - 3);
+    h += m * m * (18 + 115 * rg + 18 * crag * crag * rg) + sm(84, 170, range) * 6 * fbm(mx * 0.02, mz * 0.02);
   }
   return terrainHeight(x, z, h);
 }
@@ -201,6 +203,8 @@ const HEAD = `#version 300 es
 precision highp float;
 precision highp int;
 `;
+// a triangle that covers the screen
+const FSQ = `out vec2 vUv; void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); vUv = p; gl_Position = vec4(p * 2. - 1., 0., 1.); }`;
 // the lake's surface: a slow swell under two wind-driven wavetrains, a few centimetres high. x is the height, yz its gradient
 const WAVES = `
 vec3 waterWave(vec2 p, float t){
@@ -212,6 +216,7 @@ vec3 waterWave(vec2 p, float t){
 const COMMON = WAVES + `
 uniform vec3 uSunDir, uSunCol, uCam, uPlanetDir;
 uniform mat3 uSky;
+uniform samplerCube uMilky;
 uniform float uTime, uExposure, uExtent, uSheet, uWind, uHDR, uNight, uBio;
 uniform vec3 uStarDir;
 uniform sampler2D uGlow, uGround, uWear;
@@ -253,22 +258,27 @@ vec3 skyBase(vec3 d){
   return mix(c, vec3(0.05, 0.04, 0.08), smoothstep(0.0, -0.25, h));
 }
 ${companionWorlds}
+float cloudCover(vec3 d){
+  if (d.y <= 0.015) return 0.;
+  vec2 cu = d.xz / (d.y + 0.07) * 0.8 + WIND_DIR * uTime * 0.006;
+  float cl = fbm3(cu * 1.2) * 0.75 + fbm3(cu * 3.1 + 7.) * 0.25;
+  return smoothstep(0.56, 0.84, cl) * smoothstep(0.015, 0.2, d.y) * (1. - smoothstep(0.5, 0.9, d.y));
+}
+// what of the sky at d lets the stars through: the bodies hide them and the clouds dim them
+float starsSeen(vec3 d){
+  float o = 1. - cloudCover(d) * 0.85;
+  vec3 P[4] = vec3[4](uPlanetDir, ROSE_DIR, OCEAN_DIR, ICE_DIR);
+  float R[4] = float[4](0.175, 0.205, 0.15, 0.045);
+  for (int i = 0; i < 4; i++) { float c = dot(d, P[i]); if (c > 0. && length(cross(d, P[i])) < R[i] * c) o = 0.; }
+  return o;
+}
 vec3 skyColor(vec3 d){
   vec3 c = skyBase(d);
-  if (d.y > 0.) {
-    // the stars and the galaxy's band turn together about a tilted pole, slowly enough to notice over a few minutes
-    vec3 sd = uSky * d;
-    // the band wanders and swells; star clouds clump along it; a dust lane runs down its middle and breaks up
-    float bb = dot(sd, normalize(vec3(0.2, 0.35, -0.91))) - (fbm3(sd.xz * 2.3 + sd.y * 1.7) - 0.5) * 0.12;
-    float width = 0.1 + 0.06 * fbm3(sd.zy * 3.1 + 4.);
-    float band = exp(-bb * bb / (width * width));
-    float clouds = fbm3(sd.xz * 13. + sd.y * 9.) * 0.6 + fbm3(sd.yz * 29. - sd.x * 17.) * 0.4;
-    float lane = smoothstep(0.03, 0.0, abs(bb + 0.012 + (fbm3(sd.xy * 8. - 3.) - 0.5) * 0.05)) * smoothstep(0.25, 0.55, fbm3(sd.xz * 4.5 + 2.));
-    band *= (0.3 + 0.7 * smoothstep(0.3, 0.75, clouds)) * (1. - 0.8 * lane);
-    float sky = smoothstep(0.02, 0.3, d.y);
-    c += mix(vec3(0.16, 0.32, 0.65), vec3(0.71, 0.40, 0.58), smoothstep(0.24, 0.70, clouds)) * band * 0.43 * uNight * sky;
-    vec3 q = sd * 170.; vec3 id = floor(q); float hh = hash12(id.xz + id.y * 7.13);
-    if (hh > 0.997 - 0.003 * uNight - 0.0018 * band * uNight) { vec3 f = fract(q) - .5; c += mix(vec3(0.8, 0.85, 1.), vec3(1., 0.86, 0.72), step(0.5, fract(hh * 97.))) * (1. + 2.5 * uNight) * smoothstep(0.3, 0., length(f)) * smoothstep(0.08, 0.45, d.y) * (0.55 + 0.45 * sin(uTime * 1.7 + hh * 90.)); }
+  gBehind = c;
+  if (d.y > -0.02) {
+    // the galaxy's band, baked once into a cube map in the sky's own frame, which turns about the pole
+    vec3 mw = texture(uMilky, uSky * d).rgb;
+    c += mw * mw * (0.04 + 0.96 * uNight) * smoothstep(-0.02, 0.22, d.y) * 0.5;
   }
   c += STAR_COL * (1. - uNight) * 3. * smoothstep(0.99935, 0.99965, dot(d, uStarDir));
   vec3 P = uPlanetDir; vec3 T = normalize(cross(P, vec3(0., 1., 0.))); vec3 B = cross(T, P);
@@ -448,8 +458,17 @@ void main(){
     float e = 0.06, s = 2.6; float h0 = fbm3(p * s), hx = fbm3((p + vec2(e, 0.)) * s), hz = fbm3((p + vec2(0., e)) * s);
     N = normalize(N + dn * (1. - 0.7 * wear) * (1. - 0.6 * moist) * vec3(-(hx - h0), 0., -(hz - h0)) / e * 0.22);
   }
+  // the mountains: once the mesh is too coarse to carry them, gullies and crags come from the slope of a ridged pattern
+  float far = smoothstep(55., 130., dist), slopeG = 1. - N.y;
+  if (far > 0.) {
+    vec2 m = p * 0.05; float ex = 0.04;
+    float h0 = fbm3(m) + 0.4 * vnoise(m * 3.7), hx = fbm3(m + vec2(ex, 0.)) + 0.4 * vnoise((m + vec2(ex, 0.)) * 3.7), hz = fbm3(m + vec2(0., ex)) + 0.4 * vnoise((m + vec2(0., ex)) * 3.7);
+    N = normalize(N + far * vec3(-(hx - h0), 0., -(hz - h0)) / ex * 0.3);
+  }
   float slope = 1. - N.y, y = vWP.y;
-  float n1 = fbm3(p * 0.3), n2 = vnoise(p * 2.7), n3 = vnoise(p * 9.);
+  // fine noise only where it can be seen; past that it just shimmers into grain
+  float fine = 1. - smoothstep(30., 90., dist);
+  float n1 = fbm3(p * 0.3), n2 = mix(0.5, vnoise(p * 2.7), fine), n3 = mix(0.45, vnoise(p * 9.), fine * fine);
   vec3 moss = mix(vec3(0.045, 0.09, 0.12), vec3(0.15, 0.08, 0.22), smoothstep(0.3, 0.7, n1)) * (0.8 + 0.4 * n2);
   vec3 sand = vec3(0.30, 0.22, 0.26) * (0.85 + 0.3 * n2);
   vec3 bed = vec3(0.09, 0.11, 0.12) * (0.75 + 0.5 * n2);
@@ -464,8 +483,13 @@ void main(){
   alb = mix(alb, vec3(0.32, 0.20, 0.16) * (0.70 + 0.48 * n2), vTrail * 0.9);
   float vein = rk * smoothstep(0.74, 0.8, n3) * (1. - smoothstep(12., 28., dist));
   metal = vein * 0.85; rough = mix(rough, 0.18, vein); alb = mix(alb, vec3(0.75, 0.62, 0.95), vein);
-  float snow = smoothstep(45., 70., y + n1 * 18.) * (1. - smoothstep(0.5, 0.8, slope));
-  alb = mix(alb, vec3(0.80, 0.76, 0.93), snow); rough = mix(rough, 0.5, snow);
+  // forest under the snow line on the far slopes, rock laid down in strata, and snow that settles on ledges and in
+  // gullies while steep faces and the sharpest crests stay bare
+  float treeline = far * smoothstep(9., 15., y) * (1. - smoothstep(24., 36., y + n1 * 8.)) * (1. - smoothstep(0.45, 0.7, slope));
+  alb = mix(alb, vec3(0.045, 0.075, 0.085) * (0.75 + 0.5 * vnoise(p * 0.7)), treeline * 0.7);
+  alb *= mix(1., 0.84 + 0.16 * sin(y * 0.55 + n1 * 5.), rk * far);
+  float snow = smoothstep(34., 58., y + n1 * 16.) * (1. - smoothstep(0.4, 0.62, slopeG + 0.12 * (fbm3(p * 0.03) - 0.5)));
+  alb = mix(alb, vec3(0.82, 0.79, 0.95), snow); rough = mix(rough, 0.45, snow);
   // cobbles on the beach and under the shallows, pebbles between them; wet ones go dark and glossy
   float cobZ = (1. - smoothstep(0.25, 0.7, y)) * smoothstep(-1.4, -0.9, y) * (1. - smoothstep(14., 32., dist)) * (1. - rk);
   if (cobZ > 0.01) {
@@ -482,6 +506,8 @@ void main(){
   alb *= 1. - 0.5 * moist; rough = mix(rough, 0.1, smoothstep(0.02, 0.5, moist) * 0.9);
   vec3 V = normalize(uCam - vWP);
   vec3 col = pbr(alb, rough, metal, N, V);
+  // the last of the low sun catching the snowy peaks
+  col += vec3(1., 0.52, 0.58) * 0.14 * snow * smoothstep(40., 110., y) * max(dot(N, uSunDir), 0.) * (1. - uNight);
   col += glowCol(p) * uBio * glowI(glow) * 2.6 * (1. - 0.6 * under);
   col += glowCol(p) * (0.006 + 0.05 * uNight) * (1. - shore) * (1. - rk) * (1. - under) * smoothstep(0.55, 0.9, n3);
   o = vec4(tonemap(fogged(col, vWP)), 0.);
@@ -804,6 +830,65 @@ void main(){
 }`,
 `in float vA; in vec3 vC; out vec4 o; void main(){ vec2 q = gl_PointCoord - .5; float a = smoothstep(0.5, 0., length(q)) * vA; o = vec4(tonemap(vC * 3.) * a, a); }`);
 
+// the night sky, after rawah's stars.js: thousands of point stars on the sphere of the sky's own frame, many faint and a
+// few bright (counts rise as 10^0.45m), richer toward the galaxy's plane, in the colours of real stars; and the galaxy's
+// band, painted once into a cube map. Both turn with the sky, and the bodies and the clouds hide the stars behind them.
+const STARS = program(`
+in vec4 aS; in vec4 aC;
+uniform mat4 uVP; uniform mat3 uSky; uniform vec3 uCam; uniform float uMirror, uTime, uNight, uPx;
+out vec3 vC; out float vI; out vec3 vDir;
+void main(){
+  vec3 d = aS.xyz * uSky;
+  vec4 c = uVP * vec4(uCam.x + d.x * 2000., (uCam.y + d.y * 2000.) * uMirror, uCam.z + d.z * 2000., 1.);
+  gl_Position = vec4(c.xy, c.w * 0.99999, c.w);
+  float bright = pow(10., -0.4 * (aS.w - 1.5));
+  float tw = 1. - (0.12 + 0.3 * smoothstep(0.5, 0., d.y)) * (0.5 + 0.5 * sin(uTime * (2.5 + aC.w * 6.) + aC.w * 60.));
+  vI = clamp(0.2 + 0.7 * pow(bright, 0.28), 0., 1.6) * tw * smoothstep(-0.03, 0.22, d.y) * (0.55 + 0.45 * smoothstep(0., 0.5, d.y)) * (0.06 + 0.94 * uNight);
+  vC = aC.rgb; vDir = d;
+  gl_PointSize = (2. + 2.6 * pow(min(bright, 8.), 0.3)) * uPx;
+}`, `in vec3 vC; in float vI; in vec3 vDir; out vec4 o;
+void main(){
+  vec2 q = gl_PointCoord - 0.5; float r2 = dot(q, q) * 4.;
+  float a = (exp(-r2 * 7.) + exp(-r2 * 2.2) * 0.22) * vI * starsSeen(normalize(vDir));
+  o = vec4(tonemap(vC * a * 1.5), 0.);
+}`);
+// the band in the galaxy's own coordinates (x toward the core, y its pole): a meandering disc, fatter toward the core,
+// knotted with star clouds, split by a rift of dust, a gold bulge, blue-white arms, rose and teal nebulae. Stored as
+// the square root of radiance, so eight bits are enough.
+const MILKY = program(FSQ, `uniform int uFace; uniform float uSize; uniform mat3 uGal; out vec4 o;
+float h13(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float vn(vec3 x){ vec3 i = floor(x), f = fract(x); f = f * f * (3. - 2. * f);
+  return mix(mix(mix(h13(i), h13(i + vec3(1, 0, 0)), f.x), mix(h13(i + vec3(0, 1, 0)), h13(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(h13(i + vec3(0, 0, 1)), h13(i + vec3(1, 0, 1)), f.x), mix(h13(i + vec3(0, 1, 1)), h13(i + vec3(1, 1, 1)), f.x), f.y), f.z); }
+float fbmv(vec3 p, int oct){ float a = 0.5, s = 0., n = 0.; for (int i = 0; i < 6; i++) { if (i >= oct) break; s += a * vn(p); n += a; p = p * 2.03 + 1.7; a *= 0.5; } return s / n; }
+float sq(float x){ return x * x; }
+void main(){
+  vec2 uv = gl_FragCoord.xy / uSize * 2. - 1.;
+  vec3 s = uFace == 0 ? vec3(1., -uv.y, -uv.x) : uFace == 1 ? vec3(-1., -uv.y, uv.x) : uFace == 2 ? vec3(uv.x, 1., uv.y)
+         : uFace == 3 ? vec3(uv.x, -1., -uv.y) : uFace == 4 ? vec3(uv.x, -uv.y, 1.) : vec3(-uv.x, -uv.y, -1.);
+  vec3 g = normalize(s) * uGal;
+  float b = asin(clamp(g.y, -1., 1.)), l = atan(g.z, g.x), lr = abs(l);
+  float width = mix(0.085, 0.16, smoothstep(2.4, 0., lr));
+  float bb = b - (fbmv(g * 3. + 1.7, 3) - 0.5) * 0.11 - 0.03 * sin(l * 2. + 0.5);
+  float disc = exp(-sq(bb / width)), broad = exp(-sq(bb / (width * 2.8))) * 0.22;
+  float clouds = smoothstep(0.28, 0.78, fbmv(g * 7. + 11., 4)), fine = fbmv(g * 42., 4);
+  float bulgeR = sqrt(l * l + sq(b * 1.8)), bulge = exp(-sq(bulgeR / 0.24)) * 1.1;
+  float I = disc * (0.38 + clouds * (0.55 + 0.45 * fine)) + broad + bulge * (0.55 + 0.45 * fine);
+  I *= mix(1., 0.42, smoothstep(1.4, 3., lr));
+  float lane = exp(-sq((bb - 0.012 + (fbmv(g * 9. + 3.3, 3) - 0.5) * 0.07) / 0.034)) * smoothstep(-1.25, -0.15, l) * (1. - smoothstep(0.9, 1.6, l));
+  float dpatch = smoothstep(0.56, 0.82, fbmv(g * 13. + 9., 4)) * smoothstep(0., 0.5, disc + bulge * 0.4);
+  float coal = smoothstep(0.62, 0.9, fbmv(g * 30. + 4., 3)) * disc;
+  float dust = clamp(lane * 0.88 + dpatch * 0.6 + coal * 0.5, 0., 0.94);
+  I *= (1. - dust) * (0.8 + 0.4 * fbmv(g * 170., 2));
+  vec3 col = mix(vec3(0.52, 0.66, 1.0), vec3(1.0, 0.8, 0.52), clamp(exp(-sq(bulgeR / 0.5)) * 1.2, 0., 1.));
+  col = mix(col, vec3(0.62, 0.5, 1.0), (1. - disc) * 0.4);
+  col = mix(col, vec3(1.0, 0.56, 0.4), dust * 0.55);
+  float neb = smoothstep(0.62, 0.84, fbmv(g * 22. + 5.5, 3)) * disc;
+  col = mix(col, vec3(1.0, 0.4, 0.55), neb * smoothstep(-0.5, 0.3, l) * (1. - smoothstep(0.7, 1.2, l)) * 0.6);
+  col = mix(col, vec3(0.35, 0.92, 0.88), neb * smoothstep(1.4, 2.0, lr) * 0.45);
+  o = vec4(col * sqrt(max(I * 0.5, 0.)), 1.);
+}`);
+
 // ---------------------------------------------------------------- geometry
 const NEAR = { S: 384, half: HALF + 16 };
 function terrainNear() {
@@ -820,13 +905,13 @@ function terrainNear() {
   return { path, pos: new Float32Array(pos), nor: new Float32Array(nor), idx: new Uint32Array(idx) };
 }
 function terrainFar() {
-  const R = 150, A = 256, pos = [], nor = [], idx = [], edge = NEAR.half - 0.5;
+  const R = touch ? 150 : 190, A = touch ? 320 : 512, pos = [], nor = [], idx = [], edge = NEAR.half - 0.5;
   for (let j = 0; j <= R; j++) {
     const r = 72 * Math.pow(1500 / 72, j / R);
     for (let i = 0; i <= A; i++) {
       const a = i / A * Math.PI * 2, x = Math.cos(a) * r, z = Math.sin(a) * r;
       const inside = Math.abs(x) < edge && Math.abs(z) < edge;
-      pos.push(x, H(x, z) - (inside ? 4 : 0), z); nor.push(...normalAt(x, z, Math.max(0.15, r * 0.02)));
+      pos.push(x, H(x, z) - (inside ? 4 : 0), z); nor.push(...normalAt(x, z, Math.max(0.15, r * 0.012)));
     }
   }
   for (let j = 0; j < R; j++) for (let i = 0; i < A; i++) { const a = j * (A + 1) + i, b = a + 1, c = a + A + 1, d = c + 1; idx.push(a, b, c, b, d, c); }
@@ -1140,6 +1225,47 @@ function moteScatter() {
   return m;
 }
 
+// ---------------------------------------------------------------- the night sky
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+// the galaxy's frame in the sky's, rows toward its core, its pole and the third axis: the core stands low in the south,
+// in the open sky between the rose giant and the ocean world, and the band climbs from it past the zenith
+const GAL = (() => {
+  const C = norm([0.24, 0.375, 0.896]), V0 = norm([-C[0] * C[1], 1 - C[1] * C[1], -C[2] * C[1]]), W = cross(C, V0), a = 0.45;
+  const P = norm(cross(C, V0.map((v, i) => v * Math.cos(a) + W[i] * Math.sin(a))));
+  return [...C, ...P, ...cross(C, P)];
+})();
+const STAR_N = touch ? 7000 : 12000;
+function starScatter() {
+  const r = rng(12345), S = new Float32Array(STAR_N * 4), C = new Float32Array(STAR_N * 4);
+  const COLORS = [[0.68, 0.8, 1.0], [0.8, 0.88, 1.0], [0.95, 0.97, 1.0], [1.0, 0.96, 0.86], [1.0, 0.9, 0.7], [1.0, 0.8, 0.58], [1.0, 0.68, 0.5]];
+  for (let k = 0; k < STAR_N;) {
+    const z = r() * 2 - 1, a = r() * Math.PI * 2, s = Math.sqrt(1 - z * z), x = s * Math.cos(a), y = s * Math.sin(a);
+    const b = Math.asin(x * GAL[3] + y * GAL[4] + z * GAL[5]);
+    if (r() > 0.38 + 0.62 * Math.exp(-b * b / 0.18)) continue;
+    const m = -0.4 + Math.log10(1 + r() * (Math.pow(10, 0.45 * 7.2) - 1)) / 0.45;
+    const c = COLORS[Math.min(6, Math.floor(Math.pow(r(), 0.8) * 7))];
+    S.set([x, y, z, m], k * 4); C.set([c[0], c[1], c[2], r()], k * 4); k++;
+  }
+  return { S, C };
+}
+// paint the band into a cube map once, at boot; the sky samples it in its own frame and it turns with the stars
+const MILKY_SIZE = touch || TEST ? 512 : 1024;
+function bakeMilkyWay() {
+  const t = gl.createTexture(), f = gl.createFramebuffer();
+  gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_CUBE_MAP, t);
+  for (let i = 0; i < 6; i++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, gl.RGBA8, MILKY_SIZE, MILKY_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_CUBE_MAP, k, v);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.viewport(0, 0, MILKY_SIZE, MILKY_SIZE);
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.bindVertexArray(null); gl.useProgram(MILKY);
+  gl.uniform1f(MILKY.u('uSize'), MILKY_SIZE); gl.uniformMatrix3fv(MILKY.u('uGal'), false, GAL);
+  for (let i = 0; i < 6; i++) {
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, t, 0);
+    gl.uniform1i(MILKY.u('uFace'), i); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(f); gl.enable(gl.DEPTH_TEST);
+  return t;
+}
+
 // ---------------------------------------------------------------- tiled instances
 // Blades, leaves and plants are drawn tile by tile, 16 m to a tile. A tile outside the view is skipped, and one
 // further than `near` metres draws only a prefix of its instances, shuffled so the prefix is an even thinning, with
@@ -1223,6 +1349,8 @@ const grass = new Tiled(GRASS, { aG: sc.G, aR: sc.R }, (i) => [sc.G[i * 4], sc.G
 const leaves = new Tiled(JLEAF, { aR: forest.R, aD: forest.D, aM: forest.M, aB: forest.B }, (i) => [forest.R[i * 4], forest.R[i * 4 + 1], forest.R[i * 4 + 2]], (i) => 1.5 * forest.D[i * 4 + 3] + 1, 13, 40, 0.3);
 const plants = new Tiled(PLANT, { aP: pl.P, aF: pl.F, aS2: pl.S2 }, (i) => [pl.P[i * 4], pl.P[i * 4 + 1], pl.P[i * 4 + 2]], 1.2, 25, 24, 0.12);
 let grassDensity = 1;
+const stars = starScatter(), vStars = vao([{ loc: loc(STARS, 'aS'), size: 4, data: stars.S }, { loc: loc(STARS, 'aC'), size: 4, data: stars.C }]);
+bakeMilkyWay();
 const vMotes = vao([{ loc: loc(POINTS, 'aP'), size: 4, data: motes }]);
 const RAIN_N = 700, rainSeeds = new Float32Array(RAIN_N * 4); { const r = rng(9); for (let i = 0; i < RAIN_N; i++) rainSeeds.set([(r() * 2 - 1) * 34, r(), (r() * 2 - 1) * 34, r()], i * 4); }
 const vRain = vao([{ loc: loc(POINTS, 'aP'), size: 4, data: rainSeeds }]);
@@ -1261,7 +1389,6 @@ function ensureRefl(w, h) {
 // ---------------------------------------------------------------- post: Corey's frame pipeline (ceeboozwah/grass post.js),
 // ported to raw WebGL2: MSAA scene target, dual-filter bloom, ACES, vibrance, vignette, dither; plus crepuscular rays
 // marched toward the star through the sky mask the sky pass leaves in alpha
-const FSQ = `out vec2 vUv; void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); vUv = p; gl_Position = vec4(p * 2. - 1., 0., 1.); }`;
 const P_PRE = program(FSQ, `uniform sampler2D tMap; uniform vec2 uTexel; uniform float uThr; in vec2 vUv; out vec4 o;
 vec3 bp(vec2 off){ vec3 c = min(texture(tMap, vUv + off * uTexel).rgb, vec3(24.)); float l = max(c.r, max(c.g, c.b)); return c * smoothstep(uThr * 0.7, uThr * 1.5 + 0.3, l); }
 void main(){ o = vec4((bp(vec2(-1., -1.)) + bp(vec2(1., -1.)) + bp(vec2(-1., 1.)) + bp(vec2(1., 1.))) * 0.25, 1.); }`);
@@ -1498,7 +1625,12 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   gl.bindVertexArray(null); // The sky only uses gl_VertexID.
   common(SKY, eye, VP, mirror, t);
   gl.uniform3fv(SKY.u('uR'), b.r); gl.uniform3fv(SKY.u('uU'), b.u); gl.uniform3fv(SKY.u('uF'), b.f); gl.uniform2f(SKY.u('uTan'), opts.tanX, opts.tanY);
+  gl.uniform1i(SKY.u('uMilky'), 8);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // the stars, added over the sky; the sky's alpha, the mask the rays march through, is left alone
+  common(STARS, eye, VP, mirror, t); gl.uniform1f(STARS.u('uPx'), opts.px);
+  gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
+  gl.bindVertexArray(vStars); gl.drawArrays(gl.POINTS, 0, STAR_N); gl.disable(gl.BLEND); gl.bindVertexArray(null);
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
   gl.enable(gl.CULL_FACE); gl.frontFace(mirror < 0 ? gl.CW : gl.CCW);
   common(TERRAIN, eye, VP, mirror, t);
@@ -1534,11 +1666,11 @@ function render(t, camOverride) {
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, null);
   gl.bindFramebuffer(gl.FRAMEBUFFER, reflFbo); gl.viewport(0, 0, rw, rh);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  drawScene([cam.eye[0], 2 * WATER - cam.eye[1], cam.eye[2]], b, VP, -1, t, { tanX, tanY, grass: false });
+  drawScene([cam.eye[0], 2 * WATER - cam.eye[1], cam.eye[2]], b, VP, -1, t, { tanX, tanY, grass: false, px: rh / 800 });
   ensurePost(w, h);
   gl.bindFramebuffer(gl.FRAMEBUFFER, post.ms || post.resF); gl.viewport(0, 0, w, h);
   gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  drawScene(cam.eye, b, VP, 1, t, { tanX, tanY, grass: true });
+  drawScene(cam.eye, b, VP, 1, t, { tanX, tanY, grass: true, px: h / 800 });
   gl.colorMask(true, true, true, false);
   // water
   common(WATERP, cam.eye, VP, 1, t);

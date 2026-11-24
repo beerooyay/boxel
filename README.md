@@ -78,8 +78,10 @@ hundred thousand cells apart cost what two events cost.
 
 ## The demo: Tarnished Promise
 
-Tarn is a four-acre lakeshore beneath an amber giant, a rose giant and an ocean world with
-crossed rings. A river carries glowing pods down to the lake. A winding trail climbs the
+Tarn is a four-acre lakeshore in a valley under a snowy range, beneath an amber giant, a rose
+giant and a cloud-swirled ocean world with crossed rings. At night the galaxy rises over the
+peaks: twelve thousand stars and a band painted once into a cube map, turning with the sky. A
+river carries glowing pods down to the lake. A winding trail climbs the
 western hill to a 26 m lookout. Walk, wade or throw a glowstone to disturb the glow, moisture
 and wear fields. Press **N** for night and **M** to restart the fields under the other engine.
 
