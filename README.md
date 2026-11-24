@@ -78,13 +78,19 @@ hundred thousand cells apart cost what two events cost.
 
 ## The demo: Tarnished Promise
 
-Four acres of lake shore on the planet Tarn, under an amber ringed giant and its moon. Every
-step wakes light in the moss that spreads and fades, wet feet darken the sand, trails wear in
-and heal, and a stone thrown in the lake lights the water. All of it is three boxel fields,
-drawn by a hand-written WebGL2 renderer, on phones too. One key switches to computing every
-cell of the map, the reference the promise is about, so you can watch the cost change and the
-picture not change. Over a scripted session the two render 74 dB apart (PSNR), while boxel
-steps a tenth of the cells and holds an eighth of the memory.
+Four acres of lake shore on the planet Tarn, under an amber ringed giant and its moon, a rose
+giant, an ocean world with crossed rings, and a galaxy that turns overhead. A summit stands over
+the north shore with a switchback trail to a lookout, and a river runs from a spring under the
+rim down into the lake. Every step wakes light in the moss that spreads and fades, wet feet
+darken the sand, trails wear in and heal, and a stone thrown in the lake lights the water. The
+world has events of its own in the same fields: an unseen pilgrim keeps the summit trail worn,
+seed pods ride the river and leave light behind them, the rapids throw spray on their banks.
+
+All of it is three boxel fields, drawn by a hand-written WebGL2 renderer, on phones too. One
+key switches to computing every cell of the map, the reference the promise is about, so you can
+watch the cost change and the picture not change. Over a scripted session the two render 65 dB
+apart (PSNR), while boxel steps a tenth of the cells, in 2.5 times less time, and holds a
+seventh of the memory.
 
 ```sh
 cargo build --release --target wasm32-unknown-unknown -p boxel-ffi
@@ -112,7 +118,10 @@ The whole interface is deposit, drain, rain, step, sample, and the blocks in the
 host maps world positions to integer cells, steps at a fixed rate, and copies blocks into
 whatever it draws with.
 
-- **Rust and Bevy**: depend on the crate. It is `no_std` with no dependencies.
+- **Rust**: depend on the crate. It is `no_std` with no dependencies.
+- **Bevy**: [`integrations/bevy`](integrations/bevy) is a plugin. A `BoxelField` component steps
+  at its own rate and keeps an `Image` of a window of the plane current, block by block; sample
+  it in any material.
 - **Unity, Unreal, Godot, C, C++**: link `boxel_ffi` (static or shared) through
   [`ffi/boxel.h`](ffi/boxel.h). Upload `boxel_block_data` into a texture region per block.
 - **The web**: [`ffi/boxel.js`](ffi/boxel.js) over the wasm build, about 60 KB. The demo is the
@@ -128,12 +137,14 @@ fog of war are the same three calls with different numbers.
 | `src/` | the engine: `cone` (the computed lattice cone), `ledger` (integer block ledger), `field` (events, window, pages, districts), `grid` (the full computation, as reference), `spec` |
 | `tests/` | the promise against the full computation, on random histories |
 | `ffi/` | the C ABI, its header, and the JavaScript binding |
+| `integrations/bevy` | the Bevy plugin: fields as components, windows as images (Bevy 0.20, kept out of the workspace so the engine builds with nothing else) |
 | `bench/` | every number in `docs/results.md`, and the wasm replay |
 | `demo/` | Tarnished Promise |
 | `docs/` | [the certificate](docs/certificate.md), [results](docs/results.md) |
 
 ```sh
 cargo test --release
+(cd integrations/bevy && cargo test --release)   # Rust 1.97.1, Bevy 0.20
 cargo run --release -p boxel-bench -- cone      # the paper's tables, certified
 cargo run --release -p boxel-bench -- acre      # the demo's fields: boxel, dense, guessing
 cargo run --release -p boxel-bench -- world     # open worlds

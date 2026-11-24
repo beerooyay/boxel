@@ -1,0 +1,12 @@
+[package]
+name = "boxel-bevy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "boxel fields as Bevy components and images"
+publish = false
+
+[dependencies]
+boxel = { path = "../.." }
+bevy = { version = "0.20.1", default-features = false, features = ["std", "bevy_asset", "bevy_image"] }
+wgpu-types = { version = "30", default-features = false }

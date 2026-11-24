@@ -82,15 +82,22 @@ acre, and a block costs more per cell than a dense row.
 ## The picture
 
 `demo/` with `?test`: a scripted 15 s session (a hiker into the shallows and out, two stones,
-spore rain, a landing splash) on the demo's four-acre map, rendered from a fixed camera under
-boxel and under dense, then compared.
+spore rain, a landing splash) on the demo's four-acre map, while the world runs its own events
+(a pilgrim walking the summit trail, eight seed pods drifting down the river, spray from the
+rapids), rendered from a fixed camera under boxel and under dense, then compared. Stepping time
+is the three fields' steps only, wasm in headless Chromium, one core.
 
 | | |
 |---|---|
-| PSNR, boxel vs dense | 74.3 dB |
-| pixels more than 2 levels apart | 0.006% (grass-blade edges, moved by sub-tolerance wetness and trampling) |
-| cells stepped over the session | 126 M boxel, 1 416 M dense |
-| field memory at the end | 2.9 MB boxel, 25.2 MB dense |
+| PSNR, boxel vs dense | 64.7 dB |
+| pixels more than 2 levels apart | 0.06% (tips of glowing plants and specks on the water, where the shaders steepen sub-tolerance glow) |
+| cells stepped over the session | 134 M boxel, 1 416 M dense |
+| stepping time over the session | 270 ms boxel, 687 ms dense |
+| field memory at the end | 3.4 MB boxel, 25.2 MB dense |
+
+The glow and wear fields are budgeted for 1024 events a district, as the world bench budgets for
+crowds. At 64, the pods' steady stream of small deposits keeps the district merging, the glow
+window grows to half the map, and boxel steps slower than dense; the promise holds either way.
 
 ## Same bits everywhere
 

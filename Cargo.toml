@@ -10,6 +10,7 @@ categories = ["game-development", "simulation", "no-std"]
 
 [workspace]
 members = ["ffi", "bench"]
+exclude = ["integrations/bevy"]
 
 [profile.release]
 opt-level = 3
