@@ -3,26 +3,37 @@
 const TAU = 2 * Math.PI;
 const vertexSource = `
 in vec3 aPos, aMark;
-in vec4 aPose, aFlight;
+in vec4 aPose;
+in vec3 aAngles;
+in vec2 aStroke;
 out vec3 vWP, vMark;
 flat out vec2 vSignal;
 void main(){
   vec3 p = aPos;
   float part = aMark.x, span = aMark.y;
-  float beat = aFlight.z;
+  float beat = aStroke.x, effort = aStroke.y;
   if (part == 1. || part == 2.) {
     float hind = step(1.5, part);
-    float angle = 0.26 + (0.89 - 0.18 * hind) * sin(beat - 0.38 * hind - 0.42 * span) * aFlight.w;
+    // The leading edge turns first. The tip and the flexible trailing edge
+    // follow it around the reversal, then tuck back on the return stroke.
+    float phase = beat - 0.47 * hind - span * span * (0.54 + 0.30 * aMark.z);
+    float stroke = sin(phase - 0.22 * sin(phase));
+    float recover = smoothstep(-0.35, 0.9, cos(phase)) * effort;
+    float angle = 0.19 + (0.98 - 0.17 * hind) * stroke * effort;
+    p.z -= 0.16 * span * span * recover;
+    p.y += 0.085 * aMark.z * span * cos(phase) * effort;
     float c = cos(angle), s = sin(angle), side = sign(p.x);
-    float wing = abs(p.x) - 0.045;
+    float wing = (abs(p.x) - 0.045) * (1. - 0.10 * span * recover);
     p.xy = vec2(side * (0.045 + wing * c - p.y * s), wing * s + p.y * c);
   } else if (part == 3.) {
     p.x += span * span * (0.052 * sin(beat * 0.53 - span * 3.) + 0.04 * sign(p.x));
     p.y += span * span * 0.13 * sin(beat * 0.48 - span * 3. - 1.);
   }
-  vec2 heading = vec2(sin(aFlight.x), cos(aFlight.x));
-  float c = cos(aFlight.y), s = sin(aFlight.y);
+  vec2 heading = vec2(sin(aAngles.x), cos(aAngles.x));
+  float c = cos(aAngles.z), s = sin(aAngles.z);
   p.xy = mat2(c, s, -s, c) * p.xy;
+  float pitch = aAngles.y + 0.022 * effort * cos(beat);
+  p.zy = mat2(cos(pitch), sin(pitch), -sin(pitch), cos(pitch)) * p.zy;
   vec2 world = vec2(heading.y, -heading.x) * p.x + heading * p.z;
   vWP = aPose.xyz + vec3(world.x, p.y, world.y) * abs(aPose.w);
   vMark = aMark;
@@ -171,7 +182,7 @@ function makeRoutes(groundAt, waterLevel, riverX, sc, random) {
       && Math.abs(o.x - (river ? riverX(cz) : cx)) <= rx + 2 * o.radius + (river ? 12 : 3));
     for (let i = 0; i < count; i++) {
       const phase = TAU * (i + random() * 0.35) / count;
-      const size = (0.64 + random() * 0.32) * (water ? 1.05 : 1.16);
+      const size = 0.68 * (0.64 + random() * 0.32) * (water ? 1.05 : 1.16);
       const shift = (random() - 0.5) * 0.58, period = (river ? 13 : 17) + 5 * random();
       const path = new Float32Array(samples * 3), clear = new Float32Array(samples);
       for (let k = 0; k < samples; k++) {
@@ -207,15 +218,18 @@ function makeRoutes(groundAt, waterLevel, riverX, sc, random) {
 export function createSailwings({ gl, program, vao, worldVertex, groundAt, waterLevel, riverX, sc, random }) {
   const shader = program(worldVertex + vertexSource, fragmentSource);
   const mesh = sailwingMesh(), routes = makeRoutes(groundAt, waterLevel, riverX, sc, random);
-  const poses = new Float32Array(routes.length * 4), flights = new Float32Array(poses.length);
-  const pose = { loc: gl.getAttribLocation(shader, 'aPose'), data: poses, size: 4, div: 1, usage: gl.DYNAMIC_DRAW };
-  const flight = { loc: gl.getAttribLocation(shader, 'aFlight'), data: flights, size: 4, div: 1, usage: gl.DYNAMIC_DRAW };
+  const instances = new Float32Array(routes.length * 9), buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, instances.byteLength, gl.DYNAMIC_DRAW);
   const vertices = vao([
     { loc: gl.getAttribLocation(shader, 'aPos'), data: mesh.positions, size: 3 },
-    { loc: gl.getAttribLocation(shader, 'aMark'), data: mesh.markings, size: 3 }, pose, flight,
+    { loc: gl.getAttribLocation(shader, 'aMark'), data: mesh.markings, size: 3 },
+    { loc: gl.getAttribLocation(shader, 'aPose'), buffer, size: 4, div: 1, stride: 36, offset: 0 },
+    { loc: gl.getAttribLocation(shader, 'aAngles'), buffer, size: 3, div: 1, stride: 36, offset: 16 },
+    { loc: gl.getAttribLocation(shader, 'aStroke'), buffer, size: 2, div: 1, stride: 36, offset: 28 },
   ], mesh.indices);
   const indexCount = mesh.indices.length;
   const skimmers = routes.filter(r => r.skims);
+  const velocity = new Float64Array(3), acceleration = new Float64Array(3);
   let lastTime = -1;
   return {
     shader,
@@ -227,19 +241,30 @@ export function createSailwings({ gl, program, vao, worldVertex, groundAt, water
           const a = phase + TAU * t / period, at = (a / TAU % 1) * samples, k = Math.floor(at), u = at - k;
           const from = 3 * k, to = 3 * ((k + 1) % samples);
           const prev = 3 * ((k + samples - 1) % samples), next = 3 * ((k + 2) % samples);
-          const p = i * 4;
-          for (let j = 0; j < 3; j++) poses[p + j] = path[from + j] + u * (path[to + j] - path[from + j]);
-          poses[p + 3] = size * hue;
-          const dx = (1 - u) * (path[to] - path[prev]) + u * (path[next] - path[from]);
-          const dz = (1 - u) * (path[to + 2] - path[prev + 2]) + u * (path[next + 2] - path[from + 2]);
-          flights[p] = Math.atan2(dx, dz);
+          const p = i * 9;
+          for (let j = 0; j < 3; j++) {
+            const back = path[from+j] - path[prev+j], step = path[to+j] - path[from+j], front = path[next+j] - path[to+j];
+            // Monotone tangents in height keep the spline above the sampled
+            // water at a skim and prevent overshooting a crest on the other side.
+            const m0 = j === 1 ? (back * step > 0 ? 2 * back * step / (back + step) : 0) : 0.5 * (back + step);
+            const m1 = j === 1 ? (step * front > 0 ? 2 * step * front / (step + front) : 0) : 0.5 * (step + front);
+            const c = 3 * step - 2 * m0 - m1, d = m0 + m1 - 2 * step;
+            instances[p+j] = path[from+j] + u * (m0 + u * (c + u * d));
+            velocity[j] = m0 + u * (2 * c + 3 * u * d);
+            acceleration[j] = 2 * c + 6 * u * d;
+          }
+          const [dx, dy, dz] = velocity, horizontal = Math.max(0.01, Math.hypot(dx, dz));
+          const turn = (dz * acceleration[0] - dx * acceleration[2]) / horizontal * (samples / period) ** 2;
           const lift = skims ? 1 - Math.pow(Math.max(0, Math.cos(a)), 9) : 1;
-          flights[p + 1] = (0.17 + 0.11 * Math.sin(2 * a + phase)) * lift;
-          flights[p + 2] = 7.2 * t + 0.7 * Math.sin(1.9 * t + phase) + phase * 3 + i;
-          flights[p + 3] = (0.60 + 0.40 * Math.sin(t * 1.72 + phase * 3 + i)) * lift;
+          const pitch = 0.63 * Math.atan2(dy, horizontal), hz = 1.62 + (0.80 - size) * 0.95;
+          instances[p + 3] = size * hue;
+          instances[p + 4] = Math.atan2(dx, dz);
+          instances[p + 5] = pitch;
+          instances[p + 6] = -0.52 * Math.tanh(turn * 0.55) * lift;
+          instances[p + 7] = TAU * hz * t + 0.22 * Math.sin(1.9 * t + phase) + phase * 3 + i;
+          instances[p + 8] = (0.72 + 0.17 * Math.sin(t * 1.13 + phase * 3 + i) + 0.15 * Math.max(0, pitch)) * lift;
         }
-        gl.bindBuffer(gl.ARRAY_BUFFER, pose.buffer); gl.bufferSubData(gl.ARRAY_BUFFER, 0, poses);
-        gl.bindBuffer(gl.ARRAY_BUFFER, flight.buffer); gl.bufferSubData(gl.ARRAY_BUFFER, 0, flights);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferSubData(gl.ARRAY_BUFFER, 0, instances);
         lastTime = t;
       }
       gl.bindVertexArray(vertices);

@@ -1,4 +1,5 @@
 import { FieldTexture } from './field-texture.js';
+import { BrushField } from './brush.js';
 import { highCanopyMesh, highCanopySites } from './high-canopy.js';
 import { createSailwings } from './fauna.js';
 import { bakeClouds, bakeCanopy, valleyAir, canopyShelter } from './atmosphere.js';
@@ -13,7 +14,7 @@ import { bakeShadows } from './shadows.js';
 // that can still matter exist. The renderer sees the map through one R8 texture per field and
 // re-uploads exactly the blocks the engine holds, clearing the ones it lets go.
 
-import { summit, trail, terrainHeight, trailCover, riverX, waterLevel } from './landmarks.js';
+import { summit, trail, valleyWalks, terrainHeight, trailCover, trailDistance, riverX, waterLevel } from './landmarks.js';
 import { companionWorlds, skyBodies } from './worlds.js';
 import { load } from '../ffi/boxel.js';
 
@@ -62,9 +63,13 @@ function H(x, z) {
   let h = bowl * (1 - t) + meadow * t;
   const ri = Math.hypot(x - ISLET[0], z - ISLET[1]) * 0.5;
   if (ri < 7) h += 2.6 * Math.exp(-ri * ri / 5) * (1 - t);
-  // the outcrop: broken ridges stepped into ledges, steep enough to stand as bare stone
+  // A continuous stone shoulder carries the trail. Fractured rock emerges on its flanks.
   const o = outcrop(x, z);
-  if (o > 0) { const rg = ridged(x * 0.055 + 4, z * 0.055 - 2); h += o * (2 + 7 * rg + 1.2 * Math.round(rg * 4) / 4) * t; }
+  if (o > 0) {
+    const shoulder = 4.3 + 1.35 * vnoise(x * 0.065 + 4, z * 0.065 - 2);
+    const rough = sm(0.9, 4, trailDistance(x, z));
+    h += o * (shoulder + rough * 3.8 * (ridged(x * 0.05 + 4, z * 0.05 - 2) - 0.44)) * t;
+  }
   const e = Math.hypot(x, z * 1.05);
   h += sm(40, 76, e) * (4 + 8 * fbm(x * 0.04 + 9, z * 0.04 + 2));
   // Sample the same mountain profile at twice the distance travelled beyond the square map.
@@ -172,7 +177,8 @@ function vao(attribs, index, firstInstance = 0) {
     if (a.buffer) gl.bindBuffer(gl.ARRAY_BUFFER, a.buffer);
     else a.buffer = uploadBuffer(gl.ARRAY_BUFFER, a.data, a.usage);
     gl.enableVertexAttribArray(a.loc);
-    gl.vertexAttribPointer(a.loc, a.size, gl.FLOAT, false, 0, a.div ? firstInstance * a.size * 4 : 0);
+    const stride = a.stride || 0, offset = (a.offset || 0) + (a.div ? firstInstance * (stride || a.size * 4) : 0);
+    gl.vertexAttribPointer(a.loc, a.size, gl.FLOAT, false, stride, offset);
     if (a.div) gl.vertexAttribDivisor(a.loc, a.div);
   }
   if (ArrayBuffer.isView(index)) uploadBuffer(gl.ELEMENT_ARRAY_BUFFER, index);
@@ -202,6 +208,26 @@ vec3 waterWave(vec2 p, float t){
   vec2 k1 = vec2(0.21, 0.13), k2 = vec2(-0.27, 0.46), k3 = vec2(1.38, -0.8);
   float a1 = dot(p, k1) + t * 0.7, a2 = dot(p, k2) + t * 1.1, a3 = dot(p, k3) + t * 1.9;
   return vec3(0.035 * sin(a1) + 0.02 * sin(a2) + 0.008 * sin(a3), 0.035 * cos(a1) * k1 + 0.02 * cos(a2) * k2 + 0.008 * cos(a3) * k3);
+}
+uniform vec4 uRip[12]; // centre xz, wavefront radius, decaying amplitude
+uniform int uRipCount;
+vec3 impactWave(vec2 p){
+  vec3 wave = vec3(0.);
+  for (int i = 0; i < 12; i++) {
+    if (i >= uRipCount) break;
+    vec4 r = uRip[i];
+    vec2 d = p - r.xy;
+    float dist2 = dot(d, d) + 0.0025, outer = r.z + 1.85, inner = max(0., r.z - 1.85);
+    if (dist2 > outer * outer || dist2 < inner * inner) continue;
+    float dist = sqrt(dist2), offset = dist - r.z, spread = 1. / (1. + 0.52 * dist);
+    float env = r.w * spread * exp(-2.35 * offset * offset), phase = 6.5 * offset;
+    float height = env * cos(phase);
+    float gradient = height * (-4.7 * offset - 0.52 * spread) - env * 6.5 * sin(phase);
+    wave += vec3(height, gradient * d / dist);
+  }
+  // Soft-limit overlapping crests, applying the derivative of the same limiter to the normal.
+  float scale = 1. / (1. + abs(wave.x) / 0.13);
+  return vec3(wave.x * scale, wave.yz * scale * scale);
 }
 `;
 const COMMON = WAVES + valleyAir + `
@@ -460,7 +486,10 @@ float shoreFroth(vec2 p){
   return smoothstep(0.54, 0.84, crest) * smoothstep(0.23, 0.66, vnoise(p * 1.7 - drift));
 }
 vec3 waterline(vec3 alb, vec3 wp, float level, out float wet){
-  float wl = wp.y - (level + waterWave(wp.xz, uTime).x);
+  wet = 0.;
+  if (wp.y - level > 0.42) return alb;
+  if (wp.y - level < -0.46) return alb * vec3(0.62, 0.78, 0.8);
+  float wl = wp.y - (level + waterWave(wp.xz, uTime).x + impactWave(wp.xz).x);
   wet = smoothstep(-0.06, 0.0, wl) * (1. - smoothstep(0.0, 0.22, wl));
   alb = mix(alb * (1. - 0.45 * wet), alb * vec3(0.62, 0.78, 0.8), 1. - smoothstep(-0.25, 0., wl));
   float swash = 1. - smoothstep(0.015, 0.085, abs(wl));
@@ -622,7 +651,12 @@ void main(){
     alb = mix(alb, face * (0.78 + 0.38 * n1), cliff);
     N = normalize(N + cliff * (vec3(0., 1., 0.) - N * N.y) * (0.68 * ledge - 0.26 - runnel * 0.20));
   }
-  alb = mix(alb, vec3(0.32, 0.20, 0.16) * (0.70 + 0.48 * n2), vGround.x * 0.9);
+  if (vGround.x > 0.001) {
+    vec3 tread = mix(vec3(0.32, 0.20, 0.16), vec3(0.20, 0.15, 0.095), smoothstep(-4., 8., p.y));
+    vec3 mineral = mix(vec3(0.25, 0.32, 0.32), vec3(0.39, 0.25, 0.14), smoothstep(-4., 8., p.y));
+    tread = mix(tread, mineral, smoothstep(9., 20., p.x));
+    alb = mix(alb, tread * (0.68 + 0.42 * n2 + 0.12 * n3), vGround.x * 0.90);
+  }
   float vein = rk * smoothstep(0.74, 0.8, n3) * (1. - smoothstep(12., 28., dist));
   // Pale seams are silica in the bedrock, so they keep a broad dielectric highlight.
   rough = mix(rough, 0.48, vein);
@@ -812,7 +846,21 @@ void main(){
 }`);
 
 // Interpolate at a covered sample on thin foliage. A pixel center can fall far outside a subpixel triangle.
-const JLEAF = program(WORLD_VS + `
+const BRUSH_VS = `
+uniform sampler2D uBendTex;
+uniform vec3 uBrush; // player xz, enabled
+vec3 brushBend(vec3 wp) {
+  vec2 d = abs(wp.xz - uBrush.xy);
+  if (uBrush.z == 0. || max(d.x, d.y) >= 3.75) return vec3(0.);
+  vec4 cell = textureLod(uBendTex, wp.xz / 8., 0.);
+  float aboveFeet = wp.y - (48. * cell.b / max(cell.a, 0.001) - 8.);
+  float reach = smoothstep(-0.55, -0.12, aboveFeet) * (1. - smoothstep(1.35, 1.88, aboveFeet));
+  vec2 bend = (cell.rg * 255. - 128.) / 127.;
+  float press = max(0., (cell.a * 255. - 64.) / 191.);
+  return vec3(bend.x, -max(0.42 * length(bend), 0.68 * press), bend.y) * reach;
+}
+`;
+const JLEAF = program(WORLD_VS + BRUSH_VS + `
 in vec4 aR; in vec4 aD; in vec4 aM; in vec4 aB;
 centroid out vec3 vWP; centroid out float vU; centroid out vec3 vN; centroid out float vStir; centroid out float vHue; centroid out float vSeed; centroid out float vSide;
 void main(){
@@ -823,13 +871,15 @@ void main(){
   float L = aD.w, lift = aM.x, droop = aM.y, W = aM.z * uLodW, seed = aM.w;
   vec3 sd = cross(up, dir); sd = length(sd) < 1e-3 ? vec3(1., 0., 0.) : normalize(sd);
   vec3 p = aR.xyz + dir * L * u + up * L * (lift * sin(u * 3.1416) - droop * u * u);
+  vec3 bend = brushBend(aR.xyz + L * (dir * 0.67 + up * (0.86 * lift - 0.45 * droop)));
+  p += bend * (0.78 * L * u * u);
   float g = windWave(aB.xy) * uWind, flex = aR.w + 0.2 * u;
   p.xz += WIND_DIR * g * 0.05 * aB.z * flex * flex;
   p += sd * sin(uTime * 2.6 + seed * 40. + u * 3.) * 0.03 * u * L;
   float w = W * (0.08 + 0.92 * sin(3.1416 * pow(u, 0.85)));
   vec3 wd = normalize(sd + up * 0.4 * (seed - 0.5));
   p += wd * side * w * 0.5;
-  vec3 tang = normalize(dir + up * (lift * 3.1416 * cos(u * 3.1416) - 2. * droop * u));
+  vec3 tang = normalize(dir + up * (lift * 3.1416 * cos(u * 3.1416) - 2. * droop * u) + bend * (1.56 * u));
   vN = normalize(normalize(cross(wd, tang)) + wd * side * 0.8);
   vStir = texture(uGlow, fieldUV(aB.xy)).r;
   vWP = p; vU = u; vHue = aB.w; vSeed = seed; vSide = side;
@@ -854,7 +904,7 @@ void main(){
 // rounded normals, rolling gust waves, a root-mid-tip ramp with patch noise and root AO, sun backlight through
 // the tips. Wired to the certified fields: wear tramples it flat, moisture droops and darkens it, glow lights
 // the tips you stirred. Instances are shuffled, so drawing a prefix is an even thinning (adaptive density).
-const GRASS = program(WORLD_VS + `
+const GRASS = program(WORLD_VS + BRUSH_VS + `
 in vec4 aG; in vec4 aR;
 centroid out vec3 vWP; centroid out vec3 vGA; centroid out float vGH; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
 void main(){
@@ -877,7 +927,9 @@ void main(){
          + vec3(across.x, 0., across.y) * side * wd
          + vec3(0., by * H * (1. - 0.18 * by * by) * (1. - 0.7 * trample), 0.)
          + by * by * (vec3(fd.x + twist * ax.x, 0., fd.y + twist * ax.y) * lean + vec3(WIND_DIR.x, 0., WIND_DIR.y) * sway);
-  vN = normalize(vec3(0., 1., 0.) + vec3(across.x, 0., across.y) * side * 0.9 + vec3(fd.x, 0., fd.y) * (0.15 + 0.35 * by));
+  vec3 bend = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
+  p += bend * (0.88 * H * by * by);
+  vN = normalize(vec3(0., 1., 0.) + vec3(across.x, 0., across.y) * side * 0.9 + vec3(fd.x, 0., fd.y) * (0.15 + 0.35 * by) + bend * (0.62 * by));
   vGA = vec3(by, aR.z, 2. * side); vGH = H; vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
   gl_Position = project(p);
 }`,
@@ -911,7 +963,7 @@ void main(){
 // leaflets in the fragment shader), glow tubes (capsules whose tips are lamps), coilferns (stalks that roll their tips
 // into spirals) and lantern bells (arching stems that nod a glowing bulb). Each blade follows a centreline in its own
 // plane; veins brighten at night and when you stir the ground beside them.
-const PLANT = program(WORLD_VS + `
+const PLANT = program(WORLD_VS + BRUSH_VS + `
 in vec4 aP; in vec4 aF; in vec4 aS2;
 centroid out vec3 vWP; centroid out float vU; centroid out float vSide; centroid out vec3 vN; centroid out float vType; centroid out float vStir; centroid out float vSeed; centroid out float vHue;
 // the centreline at u in [0, 1]: x out along the ground, y up
@@ -947,7 +999,9 @@ void main(){
     if (vid < 3) p = sd * (float(vid % 2) - 0.5) * W + up * L * (vid == 2 ? 0.32 : 0.);
     else if (outer == 0.) p += sd * angle * W * 0.49;
     p.xz += WIND_DIR * windWave(aP.xz) * uWind * 0.10 * p.y * p.y;
-    vN = normalize(dir + sd * (0.37 * sin(15. * angle + 1.2 * seed)) + up * aS2.z);
+    vec3 bend = brushBend(aP.xyz + up * (0.56 * L));
+    p += bend * (0.47 / L * p.y * p.y);
+    vN = normalize(dir + sd * (0.37 * sin(15. * angle + 1.2 * seed)) + up * (aS2.z - dot(bend.xz, dir.xz) * outer * 0.6));
     vWP = p + aP.xyz; vU = vid < 3 ? 0. : mix(0.16, 1., outer);
     vSide = outer * sin(arc); vType = type; vSeed = seed; vHue = aS2.w;
     vStir = texture(uGlow, fieldUV(aP.xz)).r;
@@ -956,6 +1010,8 @@ void main(){
   vec2 c = path(type, u, L, aS2), t2 = normalize(path(type, min(u + 0.01, 1.), L, aS2) - path(type, max(u - 0.01, 0.), L, aS2));
   vec3 p = dir * c.x + up * c.y;
   float flex = type > 1.5 && type < 2.5 ? 0.3 : 1.;
+  vec3 bend = brushBend(aP.xyz + L * (up * 0.40 + dir * (type < 1.5 ? 0.48 : 0.))) * flex;
+  p += bend * (0.62 * L * u * u);
   float flutter = type > 4.5 ? 0.12 : 1.;
   p.xz += WIND_DIR * windWave(aP.xz + dir.xz * c.x * flutter) * uWind * 0.18 * u * u * L * flex;
   p += sd * sin(uTime * 2.3 + seed * 30. + u * 3.) * 0.02 * u * L * flex * flutter;
@@ -974,7 +1030,7 @@ void main(){
   float tw = (seed - 0.5) * 1.6 * u * step(type, 1.5);
   vec3 wdir = normalize(sd * cos(tw) + up * sin(tw));
   p += wdir * side * w * 0.5;
-  vec3 tang = normalize(dir * t2.x + up * t2.y);
+  vec3 tang = normalize(dir * t2.x + up * t2.y + 1.24 * bend * u);
   vN = normalize(normalize(cross(wdir, tang)) + wdir * side * (type > 1.5 ? 1.6 : 0.7));
   vStir = texture(uGlow, fieldUV(aP.xz)).r;
   vWP = p + aP.xyz; vU = u; vSide = side; vType = type; vSeed = seed; vHue = type > 4.5 ? aS2.w : fract(aP.x * 0.21 + aP.z * 0.17);
@@ -1045,10 +1101,10 @@ const WATERP = program(WORLD_VS + `
 in vec2 aXZ; in float aDepth; in float aLevel; out vec3 vWP; out float vDepth; out float vWave;
 void main(){
   // the swell rides up and down the beach, so the waterline itself moves
-  vWave = waterWave(aXZ, uTime).x;
+  vWave = waterWave(aXZ, uTime).x + impactWave(aXZ).x;
   vWP = vec3(aXZ.x, aLevel + vWave, aXZ.y); vDepth = aDepth; gl_Position = project(vWP);
 }`,
-`uniform sampler2D uRefl; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel; uniform vec4 uRip[12];
+`uniform sampler2D uRefl; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel;
 in vec3 vWP; in float vDepth; in float vWave; out vec4 o;
 vec2 waveGrad(vec2 p){
   vec2 g = waterWave(p, uTime).yz;
@@ -1060,14 +1116,7 @@ vec2 waveGrad(vec2 p){
   float gw = max(0., windWave(p)) * uWind;
   g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. + uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.012 * gw;
   g += vec2(-WIND_DIR.y, WIND_DIR.x) * cos(dot(p, vec2(-WIND_DIR.y, WIND_DIR.x)) * 13. + uTime * 6.1) * 0.006 * gw;
-  for (int i = 0; i < 12; i++) {
-    vec4 r = uRip[i]; if (r.w <= 0.) continue;
-    float age = uTime - r.z; if (age < 0. || age > 8.) continue;
-    vec2 d = p - r.xy; float dist = length(d) + 1e-3; float front = age * 1.4;
-    float env = exp(-(dist - front) * (dist - front) * 1.6) * exp(-age * 0.55) * r.w / (1. + dist);
-    g += d / dist * cos((dist - front) * 7.) * env * 0.5;
-  }
-  return g;
+  return g + impactWave(p).yz;
 }
 void main(){
   float depth = vDepth + vWave;
@@ -1261,9 +1310,9 @@ function waterMesh() {
     const ti = Math.floor(i / tileCells), tj = Math.floor(j / tileCells), key = tj * across + ti;
     const tile = tiles[key] ??= { x0: x0 + ti * tileCells * w / S, z0: z0 + tj * tileCells * d / S,
       width: tileCells * w / S, depth: tileCells * d / S, y0: Infinity, y1: -Infinity, pad: 0 };
-    // Include crests and troughs of all three animated wavetrains.
-    tile.y0 = Math.min(tile.y0, Math.min(levels[a], levels[b], levels[c], levels[e]) - 0.07);
-    tile.y1 = Math.max(tile.y1, Math.max(levels[a], levels[b], levels[c], levels[e]) + 0.07);
+    // 6.3 cm of wind swell plus up to 13 cm from overlapping impacts.
+    tile.y0 = Math.min(tile.y0, Math.min(levels[a], levels[b], levels[c], levels[e]) - 0.20);
+    tile.y1 = Math.max(tile.y1, Math.max(levels[a], levels[b], levels[c], levels[e]) + 0.20);
   }
   return { xz: new Float32Array(xz), levels: new Float32Array(levels), dep: new Float32Array(dep), idx: new Uint32Array(idx), tiles: tiles.filter(Boolean) };
 }
@@ -1299,12 +1348,18 @@ function rockMesh(seed, sub, tall, stack) {
     k *= 1 + (stack ? 0.08 : 0.045) * Math.round(Math.sin(y * (stack ? 6 : 9) + seed * 3) * 1.6) / 1.6;
     let px = x * k, py = y * k * (tall ? 1 : 0.72), pz = z * k;
     if (stack) {
-      // a sea stack: narrower up top, twisted, with an overhang leaning out over the water on one side
-      const tw = (py + 1) * 0.55, c = Math.cos(tw), sn = Math.sin(tw), taper = 1 - 0.32 * (py + 1) / 2;
+      const tw = (py + 1) * 0.55, c = Math.cos(tw), sn = Math.sin(tw), taper = 1 - 0.12 * (py + 1) / 2;
       [px, pz] = [(c * px - sn * pz) * taper, (sn * px + c * pz) * taper];
       px += 0.28 * Math.max(0, py - 0.2) ** 2;
     }
     for (const [n, d] of planes) { const dp = px * n[0] + py * n[1] + pz * n[2]; if (dp > d) { const f = (dp - d) * 0.9; px -= n[0] * f; py -= n[1] * f; pz -= n[2] * f; } }
+    if (stack) {
+      // Round the shoulder into a broad, slightly tilted bedding plane. The lower
+      // sides retain their original fractures and undercut at the waterline.
+      py += 0.08 * sm(0.15, 0.75, py);
+      const cap = 0.916 + 0.018 * px - 0.012 * pz;
+      py -= 0.055 * Math.log1p(Math.exp((py - cap) / 0.055));
+    }
     if (py < -0.22) py = -0.22 + (py + 0.22) * 0.25;
     return [px, py, pz];
   });
@@ -1397,7 +1452,7 @@ function growCrystals(sites) {
 }
 
 // ---------------------------------------------------------------- scatter
-const STACK_GEO = rockMesh(9.31, 4, true, true), STACK_S = [3.6, 4.8, 3.0];
+const STACK_GEO = rockMesh(9.31, 4, true, true), STACK_S = [4.05, 4.8, 3.5];
 // terrain height and slope from the near mesh (fast, for a million blades)
 function nearH(near, x, z) {
   const { S, half } = NEAR, st = 2 * half / S, fx = Math.min(S - 1e-3, Math.max(0, (x + half) / st)), fz = Math.min(S - 1e-3, Math.max(0, (z + half) / st));
@@ -1448,7 +1503,11 @@ function scatter(near) {
   // Keep the established shoreline across grass densities and quality settings.
   let r = rng(1306441690);
   const rv = [[], [], [], [], []], rs = [[], [], [], [], []];
-  const add = (v, x, z, sx, sy, sz, sink, rand = r) => { const y = H(x, z); rv[v].push(x, y - sink, z, rand() * 6.28); rs[v].push(sx, sy, sz, rand()); };
+  const add = (v, x, z, sx, sy, sz, sink, rand = r) => {
+    const yaw = rand() * 6.28, tint = rand();
+    if (v !== 3 && trailDistance(x, z) < 0.85 + 1.2 * Math.max(sx, sz)) return;
+    rv[v].push(x, H(x, z) - sink, z, yaw); rs[v].push(sx, sy, sz, tint);
+  };
   const cluster = (cx, cz, big, m) => {
     for (let q = 0; q < m; q++) {
       const s0 = q === 0 ? big : big * (0.18 + 0.42 * r()), a = r() * 6.28, d = q === 0 ? 0 : big * (0.7 + r() * 0.9);
@@ -1499,13 +1558,8 @@ function scatter(near) {
       const fall = j === 0 ? 0 : j * 0.82 + cliffRand(), spread = j === 0 ? 0 : (cliffRand() - 0.5) * 0.9 * fall;
       const x = cx + dx * fall - dz * spread, z = cz + dz * fall + dx * spread;
       const reach = scale * 1.15;
-      if (trailCover(x, z) > 0.001 || Math.hypot(x - summit[0], z - summit[1]) < 3.5 + reach) continue;
-      let crossesTrail = false;
-      for (let k = 0; k < 8; k++) {
-        const a = k * Math.PI / 4;
-        if (trailCover(x + reach * Math.cos(a), z + reach * Math.sin(a)) > 0.001) { crossesTrail = true; break; }
-      }
-      if (!crossesTrail) add(group % 2, x, z, scale * 1.10, scale * (0.57 + 0.17 * cliffRand()), scale * 0.83, scale * 0.30, cliffRand);
+      if (Math.hypot(x - summit[0], z - summit[1]) < 3.5 + reach) continue;
+      add(group % 2, x, z, scale * 1.10, scale * (0.57 + 0.17 * cliffRand()), scale * 0.83, scale * 0.30, cliffRand);
     }
   }
 
@@ -1530,11 +1584,19 @@ function scatter(near) {
     crystalSites.push([cx, cz, r(), 5 + Math.floor(r() * 6), 0.8 + r() * 0.5]);
   }
 
-  // junipers in three sizes of the one species: the common tree, saplings that gather round it and in groves of
-  // their own, and a few old giants with room around them. [x, y, z, seed, height]
+  // Low turquoise seams line the bare stone shoulder just off the tread.
+  for (const [x, z, hue, count, size] of [[25, -13, 0.28, 5, 0.66], [26, -20, 0.32, 6, 0.75],
+    [31, -24, 0.23, 5, 0.71], [34, -33, 0.29, 8, 0.86], [40, -26, 0.34, 5, 0.72]]) {
+    crystalSites.push([x, z, hue, count, size]);
+  }
+  // Common trees, saplings and a few old giants with space for their low branches.
   const trees = [];
   const ground = (x, z) => { const y = H(x, z); return y > 0.3 && y < 11 && normalAt(x, z)[1] > 0.84 && lakeD(x, z) > 12.3 && clearOf(x, z) && Math.hypot(x - START[0], z - START[1]) > 7 && Math.hypot(x - SHORE_CAM[0], z - SHORE_CAM[1]) > 7 && inMap(x, z, 4) && outcrop(x, z) < 0.5; };
-  const room = (x, z, d) => { for (let q = 0; q < trees.length; q += 5) if (Math.hypot(trees[q] - x, trees[q + 2] - z) < d + (trees[q + 4] > 6 ? 3 : 0)) return false; return true; };
+  const room = (x, z, d) => {
+    if (trailDistance(x, z) < (d > 10 ? 3.7 : d > 3 ? 2.8 : 1.65)) return false;
+    for (let q = 0; q < trees.length; q += 5) if (Math.hypot(trees[q] - x, trees[q + 2] - z) < d + (trees[q + 4] > 6 ? 3 : 0)) return false;
+    return true;
+  };
   for (let t = 0; trees.length / 5 < 7 && t < 4000; t++) {
     const x = (r() * 2 - 1) * (HALF - 6), z = (r() * 2 - 1) * (HALF - 6);
     if (ground(x, z) && room(x, z, 12)) trees.push(x, H(x, z) - 0.08, z, r(), 7.5 + r() * 2.8);
@@ -1584,7 +1646,10 @@ function growJuniper(x, y, z, h, seed, W, Lf, leanTo) {
   const r = rng(Math.floor(seed * 1e9) ^ 0x5bd1), hue = r();
   const lean = leanTo ?? r() * 6.2832, leanAmt = 0.12 + 0.3 * r(), wob = 0.06 + 0.1 * r(), ph = r() * 6.28;
   const ld = [Math.cos(lean), Math.sin(lean)], lp = [-ld[1], ld[0]], trunkH = h * (0.5 + 0.2 * r()), base = [x, z, h, hue];
-  const at = (t) => [x + (ld[0] * leanAmt * t * t + lp[0] * wob * Math.sin(t * 5 + ph)) * h, y + trunkH * t, z + (ld[1] * leanAmt * t * t + lp[1] * wob * Math.sin(t * 5 + ph)) * h];
+  const at = (t) => {
+    const bend = wob * (Math.sin(t * 5 + ph) - Math.sin(ph) * (1 - t) ** 2);
+    return [x + (ld[0] * leanAmt * t * t + lp[0] * bend) * h, y + trunkH * t, z + (ld[1] * leanAmt * t * t + lp[1] * bend) * h];
+  };
   const r0 = h * (0.045 + 0.02 * r()), rad = (t) => r0 * (1 - 0.62 * t) + r0 * 0.9 * Math.exp(-t * 10);
   const tp = [], tr = [];
   for (let k = 0; k <= 12; k++) { tp.push(at(k / 12)); tr.push(rad(k / 12)); }
@@ -1695,10 +1760,15 @@ function growForest(sc) {
     const grow = height > 3 && seed < 0.54 ? growBroadleaf : growJuniper;
     grow(x, y, z, height, seed, W, Lf);
   }
-  // one small juniper clinging to the top of the sea stack, leaning out over the water
-  let top = 0;
-  for (let i = 1; i < STACK_GEO.pos.length; i += 3) if (STACK_GEO.pos[i] > STACK_GEO.pos[top * 3 + 1]) top = (i - 1) / 3;
-  const sx = ISLET[0] + STACK_GEO.pos[top * 3] * STACK_S[0], sz = ISLET[1] + STACK_GEO.pos[top * 3 + 2] * STACK_S[2], sy = H(ISLET[0], ISLET[1]) - 0.2 + STACK_GEO.pos[top * 3 + 1] * STACK_S[1];
+  // Root the juniper at an actual vertex a little off-centre on the stone bench.
+  const rock = STACK_GEO.pos;
+  let root = 0, nearest = Infinity;
+  for (let i = 0; i < rock.length; i += 3) {
+    const d = (rock[i] + 0.13) ** 2 + (rock[i + 2] - 0.08) ** 2;
+    if (rock[i + 1] > 0.82 && d < nearest) { root = i; nearest = d; }
+  }
+  const sx = ISLET[0] + rock[root] * STACK_S[0], sz = ISLET[1] + rock[root + 2] * STACK_S[2];
+  const sy = H(...ISLET) - 0.2 + rock[root + 1] * STACK_S[1];
   growJuniper(sx, sy - 0.1, sz, 3.2, 0.7317, W, Lf, Math.atan2(LAKE[1] - sz, LAKE[0] - sx) + 2.4);
   return { pos: new Float32Array(W.pos), nor: new Float32Array(W.nor), w: new Float32Array(W.w), b: new Float32Array(W.b), idx: new Uint32Array(W.idx), R: new Float32Array(Lf.R), D: new Float32Array(Lf.D), M: new Float32Array(Lf.M), B: new Float32Array(Lf.B) };
 }
@@ -1716,6 +1786,12 @@ function plantScatter(sc, near) {
   const anywhere = () => [(r() * 2 - 1) * (HALF - 2), (r() * 2 - 1) * (HALF - 2)];
   const place = (gen) => { for (let t = 0; t < 30; t++) { const [x, z] = gen(); if (ok(x, z)) return [x, z]; } return null; };
   const k = touch ? 0.65 : 1;
+  function besideWalk(points, rand) {
+    const i = Math.floor(rand() * (points.length - 1)), [x, z] = points[i];
+    const dx = points[i + 1][0] - x, dz = points[i + 1][1] - z, along = rand();
+    const offset = (rand() < 0.5 ? -1 : 1) * (1.8 + 2.2 * rand()) / Math.hypot(dx, dz);
+    return [x + dx * along - dz * offset, z + dz * along + dx * offset];
+  }
   for (let c = 0; c < 560 * k; c++) {
     const at = place(() => (r() < 0.7 ? nearA(1.2, 3.6) : anywhere())); if (!at) continue;
     const [x, z] = at, y = H(x, z), scl = 0.7 + r() * 0.8, n = 9 + Math.floor(r() * 5);
@@ -1736,7 +1812,7 @@ function plantScatter(sc, near) {
   }
   // coilferns: a few stalks to a clump, each rising and rolling its tip into a spiral
   for (let c = 0; c < 300 * k; c++) {
-    const at = place(() => nearA(0.9, 3.4)); if (!at) continue;
+    const at = place(() => c % 5 === 0 ? besideWalk(valleyWalks.fern, r) : nearA(0.9, 3.4)); if (!at) continue;
     const m = 3 + Math.floor(r() * 5);
     for (let i = 0; i < m; i++) {
       const x = at[0] + (r() - 0.5) * 0.5, z = at[1] + (r() - 0.5) * 0.5, y = H(x, z), sc0 = 0.9 + r() * 0.6, phi = r() * 6.2832, L = 0.42 + r() * 0.34, W = 0.05 + r() * 0.025, lean = 0.18 + r() * 0.2;
@@ -1782,8 +1858,8 @@ function plantScatter(sc, near) {
   // The limestone shelves above the meadow carry tougher, wind-bent fans.
   // Groups grow beside the switchbacks and on rock benches around the rim.
   const ridgeRand = rng(71349);
-  function ridgeFan(cx, cz) {
-    const family = ridgeRand(), yaw = ridgeRand() * 6.2832;
+  function ridgeFan(cx, cz, warm = false) {
+    const family = warm ? 0.76 + 0.20 * ridgeRand() : ridgeRand(), yaw = ridgeRand() * 6.2832;
     for (let i = 0; i < 11; i++) {
       const a = i * 2.39996 + yaw, d = i === 0 ? 0. : 0.35 + 1.35 * ridgeRand();
       const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
@@ -1803,6 +1879,7 @@ function plantScatter(sc, near) {
     ridgeFan(x - dz * side, z + dx * side);
   }
   for (let i = 0; i < 140; i++) {
+    if (i % 6 === 0) { ridgeFan(...besideWalk(valleyWalks.fan, ridgeRand), true); continue; }
     const x = (ridgeRand() * 2 - 1) * (HALF - 3), z = (ridgeRand() * 2 - 1) * (HALF - 3);
     if (Math.hypot(x, z) > 35 && H(x, z) > 5.2) ridgeFan(x, z);
   }
@@ -1967,17 +2044,19 @@ function buildValley() {
   // Ground arrays are used to place vegetation and flight paths, then live only on the GPU.
   const near = terrainNear();
   const { G, R, ...sc } = scatter(near);
-  const grass = new Tiled(GRASS, { aG: G, aR: R }, i => [G[i * 4], G[i * 4 + 2], G[i * 4 + 1]], 1.4, 7, 18, 0.06);
+  // Include the tip's travel under contact when culling a tile at the edge of the view.
+  const grass = new Tiled(GRASS, { aG: G, aR: R }, i => [G[i * 4], G[i * 4 + 2], G[i * 4 + 1]],
+    i => 0.15 + 2.15 * 0.34 * (0.62 + 0.76 * R[i * 4 + 1]) * R[i * 4 + 3], 7, 18, 0.06);
   const forest = growForest(sc);
   const vWood = vao([
     { loc: loc(WOOD, 'aPos'), size: 3, data: forest.pos }, { loc: loc(WOOD, 'aNor'), size: 3, data: forest.nor },
     { loc: loc(WOOD, 'aW'), size: 4, data: forest.w }, { loc: loc(WOOD, 'aB'), size: 4, data: forest.b },
   ], forest.idx);
   const leaves = new Tiled(JLEAF, { aR: forest.R, aD: forest.D, aM: forest.M, aB: forest.B },
-    i => [forest.R[i * 4], forest.R[i * 4 + 1], forest.R[i * 4 + 2]], i => 1.5 * forest.D[i * 4 + 3] + 1, 13, 40, 0.3);
+    i => [forest.R[i * 4], forest.R[i * 4 + 1], forest.R[i * 4 + 2]], i => 2.2 * forest.D[i * 4 + 3] + 0.75, 13, 40, 0.3);
   const pl = plantScatter(sc, near);
   const plants = new Tiled(PLANT, { aP: pl.P, aF: pl.F, aS2: pl.S2 },
-    i => [pl.P[i * 4], pl.P[i * 4 + 1], pl.P[i * 4 + 2]], 1.65, 25, 24, 0.12);
+    i => [pl.P[i * 4], pl.P[i * 4 + 1], pl.P[i * 4 + 2]], i => 0.2 + 1.8 * pl.P[i * 4 + 3] * pl.F[i * 4 + 1], 25, 24, 0.12);
   bakeCanopy(gl, forest, EXTENT);
   bakeFloraSpill(pl);
   const sailwings = createSailwings({ gl, program, vao, worldVertex: WORLD_VS, groundAt: (x, z) => nearH(near, x, z), waterLevel, riverX, sc, random: rng(971) });
@@ -2253,8 +2332,15 @@ function postProcess(VP, eye, b, w, h) {
 
 // ---------------------------------------------------------------- engine state
 let engine, glowF, groundF, wearF, mode = BOXEL;
+const brush = new BrushField();
+const bendTex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE13); gl.bindTexture(gl.TEXTURE_2D, bendTex);
+gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, brush.size, brush.size);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 const rippleUniform = new Float32Array(48);
-const ripples = []; // [x, z, t0, strength]
+const ripples = []; // [x, z, impact time, strength, local downstream speed]
+let rippleCount = 0;
 let simT = 0;
 
 function setMode(m) {
@@ -2264,16 +2350,39 @@ function setMode(m) {
 }
 
 // events: what the world does to the fields
-function footstep(x, z, inWater, wetFeet, run) {
+function footstep(x, z, inWater, wetFeet, run, depth = 0.35, at = simT) {
   glowF.deposit(x, z, 2, inWater ? 0.75 : 0.85);
   if (!inWater) { wearF.deposit(x, z, 0, run ? 0.3 : 0.2); if (wetFeet > 0) groundF.deposit(x, z, 2, 0.45 * wetFeet); }
-  else ripple(x, z, 0.35);
+  else ripple(x, z, (run ? 0.85 : 0.55) * (0.55 + 0.45 * sm(0.02, 0.42, depth)), at);
 }
-function splash(x, z, water) {
-  if (water) { glowF.deposit(x, z, 9, 1); ripple(x, z, 1.4); for (let i = 0; i < 8; i++) { const a = i / 8 * 6.283; groundF.deposit(x + Math.cos(a) * 2.2, z + Math.sin(a) * 2.2, 5, 0.5); } }
+function splash(x, z, water, strength = 1.4, at = simT) {
+  if (water) { glowF.deposit(x, z, 9, 1); ripple(x, z, strength, at); for (let i = 0; i < 8; i++) { const a = i / 8 * 6.283; groundF.deposit(x + Math.cos(a) * 2.2, z + Math.sin(a) * 2.2, 5, 0.5); } }
   else { glowF.deposit(x, z, 6, 1); groundF.deposit(x, z, 4, 0.25); wearF.deposit(x, z, 0, 0.5); }
 }
-function ripple(x, z, s) { ripples.push([x, z, simT, s]); if (ripples.length > 12) ripples.shift(); }
+function ripple(x, z, strength, at = simT) {
+  const event = [x, z, at, strength, 0.34 * sm(0.02, 0.65, waterLevel(x, z))];
+  if (ripples.length < 12) { ripples.push(event); return; }
+  // A new spore may displace a fading ring. Preserve a nearby fresh footfall or stone.
+  let replace = -1, weakest = strength;
+  for (let i = 0; i < ripples.length; i++) {
+    const r = ripples[i], remaining = r[3] * Math.exp(-0.65 * (simT - r[2]));
+    if (remaining < weakest) { replace = i; weakest = remaining; }
+  }
+  if (replace >= 0) ripples[replace] = event;
+}
+function prepareRipples(t) {
+  rippleCount = 0;
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const [x, z, at, strength, current] = ripples[i], age = t - at;
+    if (age >= 6) { ripples.splice(i, 1); continue; }
+    if (age < 0) continue;
+    const drift = age * current, k = 4 * rippleCount++;
+    rippleUniform[k] = drift ? x + riverX(z + drift) - riverX(z) : x;
+    rippleUniform[k + 1] = z + drift;
+    rippleUniform[k + 2] = age * (1.35 + strength * 0.21);
+    rippleUniform[k + 3] = 0.105 * strength * Math.exp(-0.55 * age) * sm(0, 0.09, age) * (1 - sm(5, 6, age));
+  }
+}
 function spore(r) {
   const x = (r() * 2 - 1) * (HALF - 2), z = (r() * 2 - 1) * (HALF - 2), y = H(x, z);
   glowF.deposit(x, z, 1 + Math.floor(r() * 3), 0.5);
@@ -2299,7 +2408,7 @@ function riverEvents(t, dt) {
 }
 
 // ---------------------------------------------------------------- camera + player
-const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vy: 0, stride: 0, foot: 1, wet: 0 };
+const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vx: 0, vz: 0, stride: 0, bob: 0, foot: 1, wet: 0 };
 player.y = H(player.x, player.z);
 const keys = {};
 let rain = false, hudOn = true, started = false;
@@ -2322,7 +2431,33 @@ function viewProj(eye, b, fov, aspect) {
   return M;
 }
 
-function walkable(x, z) { return H(x, z) > waterLevel(x, z) - 1.25 && inMap(x, z, 1); }
+function walkable(x, z, ground = H(x, z)) { return ground > waterLevel(x, z) - 1.25 && inMap(x, z, 1); }
+
+function crossSlope(dx, dz, ground) {
+  const x = player.x, z = player.z;
+  const edge = HALF - 1.001;
+  dx = Math.min(edge, Math.max(-edge, x + dx)) - x;
+  dz = Math.min(edge, Math.max(-edge, z + dz)) - z;
+  const length = Math.hypot(dx, dz);
+  if (length < 1e-5) return ground;
+  const maxGrade = 0.80;
+  const ahead = H(x + dx, z + dz), grade = (ahead - ground) / length;
+  if (grade > maxGrade || !walkable(x + dx, z + dz, ahead)) {
+    // Keep the component along a steep face or the edge of deep water. Testing
+    // the combined move prevents gaining height by alternating the X and Z axes.
+    const n = normalAt(x, z, 0.2), horizontal = n[0] * n[0] + n[2] * n[2];
+    if (horizontal < 1e-6) return ground;
+    const across = (dx * n[0] + dz * n[2]) / horizontal;
+    dx -= across * n[0]; dz -= across * n[2];
+  } else {
+    const pace = 1 / (Math.hypot(1, grade) * (1 + 0.27 * Math.max(0, grade)));
+    dx *= pace; dz *= pace;
+  }
+  const to = H(x + dx, z + dz);
+  if (!walkable(x + dx, z + dz, to) || to - ground > maxGrade * Math.hypot(dx, dz) + 1e-5) return ground;
+  player.x = x + dx; player.z = z + dz;
+  return to;
+}
 
 function stepPlayer(dt) {
   let mx = 0, mz = 0;
@@ -2332,24 +2467,31 @@ function stepPlayer(dt) {
   const len = Math.hypot(mx, mz);
   const ground = H(player.x, player.z), level = waterLevel(player.x, player.z), inWater = ground < level - 0.05, depth = Math.max(0, level - ground);
   const run = keys.ShiftLeft || keys.ShiftRight || (stick.id !== null && len > 0.92);
-  if (len > 0.05) {
-    const sp = (run ? 4.2 : 1.9) * (inWater ? 1 - Math.min(0.6, depth * 0.45) : 1) * Math.min(1, len);
-    const fx = Math.sin(player.yaw), fz = -Math.cos(player.yaw), rx = Math.cos(player.yaw), rz = Math.sin(player.yaw);
-    const dx = (fx * mz + rx * mx) / Math.max(1, len) * sp * dt, dz = (fz * mz + rz * mx) / Math.max(1, len) * sp * dt;
-    const oldX = player.x, oldZ = player.z;
-    if (walkable(player.x + dx, player.z)) player.x += dx;
-    if (walkable(player.x, player.z + dz)) player.z += dz;
-    player.stride += Math.hypot(player.x - oldX, player.z - oldZ);
-    const strideLen = run ? 0.75 : 0.55;
-    if (player.stride > strideLen) {
-      player.stride -= strideLen; player.foot = -player.foot;
-      const ox = Math.cos(player.yaw) * 0.14 * player.foot, oz = Math.sin(player.yaw) * 0.14 * player.foot;
-      footstep(player.x + ox, player.z + oz, inWater, player.wet, run);
-    }
+  const pace = len > 0.05 ? (run ? 4.2 : 1.9) * (1 - Math.min(0.6, depth * 0.45)) / Math.max(1, len) : 0;
+  const sy = Math.sin(player.yaw), cy = Math.cos(player.yaw);
+  const vx = (sy * mz + cy * mx) * pace, vz = (-cy * mz + sy * mx) * pace;
+  // Integrate the eased velocity over the frame, including the last fraction of a step on release.
+  const rate = pace ? 10 : 17, blend = -Math.expm1(-rate * dt);
+  const dx = vx * dt + (player.vx - vx) * blend / rate, dz = vz * dt + (player.vz - vz) * blend / rate;
+  player.vx += (vx - player.vx) * blend; player.vz += (vz - player.vz) * blend;
+  const oldX = player.x, oldZ = player.z, target = crossSlope(dx, dz, ground);
+  const distance = Math.hypot(player.x - oldX, player.z - oldZ, target - ground);
+  const speed = distance / dt, strideLen = 0.60 + 0.27 * sm(1.5, 4.2, speed);
+  const phase = player.stride + distance / strideLen;
+  if (phase >= 1) {
+    player.foot = -player.foot;
+    const u = (1 - player.stride) * strideLen / distance;
+    const x = oldX + (player.x - oldX) * u + cy * 0.14 * player.foot;
+    const z = oldZ + (player.z - oldZ) * u + sy * 0.14 * player.foot;
+    const footDepth = waterLevel(x, z) - H(x, z);
+    footstep(x, z, footDepth > 0.015, player.wet, speed > 2.6, footDepth, simT - (1 - u) * dt);
   }
-  if (inWater) player.wet = 1; else player.wet = Math.max(0, player.wet - dt / 9);
-  const target = Math.max(H(player.x, player.z), WATER - 1.3);
-  player.y += (target - player.y) * Math.min(1, dt * 12);
+  player.stride = phase % 1;
+  const bob = (0.014 + 0.014 * sm(2, 4.2, speed)) * Math.min(1, speed) * Math.sin(player.stride * Math.PI) ** 2;
+  player.bob += (bob - player.bob) * -Math.expm1(-24 * dt);
+  player.wet = inWater ? 1 : Math.max(0, player.wet - dt / 9);
+  player.y += (target - player.y) * -Math.expm1(-15 * dt);
+  brush.advance(player.x, target, player.z, dt);
 }
 
 function throwStone() {
@@ -2360,11 +2502,21 @@ function throwStone() {
 function stepStones(dt) {
   for (let i = stones.length - 1; i >= 0; i--) {
     const s = stones[i]; s.t += dt;
-    s.v[1] -= 9.8 * dt; for (let k = 0; k < 3; k++) s.p[k] += s.v[k] * dt;
-    const g = H(s.p[0], s.p[2]);
-    const level = waterLevel(s.p[0], s.p[2]);
-    const water = g < level && s.p[1] < level;
-    if (s.p[1] < g || water || s.t > 6) { if (s.t <= 6) splash(s.p[0], s.p[2], water); stones.splice(i, 1); }
+    const [x, y, z] = s.p, dx = s.v[0] * dt, dz = s.v[2] * dt, dy = (s.v[1] - 4.9 * dt) * dt;
+    s.p[0] += dx; s.p[1] += dy; s.p[2] += dz; s.v[1] -= 9.8 * dt;
+    if (s.t > 6) { stones.splice(i, 1); continue; }
+    if (s.p[1] > Math.max(H(s.p[0], s.p[2]), waterLevel(s.p[0], s.p[2]))) continue;
+    // Locate the first contact within this step, including the elevated river.
+    let lo = 0, hi = 1;
+    for (let j = 0; j < 8; j++) {
+      const u = (lo + hi) / 2, px = x + dx * u, pz = z + dz * u;
+      if (y + dy * u > Math.max(H(px, pz), waterLevel(px, pz))) lo = u; else hi = u;
+    }
+    const px = x + dx * hi, pz = z + dz * hi;
+    const remaining = (1 - hi) * dt, impactY = s.v[1] + 9.8 * remaining;
+    const strength = Math.min(1.65, 0.5 + 0.085 * Math.hypot(impactY, 0.5 * s.v[0], 0.5 * s.v[2]));
+    splash(px, pz, H(px, pz) < waterLevel(px, pz), strength, simT - remaining);
+    stones.splice(i, 1);
   }
 }
 
@@ -2441,6 +2593,7 @@ function common(p, eye, VP, mirror, t) {
   if (p.worldFrame === undefined) {
     gl.uniform1i(p.u('uShadows'), 9); gl.uniform1i(p.u('uFloraSpill'), 10);
     gl.uniform1i(p.u('uClouds'), 11); gl.uniform1i(p.u('uCanopy'), 12);
+    gl.uniform1i(p.u('uBendTex'), 13);
     gl.uniform1i(p.u('uGlow'), 0); gl.uniform1i(p.u('uGround'), 1); gl.uniform1i(p.u('uWear'), 7);
     gl.uniform1i(p.u('uMilky'), 8); gl.uniform1i(p.u('uRefl'), 2);
     gl.uniformMatrix4fv(p.u('uLightVP[0]'), false, valleyShadows.matrices);
@@ -2454,6 +2607,13 @@ function common(p, eye, VP, mirror, t) {
     gl.uniform1f(p.u('uExposure'), 0.95 + 0.3 * night); gl.uniform1f(p.u('uTime'), t);
     gl.uniform1f(p.u('uSheet'), sheet); gl.uniformMatrix3fv(p.u('uSky'), false, skyTurn);
     gl.uniform1f(p.u('uWind'), TEST ? 0.7 : (rain ? 1.15 : 0.7) + 0.2 * Math.sin(t * 0.13));
+    if (p === GRASS || p === JLEAF || p === PLANT) {
+      gl.uniform3f(p.u('uBrush'), player.x, player.z, brush.cells.size ? 1 : 0);
+    }
+    if (p === WATERP || p === ROCK || p === CRYSTAL) {
+      gl.uniform1i(p.u('uRipCount'), rippleCount);
+      if (rippleCount) gl.uniform4fv(p.u('uRip[0]'), rippleUniform, 0, rippleCount * 4);
+    }
   }
   gl.uniformMatrix4fv(p.u('uVP'), false, VP); gl.uniform3fv(p.u('uCam'), eye);
   gl.uniform1f(p.u('uMirror'), mirror); gl.uniform1f(p.u('uClip'), mirror < 0 ? reflectionLevel - 0.02 : -1e9);
@@ -2516,14 +2676,20 @@ function render(t, camOverride) {
   const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   const fov = 1.15, aspect = w / h, tanY = Math.tan(fov / 2), tanX = tanY * aspect;
-  const cam = camOverride || { eye: [player.x, player.y + 1.65 + Math.sin(player.stride / 0.55 * Math.PI) * 0.025, player.z], yaw: player.yaw, pitch: player.pitch };
+  const cam = camOverride || { eye: [player.x, player.y + 1.65 + player.bob, player.z], yaw: player.yaw, pitch: player.pitch };
   const b = camBasis(cam.yaw, cam.pitch);
   const VP = viewProj(cam.eye, b, fov, aspect);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texGlow);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texGround);
   gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, texWear);
+  if (brush.dirty) {
+    gl.activeTexture(gl.TEXTURE13); gl.bindTexture(gl.TEXTURE_2D, bendTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, brush.size, brush.size, gl.RGBA, gl.UNSIGNED_BYTE, brush.bytes);
+    brush.dirty = false;
+  }
   sheet = groundF ? groundF.sheet : 0;
   turnSky(t);
+  prepareRipples(t);
   frameNumber++;
   lightDirection = norm(SUN.map((v, i) => v * (1 - night) + PLANET[i] * night));
   lightColor = SUNCOL.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
@@ -2555,8 +2721,6 @@ function render(t, camOverride) {
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, reflTex);
     gl.uniform2f(WATERP.u('uRes'), w, h);
     gl.uniform2f(WATERP.u('uRightXZ'), b.r[0], b.r[2]); gl.uniform1f(WATERP.u('uMirrorLevel'), reflectionLevel);
-    rippleUniform.fill(0, ripples.length * 4); ripples.forEach((r, i) => rippleUniform.set(r, i * 4));
-    gl.uniform4fv(WATERP.u('uRip'), rippleUniform);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.bindVertexArray(wm.vao); gl.drawElements(gl.TRIANGLES, wm.count, gl.UNSIGNED_INT, 0);
   }
@@ -2693,6 +2857,7 @@ function bindInput() {
   addEventListener('keyup', (e) => { keys[e.code] = false; });
   addEventListener('blur', () => {
     for (const k in keys) keys[k] = false;
+    player.vx = player.vz = player.bob = 0;
     stick = { x: 0, y: 0, id: null };
     lookId = lookLast = null;
     document.getElementById('knob').style.transform = '';
@@ -2778,6 +2943,7 @@ function plantView(pl, type) {
 }
 function scripted(m, frames = 900, view = 'shore') {
   setMode(m); started = false; rain = false; stones.length = 0;
+  brush.reset();
   const r = rng(4242); simT = 0;
   if (view === 'render') { render(12.0, VIEWS[frames]); return {}; }
   const t0 = performance.now();
