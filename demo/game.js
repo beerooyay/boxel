@@ -320,7 +320,7 @@ vec3 skyColor(vec3 d){
   if (uNight > 0. && d.y > -0.02) {
     // the galaxy's band, baked once into a cube map in the sky's own frame, which turns about the pole
     vec3 mw = texture(uMilky, uSky * d).rgb;
-    c += mw * mw * uNight * smoothstep(-0.02, 0.22, d.y) * 0.5;
+    c += mw * mw * uNight * smoothstep(-0.02, 0.22, d.y) * 0.72;
   }
   c += STAR_COL * uStarTint * (1. - uNight) * (1. - uStorm) * 3. * smoothstep(0.99935, 0.99965, dot(d, uStarDir));
   vec3 P = uPlanetDir; vec3 T = normalize(cross(P, vec3(0., 1., 0.))); vec3 B = cross(T, P);
