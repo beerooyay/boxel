@@ -3,6 +3,8 @@ import { BrushField } from './brush.js';
 import { highCanopyMesh, highCanopySites } from './high-canopy.js';
 import { createSailwings } from './fauna.js';
 import { bakeClouds, bakeCanopy, valleyAir, canopyShelter } from './atmosphere.js';
+import { bakeGroundLight, groundLight, mistFragment, viewRay } from './valley-light.js';
+import { cameraJitter, depthRange, historyColor, temporalFragment } from './temporal.js';
 import { bakeShadows } from './shadows.js';
 // Tarnished Promise: four acres of lake shore on Tarn, under a ringed giant.
 //
@@ -38,7 +40,18 @@ function vnoise(x, y) {
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 function fbm(x, y, o = 4) { let s = 0, a = 0.5; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); x = x * 2.03 + 17; y = y * 2.03 + 5; a *= 0.5; } return s; }
-function ridged(x, y) { let s = 0, a = 0.55; for (let i = 0; i < 5; i++) { const v = 1 - Math.abs(vnoise(x, y) * 2 - 1); s += a * v * v; x = x * 2.1 + 3; y = y * 2.1 + 9; a *= 0.5; } return s; }
+function ridged(x, y, footprint = 0) {
+  let height = 0, weight = 0.55;
+  for (let i = 0; i < 5; i++) {
+    // The far mesh cannot resolve every mineral ridge. Fade each octave to
+    // its mean energy as the vertex spacing approaches its wavelength.
+    const detail = footprint ? 1 - sm(0.22, 0.72, footprint) : 1;
+    const ridge = detail ? 1 - Math.abs(vnoise(x, y) * 2 - 1) : 0;
+    height += weight * (detail * ridge * ridge + (1 - detail) * 0.48);
+    x = x * 2.1 + 3; y = y * 2.1 + 9; footprint *= 2.1; weight *= 0.5;
+  }
+  return height;
+}
 const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 // the lake's outline: an ellipse pushed around by lobes, coves and noise, so no stretch of shore is a circle. Measured
@@ -53,7 +66,7 @@ function lakeD(x, z) {
 const ISLET = [LAKE[0] + 6.8, LAKE[1] - 5.2];
 const OUTCROP = [34, -30];                                // a rocky rise north-east of the lake
 function outcrop(x, z) { return 1 - sm(9, 27, Math.hypot(x - OUTCROP[0], (z - OUTCROP[1]) * 1.25)); }
-function H(x, z) {
+function H(x, z, footprint = 0) {
   // meadow: small undulation on rolling swells
   const meadow = 0.7 + 1.1 * fbm(x * 0.045 + 3, z * 0.045 - 1) + 0.25 * fbm(x * 0.22, z * 0.22, 3) + 3.2 * (fbm(x * 0.017 - 7, z * 0.017 + 5, 3) - 0.4);
   const d = lakeD(x, z);
@@ -82,7 +95,8 @@ function H(x, z) {
     const drainage = Math.abs(2 * fbm(mx * 0.011 + 8, mz * 0.006 - 3, 3) - 0.85);
     h -= 9 * m * m * (1 - sm(0.02, 0.16, drainage));
     // broad ridges, and on their crests a second, sharper set: crags, horns and notches
-    const rg = ridged(mx * 0.0035 + 2, mz * 0.0035 - 4), crag = ridged(mx * 0.013 + 7, mz * 0.013 - 3);
+    const rg = ridged(mx * 0.0035 + 2, mz * 0.0035 - 4, footprint * 0.007);
+    const crag = ridged(mx * 0.013 + 7, mz * 0.013 - 3, footprint * 0.026);
     h += m * m * (18 + 115 * rg + 18 * crag * crag * rg) + sm(84, 170, range) * 6 * fbm(mx * 0.02, mz * 0.02);
   }
   return terrainHeight(x, z, h);
@@ -260,6 +274,7 @@ const vec2 WIND_DIR = vec2(0.87, 0.5);
 float windWave(vec2 p){ return sin(dot(p, vec2(0.31, 0.18)) + uTime * 1.25) * 0.55 + sin(dot(p, vec2(-0.23, 0.41)) * 1.7 + uTime * 2.3) * 0.3; }
 float inField(vec2 uv){ return step(0., uv.x) * step(0., uv.y) * step(uv.x, 1.) * step(uv.y, 1.); }
 
+${groundLight}
 ${companionWorlds}
 uniform sampler2D uClouds;
 vec2 cloudUV(vec3 origin, vec3 ray) {
@@ -427,7 +442,7 @@ vec3 pbr(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 wp, float s
   vec3 kd = (1. - F) * (1. - metal);
   vec3 col = (kd * albedo / PI + spec) * uSunCol * NdL * sun;
   vec3 R = reflect(-V, N);
-  vec3 skyLight = ambient(N) * mix(vec3(1.), vec3(0.40, 0.53, 0.55), cover);
+  vec3 skyLight = contactLight(wp) * ambient(N) * mix(vec3(1.), vec3(0.40, 0.53, 0.55), cover);
   vec3 env = mix(skyBase(R), skyLight * 1.4, rough);
   vec3 Fa = F0 + (max(vec3(1. - rough), F0) - F0) * pow(1. - NdV, 5.);
   return col + kd * albedo * (skyLight * 2.4 + floraSpill(wp)) + env * Fa * (1. - rough * 0.6);
@@ -472,7 +487,7 @@ vec3 floraLight(vec3 gc, vec3 wp, vec3 N, vec3 V, float u, float self, float sti
   float ndl = max(dot(N, uSunDir), 0.) * 0.72 + 0.28;
   vec3 sunlight = uSunCol * directLight(wp);
   float cover = canopyCover(wp);
-  vec3 skyLight = ambient(N) * mix(vec3(1.), vec3(0.38, 0.54, 0.54), cover);
+  vec3 skyLight = contactLight(wp) * ambient(N) * mix(vec3(1.), vec3(0.38, 0.54, 0.54), cover);
   vec3 lit = gc * (skyLight * 2.35 + sunlight * ndl * 0.3 + floraSpill(wp));
   lit += sunlight * gc * pow(clamp(dot(-V, uSunDir), 0., 1.), 3.) * u * 0.4;
   // Pigment also supplies the emission hue. Sunlit leaves read by diffuse light alone.
@@ -507,10 +522,10 @@ vec4 project(vec3 w){ return uVP * vec4(w.x, w.y * uMirror, w.z, 1.); }
 `;
 
 const SKY = program(`
-uniform vec3 uR, uU, uF; uniform vec2 uTan; uniform float uMirror;
+uniform vec3 uR, uU, uF; uniform vec2 uTan, uJitter; uniform float uMirror;
 out vec3 vDir;
 void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)) * 2. - 1.;
-  vec3 d = uF + p.x * uTan.x * uR + p.y * uTan.y * uU; d.y *= uMirror; vDir = d; gl_Position = vec4(p, 1., 1.); }`,
+  vec3 d = uF + (p.x - uJitter.x) * uTan.x * uR + (p.y - uJitter.y) * uTan.y * uU; d.y *= uMirror; vDir = d; gl_Position = vec4(p, 1., 1.); }`,
 `in vec3 vDir; out vec4 o; void main(){ vec3 sky = skyColor(normalize(vDir)); o = vec4(tonemap(sky), starTransmission); }`);
 
 const HIGH_CANOPY = program(WORLD_VS + `
@@ -548,7 +563,7 @@ void main(){
   }
   float incidence = dot(n, uSunDir);
   float backlight = step(0., vTissue) * max(-incidence, 0.);
-  vec3 light = ambient(n) * 2.5 + uSunCol * (0.045 + 0.59 * max(incidence, 0.) + 0.20 * backlight) * directLight(vWP);
+  vec3 light = contactLight(vWP) * ambient(n) * 2.5 + uSunCol * (0.045 + 0.59 * max(incidence, 0.) + 0.20 * backlight) * directLight(vWP);
   o = vec4(tonemap(fogged(pigment * light, vWP)), 0.);
 }`);
 
@@ -571,6 +586,14 @@ vec3 rockFold(vec2 p){
   return vec3(a + dot(vec2(b-a, c-a), u) + crossTerm * u.x * u.y,
               6. * f * (1. - f) * (vec2(b-a, c-a) + crossTerm * u.yx));
 }
+// Project the same mineral grain onto the bank, floor and sidewalls.
+vec3 bankWeights(vec3 n){
+  vec3 w = abs(n); w *= w; w *= w; return w / (w.x + w.y + w.z);
+}
+vec3 bankRelief(vec3 p, vec3 w){
+  vec2 x = rockFold(p.zy).yz, y = rockFold(p.xz).yz, z = rockFold(p.xy).yz;
+  return vec3(0., x.y, x.x)*w.x + vec3(y.x, 0., y.y)*w.y + vec3(z, 0.)*w.z;
+}
 void main(){
   if (vWP.y < uClip) discard;
   vec2 p = vWP.xz; vec2 uv = fieldUV(p); float inf = inField(uv);
@@ -588,9 +611,15 @@ void main(){
   float dist = length(vWP - uCam);
   vec3 N = normalize(vN);
   float dn = 1. - smoothstep(8., 45., dist);
-  if (dn > 0.) {
+  float steep = smoothstep(0.19, 0.53, 1. - N.y);
+  vec3 weights = bankWeights(N);
+  if (dn > 0. && steep > 0.) {
+    vec3 relief = bankRelief(vWP * 2.6, weights) + 0.35 * bankRelief(vWP * 6.2 + 17., weights);
+    N = normalize(N - dn * (1. - 0.6 * moist) * 0.30 * steep * (relief - N * dot(relief, N)));
+  }
+  if (dn > 0. && steep < 1.) {
     float e = 0.06, s = 2.6; float h0 = fbm3(p * s), hx = fbm3((p + vec2(e, 0.)) * s), hz = fbm3((p + vec2(0., e)) * s);
-    N = normalize(N + dn * (1. - 0.7 * wear) * (1. - 0.6 * moist) * vec3(-(hx - h0), 0., -(hz - h0)) / e * 0.22);
+    N = normalize(N + dn * (1. - steep) * (1. - 0.7 * wear) * (1. - 0.6 * moist) * vec3(-(hx - h0), 0., -(hz - h0)) / e * 0.22);
   }
   // Split the distant cliffs along two intersecting families of joints. Stretched
   // folds produce long rock ribs with snow chutes between them, even on the phone mesh.
@@ -623,7 +652,15 @@ void main(){
   float n1 = mix(crag, seam, 0.35);
   if (far < 1.) n1 = mix(fbm3(p * 0.3), n1, far);
   float n2 = 0.5, n3 = 0.45;
-  if (fine > 0.) { n2 = mix(n2, vnoise(p * 2.7), fine); n3 = mix(n3, vnoise(p * 9.), fine * fine); }
+  if (fine > 0.) {
+    vec2 grain = vec2(vnoise(p * 2.7), vnoise(p * 9.));
+    if (steep > 0.) {
+      vec2 side = vec2(vnoise(vWP.zy * 2.7), vnoise(vWP.zy * 9.));
+      vec2 face = vec2(vnoise(vWP.xy * 2.7), vnoise(vWP.xy * 9.));
+      grain = mix(grain, weights.x * side + weights.y * grain + weights.z * face, steep);
+    }
+    n2 = mix(n2, grain.x, fine); n3 = mix(n3, grain.y, fine * fine);
+  }
   float hummocks = smoothstep(0.24, 0.68, n1 + (n2 - 0.5) * 0.36);
   vec3 moss = mix(vec3(0.034, 0.047, 0.041), vec3(0.088, 0.18, 0.092), hummocks) * (0.74 + 0.55 * n3);
   vec3 sand = mix(vec3(0.16, 0.12, 0.083), vec3(0.41, 0.34, 0.22), n1) * (0.75 + 0.42 * n2);
@@ -680,7 +717,7 @@ void main(){
   vec3 frost = mix(vec3(0.50, 0.64, 0.78), vec3(0.86, 0.86, 0.92), smoothstep(-0.01, 0.22, mantle));
   alb = mix(alb, frost, snow); rough = mix(rough, 0.60, snow);
   // cobbles on the beach and under the shallows, pebbles between them; wet ones go dark and glossy
-  float cobZ = (1. - smoothstep(0.30, 0.83, bank)) * smoothstep(-1.6, -0.9, bank) * (1. - smoothstep(14., 32., dist)) * (1. - 0.6 * rk);
+  float cobZ = smoothstep(0.34, 0.72, normalize(vN).y) * (1. - smoothstep(0.30, 0.83, bank)) * smoothstep(-1.6, -0.9, bank) * (1. - smoothstep(14., 32., dist)) * (1. - 0.6 * rk);
   // Only exposed faces need surface light. Caustics also tint indirect light
   // in the shallows, so they share the same visibility sample here.
   float sun = 0.;
@@ -1279,12 +1316,14 @@ function terrainNear() {
 function terrainFar() {
   const rings = touch ? 150 : 190, sectors = touch ? 320 : 512, stride = sectors + 1, edge = NEAR.half - 0.5;
   const pos = new Float32Array((rings + 1) * stride * 3), nor = new Float32Array(pos.length);
+  const spacing = Math.max(2 * Math.PI / sectors, Math.expm1(Math.log(1500 / 72) / rings));
   for (let j = 0; j <= rings; j++) {
     const r = 72 * Math.pow(1500 / 72, j / rings);
+    const footprint = r * spacing * sm(115, 240, r);
     for (let i = 0; i <= sectors; i++) {
       const a = (i % sectors) / sectors * Math.PI * 2, x = Math.cos(a) * r, z = Math.sin(a) * r;
       const inside = Math.abs(x) < edge && Math.abs(z) < edge;
-      pos.set([x, H(x, z) - (inside ? 4 : 0), z], 3 * (j * stride + i));
+      pos.set([x, H(x, z, footprint) - (inside ? 4 : 0), z], 3 * (j * stride + i));
     }
   }
   // Take tangents from the actual mesh, wrapping at its angular seam; the skyline and its lighting
@@ -1456,8 +1495,11 @@ const STACK_GEO = rockMesh(9.31, 4, true, true), STACK_S = [4.05, 4.8, 3.5];
 // terrain height and slope from the near mesh (fast, for a million blades)
 function nearH(near, x, z) {
   const { S, half } = NEAR, st = 2 * half / S, fx = Math.min(S - 1e-3, Math.max(0, (x + half) / st)), fz = Math.min(S - 1e-3, Math.max(0, (z + half) / st));
-  const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j, P = near.pos, h = (a, b) => P[(b * (S + 1) + a) * 3 + 1];
-  return (h(i, j) * (1 - u) + h(i + 1, j) * u) * (1 - w) + (h(i, j + 1) * (1 - u) + h(i + 1, j + 1) * u) * w;
+  const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j;
+  const stride = 3 * (S + 1), k = j * stride + 3 * i + 1, P = near.pos;
+  const right = P[k + 3], up = P[k + stride];
+  if (u + w <= 1) return P[k] * (1 - u - w) + right * u + up * w;
+  return P[k + stride + 3] * (u + w - 1) + right * (1 - w) + up * (1 - u);
 }
 function nearNy(near, x, z) {
   const { S, half } = NEAR, st = 2 * half / S, i = Math.min(S, Math.max(0, Math.round((x + half) / st))), j = Math.min(S, Math.max(0, Math.round((z + half) / st)));
@@ -1475,13 +1517,15 @@ function scatter(near) {
   // and its height both fall off with slope, the shore, height and the outcrop, broken up by noise, so a meadow thins
   // out into its edges. Patches of tall grass ride a slow noise.
   const n = Math.ceil(Math.sqrt(4 * HALF * HALF * GRASS_DENSITY)), cellG = 2 * HALF / n;
-  const G = [], R = [];
+  const G = new Float32Array(n * n * 4), R = new Float32Array(G.length);
+  let used = 0;
   for (let gz = 0; gz < n; gz++) for (let gx = 0; gx < n; gx++) {
-    const x = (gx + bladeRand()) * cellG - HALF, z = (gz + bladeRand()) * cellG - HALF, y = nearH(near, x, z), ld = lakeD(x, z);
+    const x = (gx + bladeRand()) * cellG - HALF, z = (gz + bladeRand()) * cellG - HALF, y = nearH(near, x, z);
     const waterY = waterLevel(x, z);
     if (trailCover(x, z) > 0.18 || y < waterY - 0.12) continue;
     let hm;
-    if (ld > 10.0 && ld < 12.6 && y > -0.38 && y < 0.55) { if (bladeRand() > 0.2) continue; hm = 1.9 + bladeRand() * 1.1; }   // reeds: the shoreline and the shallows
+    const ld = y > -0.38 && y < 0.55 ? lakeD(x, z) : 0;
+    if (ld > 10.0 && ld < 12.6) { if (bladeRand() > 0.2) continue; hm = 1.9 + bladeRand() * 1.1; }   // reeds: the shoreline and the shallows
     else {
       const ny = nearNy(near, x, z), ragged = 0.75 + 0.5 * vnoise(x * 0.9 + 7, z * 0.9 - 3);
       const grow = sm(0.2, 0.55, y) * (1 - sm(9, 14, y)) * sm(0.62, 0.84, ny) * (1 - 0.92 * outcrop(x, z)) * Math.min(1, ragged);
@@ -1495,7 +1539,9 @@ function scatter(near) {
       if (hash2(gx, gz) > 0.035 + 0.965 * growth) continue;
       hm *= 0.20 + 0.80 * growth;
     }
-    G.push(x, z, y - 0.015, seed); R.push(angle, height, tint, hm);
+    G[used] = x; G[used + 1] = z; G[used + 2] = y - 0.015; G[used + 3] = seed;
+    R[used] = angle; R[used + 1] = height; R[used + 2] = tint; R[used + 3] = hm;
+    used += 4;
   }
 
   // rocks: clusters with one big stone each, a broken field on the outcrop, monoliths on the rim, the sea stack, stones
@@ -1506,7 +1552,8 @@ function scatter(near) {
   const add = (v, x, z, sx, sy, sz, sink, rand = r) => {
     const yaw = rand() * 6.28, tint = rand();
     if (v !== 3 && trailDistance(x, z) < 0.85 + 1.2 * Math.max(sx, sz)) return;
-    rv[v].push(x, H(x, z) - sink, z, yaw); rs[v].push(sx, sy, sz, tint);
+    const base = v === 3 ? nearH(near, x, z) : H(x, z);
+    rv[v].push(x, base - sink, z, yaw); rs[v].push(sx, sy, sz, tint);
   };
   const cluster = (cx, cz, big, m) => {
     for (let q = 0; q < m; q++) {
@@ -1613,7 +1660,7 @@ function scatter(near) {
     const cx = (r() * 2 - 1) * (HALF - 6), cz = (r() * 2 - 1) * (HALF - 6);
     for (let k = 0, m = 3 + Math.floor(r() * 5); k < m; k++) sapling(cx + (r() - 0.5) * 6, cz + (r() - 0.5) * 6);
   }
-  return { G: new Float32Array(G), R: new Float32Array(R), rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), crystalSites, trees: new Float32Array(trees) };
+  return { G: G.subarray(0, used), R: R.subarray(0, used), rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), crystalSites, trees: new Float32Array(trees) };
 }
 
 // ---------------------------------------------------------------- junipers
@@ -2029,7 +2076,8 @@ function outsideView(planes, tile, width, depth = width) {
 
 // ---------------------------------------------------------------- build the scene
 const loc = (p, n) => gl.getAttribLocation(p, n);
-const { near, sc, vWood, woodIndices, leaves, grass, plants, coilView, lanternView, sailwings } = buildValley();
+const highSites = highCanopySites(H, vnoise, rng(914), HALF, trailCover, waterLevel);
+const { near, sc, vWood, woodIndices, leaves, grass, plants, coilView, lanternView, sailwings, heightRange } = buildValley();
 const far = uploadTerrain(terrainFar()), wm = uploadWater(waterMesh());
 function uploadTerrain(mesh) {
   const attrs = [{ loc: loc(TERRAIN, 'aPos'), size: 3, data: mesh.pos }, { loc: loc(TERRAIN, 'aNor'), size: 3, data: mesh.nor }];
@@ -2057,13 +2105,13 @@ function buildValley() {
   const pl = plantScatter(sc, near);
   const plants = new Tiled(PLANT, { aP: pl.P, aF: pl.F, aS2: pl.S2 },
     i => [pl.P[i * 4], pl.P[i * 4 + 1], pl.P[i * 4 + 2]], i => 0.2 + 1.8 * pl.P[i * 4 + 3] * pl.F[i * 4 + 1], 25, 24, 0.12);
+  const heightRange = bakeGroundLight(gl, EXTENT, (x, z) => nearH(near, x, z), waterLevel, sc, highSites.instances, pl);
   bakeCanopy(gl, forest, EXTENT);
   bakeFloraSpill(pl);
   const sailwings = createSailwings({ gl, program, vao, worldVertex: WORLD_VS, groundAt: (x, z) => nearH(near, x, z), waterLevel, riverX, sc, random: rng(971) });
-  return { near: uploadTerrain(near), sailwings, sc, vWood, woodIndices: forest.idx.length, leaves, grass, plants, coilView: plantView(pl, 3), lanternView: plantView(pl, 4) };
+  return { near: uploadTerrain(near), heightRange, sailwings, sc, vWood, woodIndices: forest.idx.length, leaves, grass, plants, coilView: plantView(pl, 3), lanternView: plantView(pl, 4) };
 }
 const crystals = growCrystals(sc.crystalSites);
-const highSites = highCanopySites(H, vnoise, rng(914), HALF, trailCover, waterLevel);
 const highTrees = uploadHighCanopy(highCanopyMesh(rng(9942)), highSites);
 function uploadHighCanopy(mesh, sites) {
   const attrs = [
@@ -2240,38 +2288,57 @@ void main(){
   }
   float foreground = 1. - 0.72 * texture(tMap, vUv).a;
   o = vec4(uRayCol * scattered * (uVis / steps) * foreground, 1.); }`);
-const P_FINAL = program(FSQ, `uniform sampler2D tScene, tBloom, tRays; uniform float uBloom, uRays, uHDRf; in vec2 vUv; out vec4 o;
+const P_TEMPORAL = program(FSQ, temporalFragment), P_MIST = program(FSQ, mistFragment);
+const P_FINAL = program(FSQ, viewRay + historyColor + `uniform sampler2D tScene, tBloom, tRays, tMist; uniform float uBloom, uRays; in vec2 vUv; out vec4 o;
 vec3 acesF(vec3 x){ return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0., 1.); }
+// Bilateral upsampling keeps air behind a nearby leaf or bank on its own side of the edge.
+vec4 valleyMist(){
+  vec2 size = vec2(textureSize(tMist, 0)), pixel = vUv * size - 0.5, f = fract(pixel);
+  vec2 base = floor(pixel);
+  float here = min(32., viewDepth(texture(tDepth, vUv).r)), sum = 0.;
+  vec4 fog = vec4(0.);
+  for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) {
+    vec2 uv = (base + vec2(i,j) + 0.5) / size;
+    float other = min(32., viewDepth(texture(tDepth, uv).r));
+    float d = abs(other - here) / (0.18 + 0.08 * here);
+    float w = (i == 0 ? 1.-f.x : f.x) * (j == 0 ? 1.-f.y : f.y) / (1. + d*d);
+    vec4 sampleLight = texture(tMist, uv);
+    if (uHDR < 0.5) sampleLight.rgb *= sampleLight.rgb;
+    fog += sampleLight * w; sum += w;
+  }
+  return mix(vec4(0., 0., 0., 1.), fog / max(0.00001, sum), smoothstep(0.015, 0.17, sum));
+}
 void main(){
-  vec3 c = texture(tScene, vUv).rgb, b = texture(tBloom, vUv).rgb, r = texture(tRays, vUv).rgb;
-  if (uHDRf > 0.5) c = pow(acesF(c + b * uBloom + r * uRays), vec3(1. / 2.2));
-  else c = clamp(c + b * uBloom * 0.7 + r * uRays * 0.6, 0., 1.);
+  vec3 c = unpackLight(texture(tScene, vUv).rgb), b = texture(tBloom, vUv).rgb, r = texture(tRays, vUv).rgb;
+  vec4 fog = valleyMist();
+  if (uHDR > 0.5) c = pow(acesF((c + b * uBloom + r * uRays) * fog.a + fog.rgb), vec3(1. / 2.2));
+  else c = pow(clamp(pow(clamp(c + b * uBloom * 0.7 + r * uRays * 0.6, 0., 1.), vec3(2.2)) * fog.a + fog.rgb, 0., 1.), vec3(1./2.2));
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722)); c = mix(vec3(l), c, 1.15);
   vec2 q = vUv - 0.5; c *= 1. - dot(q, q) * 0.55;
   c += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.;
   o = vec4(c, 1.); }`);
 
-function colorTex(w, h) {
+function colorTex(w, h, format = CFMT, type = CTYPE) {
   const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.texImage2D(gl.TEXTURE_2D, 0, CFMT, w, h, 0, gl.RGBA, CTYPE, null);
+  gl.texImage2D(gl.TEXTURE_2D, 0, format, w, h, 0, gl.RGBA, type, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.bindTexture(gl.TEXTURE_2D, null);
   return t;
 }
-function fboFor(t, depthRb) {
+function fboFor(t, depth) {
   const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
-  if (depthRb) gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthRb);
+  if (depth) gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depth, 0);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null); return f;
 }
-const post = { w: 0, h: 0, ms: null };
+const post = { w: 0, h: 0, ms: null, previous: null, write: 0 };
 function ensurePost(w, h) {
   if (post.w === w && post.h === h) return;
   if (post.res) {
-    for (const f of [post.ms, post.resF, ...post.mips.map((m) => m.f), post.rays.f]) if (f) gl.deleteFramebuffer(f);
-    for (const t of [post.res, ...post.mips.map((m) => m.t), post.rays.t]) gl.deleteTexture(t);
-    for (const rb of [post.msC, post.msD, post.dRb]) if (rb) gl.deleteRenderbuffer(rb);
+    for (const f of [post.ms, post.resF, ...post.mips.map((m) => m.f), post.rays.f, post.mist.f, ...post.history.map(m => m.f)]) if (f) gl.deleteFramebuffer(f);
+    for (const t of [post.res, ...post.mips.map((m) => m.t), post.rays.t, post.depth, post.mist.t, ...post.history.map(m => m.t)]) gl.deleteTexture(t);
+    for (const rb of [post.msC, post.msD]) if (rb) gl.deleteRenderbuffer(rb);
   }
   post.w = w; post.h = h; post.ms = null;
   post.res = colorTex(w, h);
@@ -2286,12 +2353,19 @@ function ensurePost(w, h) {
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
-  post.dRb = null;
-  if (!post.ms) {
-    post.dRb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, post.dRb);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
-  }
-  post.resF = fboFor(post.res, post.dRb);
+  gl.activeTexture(gl.TEXTURE3); post.depth = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, post.depth);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, w, h);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  post.resF = fboFor(post.res, post.depth);
+  post.previous = null; post.write = 0;
+  post.history = Array.from({ length: 2 }, () => {
+    const t = colorTex(w, h, gl.RGBA8, gl.UNSIGNED_BYTE);
+    return { t, f: fboFor(t) };
+  });
+  const mw = Math.max(1, Math.ceil(w / 4)), mh = Math.max(1, Math.ceil(h / 4));
+  const mt = colorTex(mw, mh);
+  post.mist = { t: mt, f: fboFor(mt), w: mw, h: mh };
   post.mips = [];
   for (let i = 1; i <= 2; i++) { const mw = Math.max(2, w >> i), mh = Math.max(2, h >> i), t = colorTex(mw, mh); post.mips.push({ t, f: fboFor(t), w: mw, h: mh }); }
   const rw = Math.max(2, w >> 1), rh = Math.max(2, h >> 1), rt = colorTex(rw, rh); post.rays = { t: rt, f: fboFor(rt), w: rw, h: rh };
@@ -2300,7 +2374,7 @@ function pass(prog, fbo, w, h, tex) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.viewport(0, 0, w, h); gl.useProgram(prog);
   if (tex) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(prog.u('tMap'), 4); }
 }
-function postProcess(VP, eye, b, w, h) {
+function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
   gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND); gl.depthMask(false); gl.bindVertexArray(null);
   pass(P_PRE, post.mips[0].f, post.mips[0].w, post.mips[0].h, post.res);
   gl.uniform2f(P_PRE.u('uTexel'), 1 / w, 1 / h); gl.uniform1f(P_PRE.u('uThr'), HDR ? 1.45 : 0.90); gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -2321,11 +2395,31 @@ function postProcess(VP, eye, b, w, h) {
     gl.uniform1f(P_RAYS.u('uVis'), vis); gl.uniform3fv(P_RAYS.u('uRayCol'), [1.0 * (1 - night) + 0.25 * night, 0.62 * (1 - night) + 0.38 * night, 0.36 * (1 - night) + 0.8 * night]);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
+  const history = post.history[post.write];
+  gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, post.depth);
+  for (const p of [P_MIST, P_TEMPORAL]) {
+    if (p === P_MIST) pass(p, post.mist.f, post.mist.w, post.mist.h);
+    else pass(p, history.f, w, h, post.res);
+    common(p, eye, VP, 1, t);
+    gl.uniform1i(p.u('tDepth'), 15); gl.uniform2fv(p.u('uDepthRange'), depthRange);
+    gl.uniform3f(p.u('uRayRight'), b.r[0]*tanX, b.r[1]*tanX, b.r[2]*tanX);
+    gl.uniform3f(p.u('uRayUp'), b.u[0]*tanY, b.u[1]*tanY, b.u[2]*tanY);
+    gl.uniform3fv(p.u('uForward'), b.f); gl.uniform2fv(p.u('uJitter'), jitter.offset);
+    if (p === P_TEMPORAL) {
+      gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, post.history[1-post.write].t); gl.uniform1i(p.u('tHistory'), 5);
+      gl.uniform1i(p.u('uReuse'), jitter.phase >= 0);
+      gl.uniformMatrix4fv(p.u('uPreviousVP'), false, post.previous?.vp || VP);
+    }
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  post.write = 1 - post.write;
   pass(P_FINAL, null, w, h, null);
-  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, post.res); gl.uniform1i(P_FINAL.u('tScene'), 4);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, post.mist.t); gl.uniform1i(P_FINAL.u('tMist'), 3);
+  gl.uniform1i(P_FINAL.u('tDepth'), 15); gl.uniform2fv(P_FINAL.u('uDepthRange'), depthRange);
+  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, history.t); gl.uniform1i(P_FINAL.u('tScene'), 4);
   gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, post.mips[0].t); gl.uniform1i(P_FINAL.u('tBloom'), 5);
   gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, post.rays.t); gl.uniform1i(P_FINAL.u('tRays'), 6);
-  gl.uniform1f(P_FINAL.u('uBloom'), 0.085); gl.uniform1f(P_FINAL.u('uRays'), rayStrength); gl.uniform1f(P_FINAL.u('uHDRf'), HDR ? 1 : 0);
+  gl.uniform1f(P_FINAL.u('uBloom'), 0.085); gl.uniform1f(P_FINAL.u('uRays'), rayStrength); gl.uniform1f(P_FINAL.u('uHDR'), HDR ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
 }
@@ -2344,7 +2438,7 @@ let rippleCount = 0;
 let simT = 0;
 
 function setMode(m) {
-  mode = m; ripples.length = 0;
+  mode = m; ripples.length = 0; post.previous = null;
   acc = { frames: 0, t: 0, ms: 0, up: 0 }; wall = 0;
   for (const f of [glowF, groundF, wearF]) f.set(m);
 }
@@ -2422,7 +2516,7 @@ function camBasis(yaw, pitch) {
   return { f, r, u };
 }
 function viewProj(eye, b, fov, aspect) {
-  const { f, r, u } = b, n = 0.05, fr = 3000, t = 1 / Math.tan(fov / 2);
+  const { f, r, u } = b, [n, fr] = depthRange, t = 1 / Math.tan(fov / 2);
   const V = [r[0], u[0], -f[0], 0, r[1], u[1], -f[1], 0, r[2], u[2], -f[2], 0,
     -(r[0] * eye[0] + r[1] * eye[1] + r[2] * eye[2]), -(u[0] * eye[0] + u[1] * eye[1] + u[2] * eye[2]), f[0] * eye[0] + f[1] * eye[1] + f[2] * eye[2], 1];
   const P = [t / aspect, 0, 0, 0, 0, t, 0, 0, 0, 0, (fr + n) / (n - fr), -1, 0, 0, 2 * fr * n / (n - fr), 0];
@@ -2593,7 +2687,7 @@ function common(p, eye, VP, mirror, t) {
   if (p.worldFrame === undefined) {
     gl.uniform1i(p.u('uShadows'), 9); gl.uniform1i(p.u('uFloraSpill'), 10);
     gl.uniform1i(p.u('uClouds'), 11); gl.uniform1i(p.u('uCanopy'), 12);
-    gl.uniform1i(p.u('uBendTex'), 13);
+    gl.uniform1i(p.u('uBendTex'), 13); gl.uniform1i(p.u('uValleyGround'), 14); gl.uniform2fv(p.u('uGroundRange'), heightRange);
     gl.uniform1i(p.u('uGlow'), 0); gl.uniform1i(p.u('uGround'), 1); gl.uniform1i(p.u('uWear'), 7);
     gl.uniform1i(p.u('uMilky'), 8); gl.uniform1i(p.u('uRefl'), 2);
     gl.uniformMatrix4fv(p.u('uLightVP[0]'), false, valleyShadows.matrices);
@@ -2660,7 +2754,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   gl.depthMask(false); gl.depthFunc(gl.LEQUAL);
   gl.bindVertexArray(null); // The sky only uses gl_VertexID.
   common(SKY, eye, VP, mirror, t);
-  gl.uniform3fv(SKY.u('uR'), b.r); gl.uniform3fv(SKY.u('uU'), b.u); gl.uniform3fv(SKY.u('uF'), b.f); gl.uniform2f(SKY.u('uTan'), opts.tanX, opts.tanY);
+  gl.uniform2fv(SKY.u('uJitter'), opts.jitter); gl.uniform3fv(SKY.u('uR'), b.r); gl.uniform3fv(SKY.u('uU'), b.u); gl.uniform3fv(SKY.u('uF'), b.f); gl.uniform2f(SKY.u('uTan'), opts.tanX, opts.tanY);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   // Each star pixel inherits the transmittance written by the actual globe, moon, ring and cloud shaders.
   if (night > 0) {
@@ -2671,15 +2765,20 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   gl.depthMask(true); gl.depthFunc(gl.LESS);
 }
 
-function render(t, camOverride) {
+function render(t, camOverride, glowTexture = texGlow) {
   const dpr = Math.min(devicePixelRatio || 1, touch ? 1.5 : 2) * renderScale;
-  const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
+  const w = Math.max(1, Math.floor(canvas.clientWidth * dpr)), h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   const fov = 1.15, aspect = w / h, tanY = Math.tan(fov / 2), tanX = tanY * aspect;
   const cam = camOverride || { eye: [player.x, player.y + 1.65 + player.bob, player.z], yaw: player.yaw, pitch: player.pitch };
   const b = camBasis(cam.yaw, cam.pitch);
-  const VP = viewProj(cam.eye, b, fov, aspect);
-  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texGlow);
+  ensurePost(w, h);
+  const jitter = cameraJitter(post.previous, cam.eye, b.f, t, w, h);
+  const stableVP = viewProj(cam.eye, b, fov, aspect), VP = stableVP.slice();
+  for (let i = 0; i < 16; i += 4) {
+    VP[i] += jitter.offset[0] * VP[i + 3]; VP[i + 1] += jitter.offset[1] * VP[i + 3];
+  }
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, glowTexture);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texGround);
   gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, texWear);
   if (brush.dirty) {
@@ -2707,14 +2806,13 @@ function render(t, camOverride) {
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, reflFbo); gl.viewport(0, 0, rw, rh);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    drawScene([cam.eye[0], 2 * reflectionLevel - cam.eye[1], cam.eye[2]], b, reflectionVP, -1, t, { tanX, tanY, grass: false, px: rh / 800 });
+    drawScene([cam.eye[0], 2 * reflectionLevel - cam.eye[1], cam.eye[2]], b, reflectionVP, -1, t, { tanX, tanY, grass: false, px: rh / 800, jitter: jitter.offset });
     gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.DEPTH_ATTACHMENT]);
   }
-  ensurePost(w, h);
   gl.bindFramebuffer(gl.FRAMEBUFFER, post.ms || post.resF); gl.viewport(0, 0, w, h);
   gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  drawScene(cam.eye, b, VP, 1, t, { tanX, tanY, grass: true, px: h / 800 });
-  gl.enable(gl.BLEND); gl.depthMask(false);
+  drawScene(cam.eye, b, VP, 1, t, { tanX, tanY, grass: true, px: h / 800, jitter: jitter.offset });
+  gl.enable(gl.BLEND);
   if (waterInView) {
     gl.colorMask(true, true, true, false);
     common(WATERP, cam.eye, VP, 1, t);
@@ -2724,6 +2822,7 @@ function render(t, camOverride) {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.bindVertexArray(wm.vao); gl.drawElements(gl.TRIANGLES, wm.count, gl.UNSIGNED_INT, 0);
   }
+  gl.depthMask(false);
   // particles: additive colour, and they cut themselves out of the sky mask so the rays never streak them
   gl.colorMask(true, true, true, true); gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE_MINUS_SRC_ALPHA);
   common(POINTS, cam.eye, VP, 1, t); gl.uniform1f(POINTS.u('uScale'), h * 0.9); gl.uniform2f(POINTS.u('uCamXZ'), cam.eye[0], cam.eye[2]);
@@ -2740,14 +2839,14 @@ function render(t, camOverride) {
     }
   }
   gl.depthMask(true); gl.disable(gl.BLEND); gl.bindVertexArray(null); gl.colorMask(true, true, true, true);
-  gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.DEPTH_ATTACHMENT]);
   if (post.ms) {
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, post.ms); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, post.resF);
-    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-    gl.invalidateFramebuffer(gl.READ_FRAMEBUFFER, [gl.COLOR_ATTACHMENT0]);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+    gl.invalidateFramebuffer(gl.READ_FRAMEBUFFER, [gl.COLOR_ATTACHMENT0, gl.DEPTH_ATTACHMENT]);
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
   }
-  postProcess(VP, cam.eye, b, w, h);
+  postProcess(VP, cam.eye, b, w, h, t, tanX, tanY, jitter);
+  post.previous = { vp: stableVP, eye: cam.eye.slice(), forward: b.f, time: t, phase: jitter.phase };
 }
 
 // ---------------------------------------------------------------- loop
@@ -2941,6 +3040,12 @@ function plantView(pl, type) {
   const x = pl.P[i * 4] + 1.0, z = pl.P[i * 4 + 2] + 1.0;
   return { eye: [x, Math.max(H(x, z), pl.P[i * 4 + 1]) + 1.2, z], yaw: -0.785, pitch: -0.62, motes: false };
 }
+function renderFixture(view, t, glowTexture = texGlow) {
+  post.previous = null;
+  const cam = { ...(VIEWS[view] || VIEWS.shore), motes: view === 'planet' };
+  // Start all three exposures at the same subpixel phase and frozen simulation tick.
+  for (let sample = 0; sample < 5; sample++) render(t, cam, glowTexture);
+}
 function scripted(m, frames = 900, view = 'shore') {
   setMode(m); started = false; rain = false; stones.length = 0;
   brush.reset();
@@ -2965,7 +3070,7 @@ function scripted(m, frames = 900, view = 'shore') {
   const ms = performance.now() - t0;
   for (const l of layers()) l.upload();
   ripples.length = 0;
-  render(simT, { ...(VIEWS[view] || VIEWS.shore), motes: view === 'planet' });
+  renderFixture(view, simT);
   const st = layers().map((l) => l.stats());
   const stepped = st.reduce((sum, s) => sum + s.stepped, 0);
   return { mode: MODE_NAME[m], frames, ms, stepped, violations: st.reduce((n, s) => n + s.violations, 0), blocks: st.map((s) => s.blocks), bytes: st.reduce((n, s) => n + s.bytes, 0) };
@@ -2984,9 +3089,20 @@ function scripted(m, frames = 900, view = 'shore') {
   if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, night, switch engine, readout</span>'; }
   window.__game = { setNight: (v) => { night = nightTarget = v; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
-    window.__game.verify = async (view) => {
+    const darkField = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, darkField);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, 1, 1);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    window.__game.verify = async (view = 'river', { night: lighting = 1 } = {}) => {
       const { verify } = await import('./verify.js');
-      return verify({ gl, layers, scripted, denseMode: DENSE, boxelMode: BOXEL, size: N, tolerance: TOLERANCE }, view);
+      const savedNight = night, savedTarget = nightTarget;
+      night = nightTarget = lighting;
+      try {
+        return verify({ gl, layers, scripted, darkControl: () => renderFixture(view, simT, darkField),
+          denseMode: DENSE, boxelMode: BOXEL, size: N, tolerance: TOLERANCE }, view);
+      } finally {
+        night = savedNight; nightTarget = savedTarget; renderFixture(view, simT);
+      }
     };
     document.documentElement.classList.remove('intro'); document.getElementById('intro').hidden = true; document.getElementById('pad').hidden = true; document.getElementById('cross').hidden = true; return; }
   bindInput();

@@ -83,10 +83,13 @@ Grass and low leaves part as you pass. Wading, skimming sailwings and thrown sto
 across the lake and downstream with the river current. Disturb the moss with a footstep or
 glowstone and its filaments pick up the local glow field. Cloud shadows cross the valley by
 day, and the pigments in leaves and wetland flowers set the colour of their light at night.
+Mist gathers over wet ground and water. At night, a fresh disturbance lights the mist above it
+from the same Boxel field that lights the surface.
 Four worlds share the same stellar light direction above the mountains. Press **N** for night
 and **M** to restart the fields under the other engine. Touch controls offer both actions.
 
 The browser renderer uses WebGL2 and the Rust field engine compiled to WebAssembly.
+Pages builds the engine from the published revision with Rust 1.92.0 and checks its native replay before deployment.
 The [river comparison](docs/results.md#the-picture) includes a repeatable full-map field check.
 
 ```sh
@@ -138,16 +141,16 @@ fog of war are the same three calls with different numbers.
 |---|---|
 | `src/` | the engine: `cone` (the computed lattice cone), `ledger` (integer block ledger), `field` (events, window, pages, districts), `grid` (the full computation, as reference), `spec` |
 | `tests/` | the promise against the full computation, on random histories; the same bits on one thread and on many; the demo's modules, under Node |
-| `.github/` | the checks every push runs (tests, lints, and one replay hash across native code, a fresh wasm build and the wasm the demo ships) and the Pages deploy |
+| `.github/` | the engine checks, browser picture regression, native/wasm replay and Pages deployment |
 | `ffi/` | the C ABI, its header, and the JavaScript binding |
-| `bench/` | native benchmark fixtures and the wasm replay |
+| `bench/` | native benchmark fixtures, wasm replay and browser picture check |
 | `demo/` | Tarnished Promise |
 | `integrations/bevy/` | standalone Bevy plugin: fields as components, windows as textures |
 | `docs/` | [the certificate](docs/certificate.md), [results](docs/results.md) |
 
 ```sh
 cargo test --release
-node --test tests/field-texture.mjs             # encoded tile updates and cache invalidation
+node --test tests/*.mjs                        # demo modules and picture checks
 cargo run --release -p boxel-bench -- cone      # compare lattice footprint counts with the preprint
 cargo run --release -p boxel-bench -- acre      # the demo's fields: boxel, dense, guessing
 cargo run --release -p boxel-bench -- world     # open worlds

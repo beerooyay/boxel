@@ -83,9 +83,11 @@ storm, sparse bookkeeping outweighed the saving in cell updates.
 The river fixture runs 900 frames of walking, impacts, spore rain, drifting river pods,
 and sailwing skims, covering 15 seconds of simulation. The dense and sparse engines receive
 the same events. At the final tick, the verifier compares all 1,048,576 cells in each of
-three fields, including uniform rain. It also compares the two rendered RGB images.
+three fields, including uniform rain. The picture check renders the same night exposure with
+each engine, then renders Boxel once more with a zero glow texture. All three use the same
+water, moisture, camera, simulation tick and five-frame temporal warmup.
 
-Chrome on an Apple M4 Max, 720 × 480 pixels, both day and night:
+Chrome on an Apple M4 Max at 720 × 480 pixels with the nighttime river fixture gave the following results.
 
 | measurement | Boxel | dense |
 |---|---:|---:|
@@ -104,15 +106,19 @@ its field's reported bound and each bound fit the requested 1/255 tolerance. Bot
 recorded zero block retirement audit failures. Pixel differences are a separate measurement
 that also depends on camera, viewport, shading and tone mapping.
 
-To repeat, open `/demo/?test` at 720 × 480 CSS pixels with device scale 1, then run:
+The Boxel and dense pictures measured 68.48 dB PSNR. Only 0.029% of pixels differed by
+more than two 8-bit levels in any channel. Removing glow changed 20.57% of pixels by that
+amount, with a peak change of 206 levels. CI requires scene contrast, a visible response
+to removing glow, at least 50 dB between engines and at most 1% of pixels over two levels.
+
+To repeat, open `/demo/?test` at 720 × 480 CSS pixels with device scale 1 and run
 
 ```js
-__game.setNight(1);
 await __game.verify('river');
 ```
 
 The result includes field errors and bounds, framebuffer PSNR, peak RGB channel difference,
-and the share of pixels differing by more than two levels. The session timer covers the
+and the share of pixels differing by more than two levels for both comparisons. The session timer covers the
 simulation loop. Texture upload, rendering and readback occur outside that timer.
 The field storage estimates exclude the renderer and the rest of the browser.
 

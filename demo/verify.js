@@ -1,5 +1,5 @@
 // Available through __game.verify() on the deterministic ?test page.
-export function verify({ gl, layers, scripted, denseMode, boxelMode, size, tolerance }, view = 'river') {
+export function verify({ gl, layers, scripted, darkControl, denseMode, boxelMode, size, tolerance }, view = 'river') {
   const pixels = () => {
     const rgba = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
     gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
@@ -35,6 +35,20 @@ export function verify({ gl, layers, scripted, denseMode, boxelMode, size, toler
   });
   const maxFieldErrors = fields.map(({ largestDeficit, largestExcess }) => Math.max(largestDeficit, largestExcess));
 
+  darkControl();
+  const picture = checkPicture(reference, image, pixels());
+  const glError = gl.getError();
+  return {
+    dense, boxel, fields, maxFieldErrors, glError,
+    withinBound: fields.every(({ bound, largestDeficit, largestExcess }) => largestExcess === 0 && largestDeficit <= bound),
+    boundWithinTolerance: fields.every(({ bound }) => bound <= tolerance),
+    withinTolerance: maxFieldErrors.every(error => error <= tolerance),
+    width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
+    ...picture, picturePass: glError === gl.NO_ERROR && picture.picturePass,
+  };
+}
+
+function compareRGB(reference, image) {
   let squaredError = 0, peak = 0, overTwo = 0;
   for (let i = 0; i < image.length; i += 4) {
     let largest = 0;
@@ -47,14 +61,24 @@ export function verify({ gl, layers, scripted, denseMode, boxelMode, size, toler
     if (largest > 2) overTwo++;
   }
   const pixelCount = image.length / 4;
-  const glError = gl.getError();
-  return {
-    dense, boxel, fields, maxFieldErrors, glError,
-    withinBound: fields.every(({ bound, largestDeficit, largestExcess }) => largestExcess === 0 && largestDeficit <= bound),
-    boundWithinTolerance: fields.every(({ bound }) => bound <= tolerance),
-    withinTolerance: maxFieldErrors.every(error => error <= tolerance),
-    width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
-    psnr: squaredError === 0 ? Infinity : 10 * Math.log10(255 ** 2 * pixelCount * 3 / squaredError),
-    peak, percentOverTwo: 100 * overTwo / pixelCount,
-  };
+  return { psnr: squaredError === 0 ? Infinity : 10 * Math.log10(255 ** 2 * pixelCount * 3 / squaredError),
+    peak, percentOverTwo: 100 * overTwo / pixelCount };
+}
+
+function contrast(rgba) {
+  let sum = 0, squares = 0;
+  for (let i = 0; i < rgba.length; i += 4) {
+    const y = 0.2126 * rgba[i] + 0.7152 * rgba[i + 1] + 0.0722 * rgba[i + 2];
+    sum += y; squares += y * y;
+  }
+  const n = rgba.length / 4;
+  return Math.sqrt(Math.max(0, squares / n - (sum / n) ** 2));
+}
+
+export function checkPicture(dense, boxel, dark) {
+  const comparison = compareRGB(dense, boxel), control = compareRGB(boxel, dark);
+  const sceneContrast = Math.min(contrast(dense), contrast(boxel));
+  const fieldVisible = control.peak >= 8 && control.percentOverTwo >= 0.1;
+  return { ...comparison, control, sceneContrast, fieldVisible,
+    picturePass: sceneContrast >= 4 && fieldVisible && comparison.psnr >= 50 && comparison.percentOverTwo <= 1 };
 }

@@ -3,7 +3,7 @@ name: Publish Tarnished Promise
 on:
   push:
     branches: [main]
-    paths: ['demo/**', 'ffi/boxel.js', '.github/workflows/pages.yml']
+    paths: ['demo/**', 'src/**', 'ffi/**', 'Cargo.toml', 'Cargo.lock', '.cargo/config.toml', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -18,10 +18,19 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
+      - name: Build the field engine from this revision and verify its replay
+        env:
+          RUSTUP_TOOLCHAIN: 1.92.0
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
+          cargo build --locked --release --target wasm32-unknown-unknown -p boxel-ffi
+          cargo run --locked --release -p boxel-bench -- replay "$RUNNER_TEMP/tarn-replay.json"
+          node bench/replay.mjs "$RUNNER_TEMP/tarn-replay.json" target/wasm32-unknown-unknown/release/boxel_ffi.wasm
       - name: Stage the browser demo and its WASM binding
         run: |
           mkdir -p site/ffi
           cp -R demo site/demo
+          cp target/wasm32-unknown-unknown/release/boxel_ffi.wasm site/demo/boxel.wasm
           cp ffi/boxel.js site/ffi/
           sed 's|src="game.js"|src="./demo/game.js"|' demo/index.html > site/index.html
       - uses: actions/upload-pages-artifact@v5
