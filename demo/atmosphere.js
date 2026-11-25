@@ -31,14 +31,14 @@ vec3 skyBase(vec3 d){
 // RGB is incident scattered light. Alpha is transmission along this sightline.
 vec4 airAt(vec3 wp){
   vec3 d = wp - uCam; float dist = length(d);
-  float f = (1. - exp(-dist * mix(0.0027, 0.0017, uNight))) * (1. - 0.49 * smoothstep(0., 135., wp.y));
+  float f = (1. - exp(-dist * mix(0.00215, 0.0017, uNight))) * (1. - 0.49 * smoothstep(0., 135., wp.y));
   // rain thickens the air: the far ridges go first
   f = 1. - (1. - f) * exp(-dist * 0.0055 * uStorm);
   // Integrate exponential density between the eye and the surface. Looking
   // down from the summit and looking up from the river cross the same air.
   float eyeY = max(uCam.y, 0.), endY = max(wp.y, 0.), dy = (endY - eyeY) * 0.12;
   float column = abs(dy) < 0.01 ? exp(-0.06 * (eyeY + endY)) : (exp(-0.12 * eyeY) - exp(-0.12 * endY)) / dy;
-  float mist = (1. - exp(-dist * column * 0.017)) * mix(0.17, 0.30, uNight) * (1. + 1.3 * uStorm);
+  float mist = (1. - exp(-dist * column * 0.017)) * mix(0.145, 0.30, uNight) * (1. + 1.3 * uStorm);
   vec3 vd = normalize(vec3(d.x, max(d.y, 0.02 * dist), d.z));
   vec3 fc = skyBase(vd) * 0.75;
   // the haze glows where it lies between you and the star

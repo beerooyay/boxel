@@ -84,6 +84,10 @@ Grass and low leaves part as you pass. Wading, skimming sailwings and thrown sto
 across the lake and downstream with the river current. Disturb the moss with a footstep or
 glowstone and its filaments pick up the local glow field. Cloud shadows cross the valley by
 day, and the pigments in leaves and wetland flowers set the colour of their light at night.
+Spiral rosettes grow beside the paths and sheltered banks. Their folded leaves take a wet sheen
+from moisture at the root. At night a nearby glowstone picks out the branching veins. Sailwings
+glide between bursts of wingbeats, bank away from a nearby impact and skim again once settled.
+Water and foliage show through the thinner parts of their wings.
 Mist gathers over wet ground and water. At night, a fresh disturbance lights the mist above it
 from the same Boxel field that lights the surface.
 Four worlds share the same stellar light direction above the mountains. Press **N** for night

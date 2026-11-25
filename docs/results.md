@@ -92,8 +92,8 @@ Chrome on an Apple M4 Max at 720 × 480 pixels with the nighttime river fixture 
 
 | measurement | Boxel | dense |
 |---|---:|---:|
-| total cell updates | 141,048,064 | 5,662,310,400 |
-| field storage estimate at the last step | 3,479,712 bytes | 100,663,296 bytes |
+| total cell updates | 140,849,408 | 5,662,310,400 |
+| field storage estimate at the last step | 3,475,552 bytes | 100,663,296 bytes |
 | final active blocks (glow, moisture, wear) | 634, 253, 26 | 16,384 per field |
 
 | field | largest observed deficit | reported field bound |
@@ -107,8 +107,8 @@ its field's reported bound and each bound fit the requested 1/255 tolerance. Bot
 recorded zero block retirement audit failures. Pixel differences are a separate measurement
 that also depends on camera, viewport, shading and tone mapping.
 
-The Boxel and dense pictures measured 72.62 dB PSNR. Only 0.029% of pixels differed by
-more than two 8-bit levels in any channel. Removing glow changed 19.31% of pixels by that
+The Boxel and dense pictures measured 71.17 dB PSNR. Only 0.041% of pixels differed by
+more than two 8-bit levels in any channel. Removing glow changed 19.09% of pixels by that
 amount, with a peak change of 206 levels. CI requires scene contrast, a visible response
 to removing glow, at least 50 dB between engines and at most 1% of pixels over two levels.
 
@@ -139,6 +139,20 @@ last column compares a hash of every block at the end.
 Blocks only split across threads once there are 96 of them to each; below that, starting the
 threads costs more than they save. `tests/cores.rs` steps a storm on one thread and on eight and
 compares every block, bit for bit, as it goes.
+
+## Night sky shader
+
+Tarn generates its galaxy into an RGBA8 cube once at startup. Away from the galactic
+disc the shader bounds the contribution of the remaining gas, dust and pigment.
+When both ends of that range round to the same stored colour in all three channels,
+it writes that colour and skips the remaining noise samples. A margin of 0.02 of
+one colour level on either side guards the rounding boundary.
+
+At 1024 × 1024 per face on an Apple M4 Max, 3,138,315 of the 6,291,456 texels
+finished at the colour-range check. All six faces matched the full evaluation byte
+for byte in Chrome. At 512 × 512 per face, WebKit and Chrome with software rendering
+also matched on every texel. Open the demo with
+`?test` and run `await __game.verifySky()` to repeat it.
 
 ## Cross-platform replay
 

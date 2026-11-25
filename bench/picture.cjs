@@ -17,6 +17,11 @@ async function main() {
     assert.equal(await page.locator('#err').textContent(), '');
     const result = await page.evaluate(() => window.__game.verify('river'));
     console.log(JSON.stringify(result, null, 2));
+    const sky = await page.evaluate(() => window.__game.verifySky());
+    console.log('Sky cube', sky);
+    assert.equal(sky.glError, 0);
+    assert.ok(sky.referencePeak > 80 && sky.referenceFloor < 35, 'The reference sky must contain both galaxy light and dark sky');
+    assert.equal(sky.different, 0, 'Every stored sky texel must match the full evaluation');
     assert.deepEqual(errors, []);
     assert.equal(result.glError, 0);
     assert.ok(result.withinBound && result.boundWithinTolerance && result.withinTolerance);
