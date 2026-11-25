@@ -107,8 +107,8 @@ its field's reported bound and each bound fit the requested 1/255 tolerance. Bot
 recorded zero block retirement audit failures. Pixel differences are a separate measurement
 that also depends on camera, viewport, shading and tone mapping.
 
-The Boxel and dense pictures measured 71.31 dB PSNR. Only 0.039% of pixels differed by
-more than two 8-bit levels in any channel. Removing glow changed 19.06% of pixels by that
+The Boxel and dense pictures measured about 71 dB PSNR. About 0.04% of pixels differed by
+more than two 8-bit levels in any channel. Removing glow changed 19.1% of pixels by that
 amount, with a peak change of 206 levels. CI requires scene contrast, a visible response
 to removing glow, at least 50 dB between engines and at most 1% of pixels over two levels.
 
@@ -148,8 +148,10 @@ When both ends of that range round to the same stored colour in all three channe
 it writes that colour and skips the remaining noise samples. A margin of 0.02 of
 one colour level on either side guards the rounding boundary.
 
-At 1024 × 1024 per face on an Apple M4 Max, 3,114,724 of the 6,291,456 texels
-finished at the colour-range check. All six faces matched the full evaluation byte
+With the edge-on galaxy from `ae4c8c4` at 1024 × 1024 per face on an Apple M4 Max,
+207,915 of the 6,291,456 texels finished early when the shader used the entire
+possible range of the halo grain. Sampling that grain first raised the count to
+2,519,883. All six faces matched the full evaluation byte
 for byte in Chrome. At 512 × 512 per face, WebKit and Chrome with software rendering
 also matched on every texel. Open the demo with
 `?test` and run `await __game.verifySky()` to repeat it.
