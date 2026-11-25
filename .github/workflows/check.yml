@@ -1,0 +1,45 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust with clippy, rustfmt and the wasm target
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt --target wasm32-unknown-unknown
+          rustup default stable
+      - name: The promise, on one thread and on many
+        run: |
+          cargo test --release
+          cargo test --release --features parallel
+      - name: Lints and formatting
+        run: |
+          cargo clippy --release --all-targets -- -D warnings
+          cargo clippy --release --all-targets --features parallel -- -D warnings
+          cargo fmt --check
+      - name: The demo's modules
+        run: node --test tests/*.mjs
+      - name: Same bits in native code, a fresh wasm build and the wasm the demo ships
+        run: |
+          cargo build --release --target wasm32-unknown-unknown -p boxel-ffi
+          cargo run --release -p boxel-bench -- replay replay.json
+          node bench/replay.mjs replay.json target/wasm32-unknown-unknown/release/boxel_ffi.wasm
+          node bench/replay.mjs replay.json demo/boxel.wasm
+
+  bevy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: The Bevy plugin
+        run: cargo test --release --manifest-path integrations/bevy/Cargo.toml

@@ -2922,7 +2922,7 @@ const VIEWS = {
   ice: skyView(skyBodies.ice),
   summit: { eye: [summit[0], H(...summit) + 1.65, summit[1]], yaw: 2.48, pitch: -0.24 },
   trail: { eye: [trail[0][0], H(...trail[0]) + 1.65, trail[0][1]], yaw: Math.atan2(trail[1][0] - trail[0][0], trail[0][1] - trail[1][1]), pitch: 0.02 },
-  river: { eye: [riverX(-47) + 4, H(riverX(-47) + 4, -47) + 1.65, -47], yaw: -1.05, pitch: -0.36 },
+  river: { eye: [riverX(-40) + 2.6, H(riverX(-40) + 2.6, -40) + 2.4, -40], yaw: -0.25, pitch: -0.32 },
   shore: { eye: [SHORE_CAM[0], H(...SHORE_CAM) + 2.6, SHORE_CAM[1]], yaw: -0.95, pitch: -0.24, motes: true },
   planet: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 0.05, pitch: 0.12, motes: true },
   sunset: { eye: [12, H(12, 4) + 1.7, 4], yaw: -1.5, pitch: 0.08, motes: true },

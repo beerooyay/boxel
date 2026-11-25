@@ -137,7 +137,8 @@ fog of war are the same three calls with different numbers.
 | path | |
 |---|---|
 | `src/` | the engine: `cone` (the computed lattice cone), `ledger` (integer block ledger), `field` (events, window, pages, districts), `grid` (the full computation, as reference), `spec` |
-| `tests/` | the promise against the full computation, on random histories |
+| `tests/` | the promise against the full computation, on random histories; the same bits on one thread and on many; the demo's modules, under Node |
+| `.github/` | the checks every push runs (tests, lints, and one replay hash across native code, a fresh wasm build and the wasm the demo ships) and the Pages deploy |
 | `ffi/` | the C ABI, its header, and the JavaScript binding |
 | `bench/` | native benchmark fixtures and the wasm replay |
 | `demo/` | Tarnished Promise |
