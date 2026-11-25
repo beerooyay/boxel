@@ -12,12 +12,17 @@ export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
 
-  const fb = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-  gl.drawBuffers([gl.NONE]);
-  gl.readBuffer(gl.NONE);
-  const begin = () => {
+  const targets = Array.from({ length: directions.length + spare }, (_, layer) => {
+    const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, texture, 0, layer);
+    gl.drawBuffers([gl.NONE]);
+    gl.readBuffer(gl.NONE);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw Error('Shadow depth target incomplete');
+    return fb;
+  });
+  const begin = layer => {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets[layer]);
     gl.viewport(0, 0, size, size);
     gl.enable(gl.DEPTH_TEST);
     gl.depthMask(true);
@@ -36,7 +41,8 @@ export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
   const fragment = gl.createShader(gl.FRAGMENT_SHADER);
   gl.shaderSource(fragment, '#version 300 es\nprecision highp float; void main() {}');
   gl.compileShader(fragment);
-  const programs = casters.map(({ source }) => {
+  const draws = [];
+  for (const { source, draw, slices = 1 } of casters) {
     const p = gl.createProgram();
     const vs = gl.getAttachedShaders(source).find(s => gl.getShaderParameter(s, gl.SHADER_TYPE) === gl.VERTEX_SHADER);
     gl.attachShader(p, vs);
@@ -48,11 +54,24 @@ export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
     }
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw Error(gl.getProgramInfoLog(p));
-    return p;
-  });
+    const vp = gl.getUniformLocation(p, 'uVP');
+    gl.useProgram(p);
+    gl.uniform1f(gl.getUniformLocation(p, 'uMirror'), 1);
+    gl.uniform1f(gl.getUniformLocation(p, 'uLodW'), 1);
+    gl.uniform1i(gl.getUniformLocation(p, 'uSimpleLeaf'), 1);
+    for (let i = 0; i < slices; i++) {
+      draws.push(matrix => {
+        gl.useProgram(p);
+        gl.uniformMatrix4fv(vp, false, matrix);
+        draw(i, slices);
+      });
+    }
+  }
+
+  gl.deleteShader(fragment);
 
   const matrices = new Float32Array(16 * (directions.length + spare));
-  const bake = (layer, [x, y, z]) => {
+  const prepare = (layer, [x, y, z]) => {
     const horizontal = Math.hypot(x, z), rx = z / horizontal, rz = -x / horizontal;
     // Fit the projection to the whole square, including its diagonal and the upland canopy.
     const centreY = 22, vertical = 46, along = half * (Math.abs(rx) + Math.abs(rz));
@@ -64,32 +83,25 @@ export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
       rz / width, -y * z / horizontal / height, -z / depth, 0,
       0, -centreY * horizontal / height, centreY * y / depth, 1,
     ]);
-    matrices.set(matrix, 16 * layer);
-    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, texture, 0, layer);
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw Error('Shadow depth target incomplete');
-    gl.clear(gl.DEPTH_BUFFER_BIT);
-    casters.forEach(({ draw }, i) => {
-      const p = programs[i];
-      gl.useProgram(p);
-      gl.uniformMatrix4fv(gl.getUniformLocation(p, 'uVP'), false, matrix);
-      gl.uniform1f(gl.getUniformLocation(p, 'uMirror'), 1);
-      gl.uniform1f(gl.getUniformLocation(p, 'uLodW'), 1);
-      draw();
-    });
+    return { layer, matrix, cursor: 0 };
   };
-  begin();
-  directions.forEach((direction, layer) => bake(layer, direction));
-  end();
+  // Only publish the new matrix after its entire spare layer is ready. The
+  // main view and the water reflection see the same completed depth map.
   const shadows = {
-    texture, matrices, version: 0,
-    /** Draw one layer again for a new direction, mid-frame, leaving the caller's culling and texture unit as found. */
-    rebake(layer, direction) {
-      const cull = gl.isEnabled(gl.CULL_FACE), unit = gl.getParameter(gl.ACTIVE_TEXTURE);
-      begin(); bake(layer, direction); end();
-      if (cull) gl.enable(gl.CULL_FACE);
-      gl.activeTexture(unit);
+    texture, matrices, version: 0, prepare, passes: draws.length,
+    advance(job, count) {
+      begin(job.layer);
+      if (job.cursor === 0) gl.clear(gl.DEPTH_BUFFER_BIT);
+      const stop = Math.min(draws.length, job.cursor + count);
+      while (job.cursor < stop) draws[job.cursor++](job.matrix);
+      end();
+      if (job.cursor < draws.length) return false;
+      matrices.set(job.matrix, 16 * job.layer);
       shadows.version++;
+      return true;
     },
+    rebake(layer, direction) { shadows.advance(prepare(layer, direction), draws.length); },
   };
+  directions.forEach((direction, layer) => shadows.rebake(layer, direction));
   return shadows;
 }

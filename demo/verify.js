@@ -82,3 +82,33 @@ export function checkPicture(dense, boxel, dark) {
   return { ...comparison, control, sceneContrast, fieldVisible,
     picturePass: sceneContrast >= 4 && fieldVisible && comparison.psnr >= 50 && comparison.percentOverTwo <= 1 };
 }
+
+// Read the actual RGBA8 cube, including the polar regions and face seams.
+export function compareSkyFaces(gl, size, optimized, reference) {
+  const fb = gl.createFramebuffer(), actual = new Uint8Array(size * size * 4), full = new Uint8Array(actual.length);
+  let different = 0, maxDelta = 0, referencePeak = 0, referenceFloor = 255;
+  const read = (texture, face, data) => {
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_CUBE_MAP_POSITIVE_X + face, texture, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw Error('Sky comparison framebuffer incomplete');
+    gl.readPixels(0, 0, size, size, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  };
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  try {
+    for (let face = 0; face < 6; face++) {
+      read(optimized, face, actual); read(reference, face, full);
+      for (let i = 0; i < full.length; i += 4) {
+        const delta = Math.max(Math.abs(full[i] - actual[i]), Math.abs(full[i + 1] - actual[i + 1]),
+          Math.abs(full[i + 2] - actual[i + 2]), Math.abs(full[i + 3] - actual[i + 3]));
+        const brightness = Math.max(full[i], full[i + 1], full[i + 2]);
+        referenceFloor = Math.min(referenceFloor, brightness);
+        referencePeak = Math.max(referencePeak, brightness);
+        if (delta) different++;
+        maxDelta = Math.max(maxDelta, delta);
+      }
+    }
+    return { texels: 6 * size * size, different, maxDelta, referencePeak, referenceFloor, glError: gl.getError() };
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fb);
+  }
+}

@@ -7,7 +7,8 @@ in vec4 aPose;
 in vec3 aAngles;
 in vec2 aStroke;
 out vec3 vWP, vMark;
-flat out vec2 vSignal;
+uniform sampler2D uValleyGround; uniform vec2 uGroundRange;
+flat out vec3 vSignal;
 void main(){
   vec3 p = aPos;
   float part = aMark.x, span = aMark.y;
@@ -26,8 +27,8 @@ void main(){
     float wing = (abs(p.x) - 0.045) * (1. - 0.10 * span * recover);
     p.xy = vec2(side * (0.045 + wing * c - p.y * s), wing * s + p.y * c);
   } else if (part == 3.) {
-    p.x += span * span * (0.052 * sin(beat * 0.53 - span * 3.) + 0.04 * sign(p.x));
-    p.y += span * span * 0.13 * sin(beat * 0.48 - span * 3. - 1.);
+    p.x += span * span * ((0.022 + 0.045 * effort) * sin(beat * 0.53 - span * 3.) + 0.04 * sign(p.x));
+    p.y += span * span * (0.04 + 0.09 * effort) * sin(beat * 0.48 - span * 3. - 1.);
   }
   vec2 heading = vec2(sin(aAngles.x), cos(aAngles.x));
   float c = cos(aAngles.z), s = sin(aAngles.z);
@@ -37,22 +38,28 @@ void main(){
   vec2 world = vec2(heading.y, -heading.x) * p.x + heading * p.z;
   vWP = aPose.xyz + vec3(world.x, p.y, world.y) * abs(aPose.w);
   vMark = aMark;
-  vSignal = vec2(step(0., aPose.w), texture(uGlow, fieldUV(aPose.xz)).r);
+  vec2 uv = fieldUV(aPose.xz);
+  vec2 bed = textureLod(uValleyGround, uv, 0.).gb;
+  float clearance = aPose.y - (uGroundRange.x + max(bed.x, bed.y) * uGroundRange.y);
+  float reach = 1. - smoothstep(0.10, 1.55, clearance);
+  vSignal = vec3(step(0., aPose.w), reach * textureLod(uGlow, uv, 0.).r,
+                 clamp(uSheet + reach * textureLod(uGround, uv, 0.).r, 0., 1.));
   gl_Position = project(vWP);
 }`;
 const fragmentSource = `
-uniform float uClip;
+uniform float uClip; uniform bool uGlass;
 in vec3 vWP, vMark;
-flat in vec2 vSignal;
+flat in vec3 vSignal;
 out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
+  vec3 V = normalize(uCam - vWP);
   vec3 n = normalize(cross(dFdx(vWP), dFdy(vWP)));
-  if (n.y < 0.) n = -n;
-  vec3 pigment = mix(vec3(0.83, 0.25, 0.36), vec3(0.095, 0.69, 0.55), vSignal.x);
-  vec3 ink = mix(vec3(0.070, 0.017, 0.064), vec3(0.012, 0.042, 0.076), vSignal.x);
+  if (dot(n, V) < 0.) n = -n;
+  vec3 pigment = mix(vec3(0.92, 0.23, 0.28), vec3(0.07, 0.76, 0.57), vSignal.x);
+  vec3 ink = mix(vec3(0.068, 0.019, 0.050), vec3(0.012, 0.040, 0.055), vSignal.x);
   float part = vMark.x, span = vMark.y, chord = vMark.z;
-  float mark = 0.;
+  float mark = 0., silk = 0., lacquer = 0.6, membrane = 1.;
   vec3 alb = ink;
   if (part == 1. || part == 2.) {
     float hind = step(1.5, part);
@@ -69,31 +76,46 @@ void main(){
     float r = length(eye), width = max(fwidth(r), 0.015);
     float ring = 1. - smoothstep(0.08, 0.20 + width, abs(r - 0.64));
     float disc = 1. - smoothstep(0.51, 0.83 + width, r);
-    float silk = smoothstep(0.03, 0.60, span) * (1. - smoothstep(0.64, 1., span));
-    vec3 shoulder = mix(vec3(0.34, 0.063, 0.13), vec3(0.028, 0.16, 0.23), vSignal.x);
-    float incidence = abs(dot(n, normalize(uCam - vWP)));
-    alb = mix(shoulder, pigment * (0.47 + 0.23 * incidence), silk * (0.46 + 0.54 * sin(3.14 * chord)));
-    alb = mix(alb, ink, max(0.92 * margin, 0.92 * disc));
-    mark = max(ring, max(0.55 * radial, 0.24 * joint) * (1. - disc)) * (1. - smoothstep(0.36, 1.3, width));
-    // The broad satin edge survives after the fine cells fall below a pixel.
-    mark = max(mark, 0.25 * margin * smoothstep(0.32, 0.78, span));
+    silk = smoothstep(0.07, 0.45, span) * (1. - 0.70 * margin) * (1. - disc);
+    // The membrane shifts from indigo to peacock, or plum to copper. Its
+    // black ribs, enamel leading edge and opaque eye keep their pigment.
+    float grazing = 1. - clamp(dot(n, V), 0., 1.);
+    float shift = smoothstep(0.17, 0.88, grazing + 0.20 * sin(5.4 * chord + 2.3 * span));
+    vec3 glass = mix(vec3(0.20, 0.035, 0.20), vec3(0.026, 0.085, 0.25), vSignal.x);
+    vec3 foil = mix(vec3(0.93, 0.38, 0.13), vec3(0.10, 0.84, 0.56), vSignal.x);
+    alb = mix(glass, pigment, (0.30 + 0.54 * sin(3.14 * chord)) * (1. - 0.48 * hind));
+    alb = mix(alb, foil, 0.72 * shift) * (0.54 + 0.40 * silk);
+    alb = mix(alb, ink, max(0.88 * margin, max(0.94 * disc, 0.73 * max(radial, joint))));
+    float leading = (1. - smoothstep(0.03, 0.13 + fwidth(chord), chord)) * smoothstep(0.47, 0.70, span) * (1. - smoothstep(0.81, 0.96, span));
+    mark = max(leading, max(ring, radial * 0.40 + joint * 0.08) * (1. - smoothstep(0.36, 1.3, width)));
+    float ribs = max(max(margin, radial), max(0.65 * joint, max(disc, leading)));
+    float window = smoothstep(0.06, 0.39, span) * (1. - ribs);
+    membrane = 1. - window * (0.42 + 0.29 * (1. - grazing));
+    alb *= 0.66 + 0.34 * window;
+    alb = mix(alb, ink * 0.8, radial * (1. - ring) * 0.45);
+    lacquer = 0.29 + 0.60 * radial;
   } else if (part == 0.) {
-    float band = abs(fract(span * 7.) - 0.5);
-    mark = (1. - smoothstep(0.035, 0.1 + fwidth(span * 7.), band)) * 0.55;
-    alb = mix(ink, pigment, 0.12 + 0.12 * span);
+    float joint = abs(fract(span * 8. + 0.35) - 0.5);
+    float collar = (1. - smoothstep(0.027, 0.10 + fwidth(span * 8.), joint)) * (1. - smoothstep(0.52, 0.72, span));
+    mark = collar * (0.45 + 0.55 * smoothstep(0.08, 0.56, chord));
+    alb = mix(ink * 0.36, pigment, 0.032 + 0.085 * chord);
+    mark *= 0.67;
   } else {
-    mark = part == 4. ? 0.31 : smoothstep(0.45, 0.94, span) * 0.72;
+    mark = part == 3. ? smoothstep(0.68, 0.91, span) : (part == 4. ? 0.45 : 0.08);
+    lacquer = part == 4. ? 1.3 : 0.35;
   }
-  alb = mix(alb, pigment * 0.89 + 0.035, 0.79 * mark);
-  vec3 ambientSky = ambient(n) * mix(vec3(1.), vec3(0.40, 0.53, 0.55), canopyCover(vWP));
-  vec3 light = ambientSky * 2.6 + floraSpill(vWP) + uSunCol * directLight(vWP) * (0.10 + 0.48 * abs(dot(n, uSunDir)));
-  float night = smoothstep(0.22, 0.94, uNight);
-  vec3 membrane = alb * light + pigment * mark * night * (0.53 + 1.65 * glowI(vSignal.y));
-  o = vec4(tonemap(fogged(membrane, vWP)), 0.);
+  alb = mix(alb, pigment * 0.78 + vec3(0.09, 0.075, 0.028), 0.88 * mark);
+  vec3 sun = uSunCol * directLight(vWP);
+  vec3 sky = ambient(n) * mix(vec3(1.), vec3(0.40, 0.53, 0.55), canopyCover(vWP));
+  float nl = dot(n, uSunDir), sheen = pow(max(dot(n, normalize(uSunDir + V)), 0.), 28.);
+  vec3 light = alb * (2.6 * sky + floraSpill(vWP) + sun * (0.07 + 0.66 * max(nl, 0.)));
+  light += sun * (alb * silk * (0.065 + 0.44 * max(-nl, 0.)) + sheen * lacquer * (0.19 + 0.26 * vSignal.z) * max(nl, 0.));
+  light += pigment * mark * smoothstep(0.22, 0.94, uNight) * (0.48 + 1.9 * glowI(vSignal.y));
+  o = vec4(tonemap(fogged(light, vWP)), uGlass ? membrane : 0.);
 }`;
 
 function sailwingMesh() {
-  const positions = [], markings = [], indices = [];
+  const positions = [], markings = [], indices = [], coarse = [];
   function point(x, y, z, part, span, chord) {
     positions.push(x, y, z); markings.push(part, span, chord);
     return positions.length / 3 - 1;
@@ -104,7 +126,7 @@ function sailwingMesh() {
     for (let i = 0; i <= rows; i++) {
       const s = i / rows, bow = Math.sin(Math.PI * s);
       const x = 0.045 + s * (hind ? 0.73 : 1);
-      const front = hind ? 0.02 - 0.44 * s * s + 0.04 * bow : 0.145 + 0.36 * bow - 0.085 * s;
+      const front = hind ? 0.01 - 0.54 * s * s + 0.045 * bow : 0.15 + 0.24 * bow + 0.16 * s - 0.20 * s * s;
       const scallop = 0.035 * bow * (1 - Math.cos(s * TAU * 4));
       const width = (1 - s) * 0.12 + Math.pow(bow, 0.83) * (hind ? 0.34 : 0.40) - scallop
         + (hind ? 0.32 * Math.exp(-Math.pow((s - 0.72) / 0.10, 2)) : 0);
@@ -113,24 +135,38 @@ function sailwingMesh() {
         point(side * x, bow * (0.06 + 0.09 * Math.sin(Math.PI * u)) - 0.09 * s * s, front - u * width, hind ? 2 : 1, s, u);
         const k = start + i * (across + 1) + j;
         if (i && j) indices.push(k - across - 2, k - across - 1, k - 1, k - 1, k - across - 1, k);
+        if (i && j && i % 2 === 0 && j % 2 === 0) {
+          const back = k - 2 * (across + 1);
+          coarse.push(back - 2, back, k - 2, k - 2, back, k);
+        }
       }
     }
   }
+  const wings = indices.length;
   function body(rings, offsetX, offsetY, part) {
     const start = positions.length / 3, sides = 8;
     for (let i = 0; i < rings.length; i++) {
       const [z, radius] = rings[i];
       for (let j = 0; j < sides; j++) {
         const a = j * TAU / sides;
-        point(offsetX + Math.cos(a) * radius, offsetY + Math.sin(a) * radius * 0.86, z, part, i / (rings.length - 1), 0);
+        point(offsetX + Math.cos(a) * radius, offsetY + Math.sin(a) * radius * 0.86, z, part, i / (rings.length - 1), (1 + Math.sin(a)) / 2);
         if (i) {
           const p = start + (i - 1) * sides, next = (j + 1) % sides;
           indices.push(p + j, p + next, p + j + sides, p + next, p + next + sides, p + j + sides);
+          if (part === 0 && j % 2 === 0) {
+            const b = p + (j + 2) % sides;
+            coarse.push(p + j, b, p + j + sides, b, b + sides, p + j + sides);
+          }
         }
       }
     }
   }
-  body([[-0.53, 0.009], [-0.44, 0.036], [-0.27, 0.06], [-0.04, 0.092], [0.12, 0.095], [0.19, 0.061], [0.24, 0.082], [0.31, 0.056], [0.35, 0.008]], 0, 0.012, 0);
+  const abdomen = [[-0.56, 0.009]];
+  for (let i = 0; i < 5; i++) {
+    const z = -0.50 + i * 0.077, width = 0.030 + i * 0.007;
+    abdomen.push([z, width], [z + 0.058, width * 1.18], [z + 0.071, width * 0.88]);
+  }
+  body([...abdomen, [-0.073, 0.079], [0.02, 0.108], [0.12, 0.097], [0.19, 0.061], [0.24, 0.082], [0.31, 0.056], [0.35, 0.008]], 0, 0.012, 0);
   for (const side of [-1, 1]) {
     body([[0.24,0.004],[0.25,0.025],[0.279,0.024],[0.285,0.004]], side * 0.063, 0.047, 4);
     for (let j = 0; j <= 5; j++) {
@@ -140,6 +176,18 @@ function sailwingMesh() {
       point(x + w, 0.04 + 0.092 * Math.sin(2.2 * u), z, 5, u, 1);
       if (j) indices.push(k - 2, k - 1, k, k, k - 1, k + 1);
     }
+    // Three short jointed legs tuck beneath the thorax while the wings beat.
+    for (let pair = 0; pair < 3; pair++) {
+      const z = 0.14 - 0.078 * pair, sweep = 0.04 - 0.055 * pair;
+      const joints = [[0.048, -0.043, z], [0.125, -0.083, z + sweep],
+        [0.104, -0.155, z + sweep - 0.072], [0.135, -0.170, z + sweep - 0.105]];
+      for (let j = 0; j < joints.length; j++) {
+        const [x, y, pz] = joints[j], w = 0.012 - 0.0028 * j;
+        const k = point(side * x, y + w, pz, 6, j / 3, 0);
+        point(side * x, y - w, pz + w, 6, j / 3, 1);
+        if (j) indices.push(k - 2, k - 1, k, k, k - 1, k + 1);
+      }
+    }
     // Twin trailing filaments have a tiny leaf-shaped paddle at each end.
     for (let j = 0; j <= 9; j++) {
       const s = j / 9, w = 0.013 * (1 - s) + 0.026 * Math.exp(-Math.pow((s - 0.84) * 10, 2));
@@ -147,9 +195,10 @@ function sailwingMesh() {
       const v = point(x - w, y, z, 3, s, 0);
       point(x + w, y + w * 0.25, z, 3, s, 1);
       if (j) indices.push(v - 2, v - 1, v, v, v - 1, v + 1);
+      if (j && j % 3 === 0) coarse.push(v - 6, v - 5, v, v, v - 5, v + 1);
     }
   }
-  return { positions: new Float32Array(positions), markings: new Float32Array(markings), indices: new Uint16Array(indices) };
+  return { positions: new Float32Array(positions), markings: new Float32Array(markings), indices: new Uint16Array([...indices, ...coarse]), wings, fine: indices.length, coarse: coarse.length };
 }
 
 // Each group patrols one watershed habitat. Smaller river circuits follow its actual bends.
@@ -211,32 +260,60 @@ function makeRoutes(groundAt, waterLevel, riverX, sc, random) {
       }
       const wx = path[0], wz = path[2], level = waterLevel(wx, wz);
       const skims = water && groundAt(wx, wz) < level - 0.2 && path[1] < level + 0.23;
-      routes.push({ path, size, phase, period, skims, hue: random() > (water ? 0.25 : 0.60) ? 1 : -1 });
+      routes.push({ path, size, phase, period, skims, alarm: 0, alarmTime: -2, bank: 0, hue: random() > (water ? 0.25 : 0.60) ? 1 : -1 });
     }
   }
   return routes;
 }
 
-export function createSailwings({ gl, program, vao, worldVertex, groundAt, waterLevel, riverX, sc, random }) {
+export function createSailwings({ gl, program, vao, worldVertex, groundAt, waterLevel, riverX, sc, random, outsideView }) {
   const shader = program(worldVertex + vertexSource, fragmentSource);
   const mesh = sailwingMesh(), routes = makeRoutes(groundAt, waterLevel, riverX, sc, random);
   const instances = new Float32Array(routes.length * 9), buffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, instances.byteLength, gl.DYNAMIC_DRAW);
-  const vertices = vao([
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, 2 * instances.byteLength, gl.DYNAMIC_DRAW);
+  const attrs = [
     { loc: gl.getAttribLocation(shader, 'aPos'), data: mesh.positions, size: 3 },
     { loc: gl.getAttribLocation(shader, 'aMark'), data: mesh.markings, size: 3 },
     { loc: gl.getAttribLocation(shader, 'aPose'), buffer, size: 4, div: 1, stride: 36, offset: 0 },
     { loc: gl.getAttribLocation(shader, 'aAngles'), buffer, size: 3, div: 1, stride: 36, offset: 16 },
     { loc: gl.getAttribLocation(shader, 'aStroke'), buffer, size: 2, div: 1, stride: 36, offset: 28 },
-  ], mesh.indices);
-  const indexCount = mesh.indices.length;
+  ];
+  const indices = gl.createBuffer();
+  gl.bindVertexArray(null);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+  const nearVAO = vao(attrs, indices), farVAO = vao(attrs, indices, routes.length);
+  const order = [], rows = routes.map((_, i) => instances.subarray(i * 9, i * 9 + 9));
+  const packed = new Float32Array(instances.length), depth = new Float32Array(routes.length);
+  const bounds = { x0: 0, z0: 0, y0: 0, y1: 0, pad: 0 };
   const skimmers = routes.filter(r => r.skims);
   const velocity = new Float64Array(3), acceleration = new Float64Array(3);
   let lastTime = -1;
+  function alarmAt(route, t) {
+    const age = t - route.alarmTime;
+    return age >= 0 && age < 1.8 ? route.alarm * Math.min(1, age / 0.18) * (1 - age / 1.8) ** 2 : 0;
+  }
   return {
     shader,
-    draw(t) {
-      // The lake reflection and the main view use the same flight pose and upload.
+    reset() {
+      for (const r of routes) r.alarm = 0;
+      lastTime = -1;
+    },
+    startle(x, y, z, t, strength) {
+      for (const r of routes) {
+        const phase = ((t / r.period + r.phase / TAU) % 1) * samples;
+        const k = Math.floor(phase) * 3, next = (k + 3) % r.path.length, u = phase % 1;
+        const dx = r.path[k] + u * (r.path[next] - r.path[k]) - x;
+        const dy = r.path[k + 1] + u * (r.path[next + 1] - r.path[k + 1]) - y;
+        const dz = r.path[k + 2] + u * (r.path[next + 2] - r.path[k + 2]) - z;
+        const weight = Math.min(1, strength) * (1 - Math.hypot(dx, dy, dz) / 7);
+        if (weight <= 0 || weight < alarmAt(r, t)) continue;
+        r.alarm = weight; r.alarmTime = t;
+        r.bank = Math.sign(dz * (r.path[next] - r.path[k]) - dx * (r.path[next + 2] - r.path[k + 2]));
+      }
+      lastTime = -1;
+    },
+    draw(t, planes, eye, forward, mirror) {
+      // Interpolate flight only once for the lake reflection and the main view.
       if (t !== lastTime) {
         for (let i = 0; i < routes.length; i++) {
           const { path, phase, period, size, hue, skims } = routes[i];
@@ -259,23 +336,61 @@ export function createSailwings({ gl, program, vao, worldVertex, groundAt, water
           const turn = (dz * acceleration[0] - dx * acceleration[2]) / horizontal * (samples / period) ** 2;
           const lift = skims ? 1 - Math.pow(Math.max(0, Math.cos(a)), 9) : 1;
           const pitch = 0.63 * Math.atan2(dy, horizontal), hz = 1.62 + (0.80 - size) * 0.95;
+          const alarm = alarmAt(routes[i], t);
+          const sail = Math.max(0, Math.sin(0.86 * t + phase * 2 + i) - 0.34) / 0.66;
+          instances[p + 1] += 0.94 * alarm;
           instances[p + 3] = size * hue;
           instances[p + 4] = Math.atan2(dx, dz);
-          instances[p + 5] = pitch;
-          instances[p + 6] = -0.52 * Math.tanh(turn * 0.55) * lift;
-          instances[p + 7] = TAU * hz * t + 0.22 * Math.sin(1.9 * t + phase) + phase * 3 + i;
-          instances[p + 8] = (0.72 + 0.17 * Math.sin(t * 1.13 + phase * 3 + i) + 0.15 * Math.max(0, pitch)) * lift;
+          instances[p + 5] = pitch + 0.22 * alarm;
+          instances[p + 6] = -0.52 * Math.tanh(turn * 0.55) * lift + 0.48 * routes[i].bank * alarm;
+          instances[p + 7] = TAU * hz * t + 0.27 * Math.sin(1.9 * t + phase) + phase * 3 + i + 3.2 * alarm;
+          instances[p + 8] = Math.min(1.1, (0.83 - 0.72 * sail * sail + 0.18 * Math.max(0, pitch)) * lift + 0.88 * alarm);
         }
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferSubData(gl.ARRAY_BUFFER, 0, instances);
         lastTime = t;
       }
-      gl.bindVertexArray(vertices);
-      gl.drawElementsInstanced(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0, routes.length);
+      // Group by distance and sort the few translucent insects back to
+      // front for this eye. The reflection sees the same poses from below.
+      const detail = mirror < 0 ? 15 : 28;
+      order.length = 0;
+      let distant = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i], r = Math.abs(row[3]) * 1.45;
+        bounds.x0 = row[0]; bounds.z0 = row[2]; bounds.pad = r;
+        bounds.y0 = row[1] - r; bounds.y1 = row[1] + r;
+        if (outsideView(planes, bounds, 0)) continue;
+        const dx = row[0] - eye[0], dy = row[1] - eye[1], dz = row[2] - eye[2];
+        if (dx * dx + dy * dy + dz * dz < detail * detail) {
+          depth[i] = dx * forward[0] + dy * forward[1] * mirror + dz * forward[2];
+          order.push(i);
+        } else packed.set(row, 9 * distant++);
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.uniform1i(shader.u('uGlass'), 0);
+      if (distant) {
+        gl.bufferSubData(gl.ARRAY_BUFFER, instances.byteLength, packed, 0, 9 * distant);
+        gl.bindVertexArray(farVAO);
+        gl.drawElementsInstanced(gl.TRIANGLES, mesh.coarse, gl.UNSIGNED_SHORT, mesh.fine * 2, distant);
+      }
+      if (order.length) {
+        order.sort((a, b) => depth[b] - depth[a]);
+        for (let i = 0; i < order.length; i++) packed.set(rows[order[i]], 9 * i);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, packed, 0, order.length * 9);
+        gl.bindVertexArray(nearVAO);
+        gl.drawElementsInstanced(gl.TRIANGLES, mesh.fine - mesh.wings, gl.UNSIGNED_SHORT, mesh.wings * 2, order.length);
+      }
+    },
+    drawWings() {
+      if (!order.length) return;
+      gl.uniform1i(shader.u('uGlass'), 1);
+      gl.bindVertexArray(nearVAO);
+      gl.drawElementsInstanced(gl.TRIANGLES, mesh.wings, gl.UNSIGNED_SHORT, 0, order.length);
     },
     skim(t, dt, disturb) {
       for (const r of skimmers) {
         const cycle = t / r.period + r.phase / TAU;
-        if (Math.floor(cycle) !== Math.floor(cycle - dt / r.period)) disturb(r.path[0], r.path[2]);
+        if (Math.floor(cycle) === Math.floor(cycle - dt / r.period)) continue;
+        const contactTime = t - (cycle % 1) * r.period;
+        if (alarmAt(r, contactTime) < 0.035) disturb(r.path[0], r.path[2]);
       }
     },
   };

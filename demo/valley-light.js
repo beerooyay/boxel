@@ -109,6 +109,11 @@ vec3 cameraRay(vec2 uv){
 
 export const mistFragment = viewRay + `
 in vec2 vUv; out vec4 o;
+float mistSun(vec3 wp, int layer) {
+  vec3 q = (uLightVP[layer] * vec4(wp, 1.)).xyz * 0.5 + 0.5;
+  if (any(lessThan(q, vec3(0.))) || any(greaterThan(q, vec3(1.)))) return 1.;
+  return texture(uShadows, vec4(q.xy, float(layer), q.z - 0.0005));
+}
 void main(){
   vec3 ray = cameraRay(vUv);
   float reach = min(32., length(ray) * viewDepth(texture(tDepth, vUv).r));
@@ -133,8 +138,8 @@ void main(){
     float scatter = 1. - exp(-density * stepLength);
     vec3 incident = vec3(0.021, 0.040, 0.068);
     if (uNight < 0.999) {
-      vec3 shadow = (uLightVP[0] * vec4(wp, 1.)).xyz * 0.5 + 0.5;
-      float sun = texture(uShadows, vec4(shadow.xy, 0., shadow.z - 0.0005));
+      float sun = mistSun(wp, uSunLayers.x);
+      if (uSunBlend > 0.) sun = mix(sun, mistSun(wp, uSunLayers.y), uSunBlend);
       incident = mix(day * (0.28 + 0.72 * sun), incident, uNight);
     }
     if (uNight > 0.001) {
