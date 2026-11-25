@@ -5,6 +5,7 @@ import { coarsePatch } from './terrain-lod.js';
 import { highCanopyMesh, highCanopySites } from './high-canopy.js';
 import { createSailwings } from './fauna.js';
 import { bakeClouds, bakeCanopy, valleyAir, canopyShelter } from './atmosphere.js';
+import { createAudio } from './audio.js';
 import { bakeGroundLight, groundLight, mistFragment, viewRay } from './valley-light.js';
 import { cameraJitter, depthRange, historyColor, temporalFragment } from './temporal.js';
 import { bakeShadows } from './shadows.js';
@@ -310,7 +311,7 @@ vec3 skyColor(vec3 d){
     vec3 mw = texture(uMilky, uSky * d).rgb;
     c += mw * mw * uNight * smoothstep(-0.02, 0.22, d.y) * 0.5;
   }
-  c += STAR_COL * (1. - uNight) * 3. * smoothstep(0.99935, 0.99965, dot(d, uStarDir));
+  c += STAR_COL * (1. - uNight) * (1. - uStorm) * 3. * smoothstep(0.99935, 0.99965, dot(d, uStarDir));
   vec3 P = uPlanetDir; vec3 T = normalize(cross(P, vec3(0., 1., 0.))); vec3 B = cross(T, P);
   float dp = dot(d, P);
   if (dp > 0.7) {
@@ -385,12 +386,15 @@ vec3 skyColor(vec3 d){
     }
   }
   c = companions(d, c);
+  // a full storm swallows the worlds and the stars behind its deck
+  c = mix(c, skyBase(d), uStorm * 0.85); starTransmission *= 1. - uStorm;
   if (d.y > 0.015) {
     vec2 cu = cloudUV(uCam, d);
     float body = texture(uClouds, cu).r;
     float curls = texture(uClouds, cu * 4. + vec2(0.17, 0.63)).g - 0.5;
     float density = clamp(body + 1.75 * curls * smoothstep(0., 0.14, body) * (1. - 0.65 * body), 0., 1.);
-    float cov = density * smoothstep(0.015, 0.18, d.y) * mix(0.82, 0.44, uNight);
+    density = mix(density, 0.62 + 0.38 * body, uStorm);
+    float cov = density * smoothstep(0.015, 0.18, d.y) * mix(mix(0.82, 0.44, uNight), 0.97, uStorm);
     if (cov > 0.001) {
       // A short second sample along the light direction distinguishes a bright lip from the shaded column.
       float towardLight = texture(uClouds, cu + uSunDir.xz * 0.009).r;
@@ -398,6 +402,9 @@ vec3 skyColor(vec3 d){
       vec3 cc = mix(vec3(0.16, 0.22, 0.34), vec3(1.20, 1.12, 0.95), rim);
       cc += vec3(0.58, 0.33, 0.15) * pow(max(dot(d, uStarDir), 0.), 8.) * (1. - density);
       cc = mix(cc, vec3(0.008, 0.013, 0.032) + vec3(0.045, 0.07, 0.13) * rim, uNight);
+      // storm cloud: a low, dark, heavy deck, and lightning lighting it from inside
+      cc = mix(cc, vec3(0.13, 0.145, 0.17) * (0.55 + 0.7 * rim) * (1. - 0.88 * uNight), uStorm * 0.85);
+      cc += vec3(0.42, 0.46, 0.66) * uFlash * (0.45 + 0.8 * rim);
       c = mix(c, cc, cov);
       starTransmission *= 1. - cov;
     }
@@ -408,7 +415,10 @@ ${canopyShelter}
 vec3 ambient(vec3 n){
   vec3 day = mix(vec3(0.028, 0.030, 0.035), vec3(0.095, 0.143, 0.177), n.y * 0.5 + 0.5);
   vec3 nite = mix(vec3(0.004, 0.007, 0.015), vec3(0.015, 0.026, 0.060), n.y * 0.5 + 0.5);
-  return mix(day, nite, uNight);
+  vec3 a = mix(day, nite, uNight);
+  // under a storm deck the light goes flat and grey; lightning floods everything for an instant
+  a = mix(a, vec3(dot(a, vec3(0.3333))) * vec3(0.9, 0.97, 1.06), uStorm * 0.55);
+  return a + vec3(0.15, 0.17, 0.26) * uFlash * (0.55 + 0.45 * n.y);
 }
 // A ground-space irradiance map transfers a little of each colony's pigment onto
 // nearby diffuse surfaces. Height falloff keeps the crowns above it dark.
@@ -441,7 +451,7 @@ float directLight(vec3 wp){
   float day = 1., moon = 1.;
   if (uNight < 0.999) day = mix(0.13, 1., shadowAt(wp, 0));
   if (uNight > 0.001) moon = mix(0.32, 1., shadowAt(wp, 1));
-  float light = mix(day, moon, uNight);
+  float light = mix(day, moon, uNight) * (1. - 0.82 * uStorm);
   if (wp.y >= 120.) return light;
   float cloud = textureLod(uClouds, cloudUV(wp, uSunDir), 2.).r;
   return light * (1. - cloud * (0.62 - 0.33 * uNight) * (1. - smoothstep(70., 120., wp.y)));
@@ -1167,6 +1177,20 @@ void main(){
 }`,
 `uniform sampler2D uRefl; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel;
 in vec3 vWP; in float vDepth, vWave, vFlow; out vec4 o;
+// raindrops: in every cell a drop lands at its own moment and sends out one ring; two cell sizes, offset, so no
+// lattice shows
+vec2 rainRings(vec2 p){
+  vec2 g = vec2(0.);
+  for (int k = 0; k < 2; k++) {
+    float size = k == 0 ? 0.43 : 0.29;
+    vec2 q = p / size + float(k) * 7.31, id = floor(q), f = fract(q) - 0.5, h = hash22(id + float(k) * 13.1);
+    float t = fract(uTime * (1.05 + 0.6 * h.x) + h.y), ring = t * 0.27;
+    vec2 d = f - (h - 0.5) * 0.3;
+    float r = length(d) + 1e-4, env = (1. - t) * (1. - t) * exp(-pow((r - ring) * 16., 2.));
+    g += d / r * cos((r - ring) * 42.) * env * 0.2;
+  }
+  return g;
+}
 vec2 waveGrad(vec2 p){
   vec2 g = waterWave(p, uTime).yz;
   g += vec2(0.8, 0.6) * cos(dot(p, vec2(0.8, 0.6)) * 1.3 + uTime * 1.1) * 0.016;
@@ -1177,7 +1201,7 @@ vec2 waveGrad(vec2 p){
   float gw = max(0., windWave(p)) * uWind;
   g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. + uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.012 * gw;
   g += vec2(-WIND_DIR.y, WIND_DIR.x) * cos(dot(p, vec2(-WIND_DIR.y, WIND_DIR.x)) * 13. + uTime * 6.1) * 0.006 * gw;
-  return g + impactWave(p).yz;
+  return g + impactWave(p).yz + uStorm * rainRings(p);
 }
 void main(){
   float depth = vDepth + vWave;
@@ -1239,6 +1263,27 @@ void main(){
   if (uRain == 2) vA *= smoothstep(1.2, 3.5, c.w);
 }`,
 `in float vA; in vec3 vC; out vec4 o; void main(){ vec2 q = gl_PointCoord - .5; float a = (1. - smoothstep(0., 0.5, length(q))) * vA; o = vec4(tonemap(vC * 3.) * a, a); }`);
+
+// rain: streaks falling past the camera in a box that travels with it, slanted by the wind, faint against the sky and
+// bright in a flash. Where they land on water, the water itself draws the rings.
+const RAIN_STREAKS = touch ? 1400 : 2600;
+const RAINP = program(WORLD_VS + `
+uniform vec3 uCam; uniform float uStorm;
+in vec4 aDrop; in float aEnd; out float vA;
+void main(){
+  float t = fract(uTime * (0.32 + 0.12 * aDrop.w) + aDrop.z);
+  vec2 c = uCam.xz + mod(aDrop.xy - uCam.xz + 26., 52.) - 26.;
+  vec3 slant = vec3(WIND_DIR.x, 0., WIND_DIR.y) * uWind;
+  vec3 head = vec3(c.x, uCam.y + 18. - t * 26., c.y) + slant * t * 2.5;
+  vec3 p = head + (vec3(0., -1., 0.) + slant * 0.16) * aEnd * (0.5 + 0.4 * aDrop.w);
+  vA = uStorm * smoothstep(0., 0.06, t) * (1. - smoothstep(0.92, 1., t)) * (0.35 + 0.65 * aEnd);
+  gl_Position = project(p);
+}`,
+`in float vA; out vec4 o;
+void main(){ vec3 c = vec3(0.6, 0.66, 0.76) * (ambient(vec3(0., 1., 0.)) * 3.5 + 0.9 * uFlash); o = vec4(tonemap(c) * vA * 0.42, 0.); }`);
+// a lightning bolt: a jagged line from the storm deck to the ground, white-hot for a fraction of a second
+const BOLTP = program(WORLD_VS + `in vec3 aPos; void main(){ gl_Position = project(aPos); }`,
+`uniform float uBolt; out vec4 o; void main(){ o = vec4(tonemap(vec3(5.5, 6., 9.) * uBolt), 0.); }`);
 
 // the night sky, after rawah's stars.js: thousands of point stars on the sphere of the sky's own frame, many faint and a
 // few bright (counts rise as 10^0.45m), richer toward the galaxy's plane, in the colours of real stars; and the galaxy's
@@ -2362,6 +2407,18 @@ const motes = moteScatter();
 const vMotes = vao([{ loc: loc(POINTS, 'aP'), size: 4, data: motes }]);
 const RAIN_N = 700, rainSeeds = new Float32Array(RAIN_N * 4); { const r = rng(9); for (let i = 0; i < RAIN_N; i++) rainSeeds.set([(r() * 2 - 1) * 34, r(), (r() * 2 - 1) * 34, r()], i * 4); }
 const vRain = vao([{ loc: loc(POINTS, 'aP'), size: 4, data: rainSeeds }]);
+// each streak is two vertices, its top and its tail, sharing one drop
+const vStreaks = (() => {
+  const r = rng(31), drops = new Float32Array(RAIN_STREAKS * 8), ends = new Float32Array(RAIN_STREAKS * 2);
+  for (let i = 0; i < RAIN_STREAKS; i++) {
+    const d = [(r() * 2 - 1) * 26, (r() * 2 - 1) * 26, r(), r()];
+    drops.set(d, i * 8); drops.set(d, i * 8 + 4); ends[i * 2 + 1] = 1;
+  }
+  return vao([{ loc: loc(RAINP, 'aDrop'), size: 4, data: drops }, { loc: loc(RAINP, 'aEnd'), size: 1, data: ends }]);
+})();
+const BOLT_VERTS = 512, boltBuf = new Float32Array(BOLT_VERTS * 3), boltAttr = { loc: loc(BOLTP, 'aPos'), size: 3, data: boltBuf, usage: gl.DYNAMIC_DRAW };
+const vBolt = vao([boltAttr]);
+let boltCount = 0;
 const stoneBuf = new Float32Array(4 * 8);
 const stoneAttr = { loc: loc(POINTS, 'aP'), size: 4, data: stoneBuf, usage: gl.DYNAMIC_DRAW };
 const vStone = vao([stoneAttr]);
@@ -2647,6 +2704,66 @@ function riverEvents(t, dt) {
   glowF.deposit(riverX(-46), -46, 2, 0.12);
 }
 
+// ---------------------------------------------------------------- storms
+// A storm closes the sky, rains on the lake and wets the valley through the moisture field. Lightning strikes every
+// few seconds: the flash lights everything at once, the bolt hangs for a moment, and where it lands it leaves a ring of
+// light in the glow field that spreads and fades like any other, certified the same way. Thunder follows, late by the
+// time sound takes to get here.
+let storm = 0, stormTarget = 0, flash = 0, boltLight = 0, nextBolt = 0, reflash = -1, audio = null;
+const stormRng = rng(2027);
+function toggleStorm() {
+  stormTarget = stormTarget > 0.5 ? 0 : 1;
+  nextBolt = simT + 4;
+  document.getElementById('bStorm').setAttribute('aria-pressed', String(stormTarget > 0.5));
+}
+/** The angle from where the player faces to (x, z): 0 ahead, positive to the right. */
+function bearing(x, z) {
+  const a = Math.atan2(x - player.x, player.z - z) - player.yaw;
+  return Math.atan2(Math.sin(a), Math.cos(a));
+}
+function stepStorm(dt) {
+  storm += (stormTarget - storm) * Math.min(1, dt * 0.3);
+  if (Math.abs(stormTarget - storm) < 0.0005) storm = stormTarget;
+  flash *= Math.exp(-dt * 7); boltLight *= Math.exp(-dt * 10);
+  if (reflash > 0 && simT >= reflash) { flash = Math.max(flash, 0.8); boltLight = Math.max(boltLight, 0.85); reflash = -1; }
+  if (storm > 0.65 && simT >= nextBolt) strike();
+  if (storm > 0.05 && groundF.sheet < 0.6) groundF.rain(dt * 0.03 * storm);
+}
+/** A jagged path from a to b by midpoint displacement, kinked more at the top than near the ground. */
+function boltPath(a, b, r, amp, levels) {
+  let pts = [a, b];
+  for (let level = 0; level < levels; level++, amp *= 0.55) {
+    const next = [pts[0]];
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const p = pts[i], q = pts[i + 1];
+      next.push([(p[0] + q[0]) / 2 + (r() - 0.5) * amp, (p[1] + q[1]) / 2 + (r() - 0.5) * amp * 0.35, (p[2] + q[2]) / 2 + (r() - 0.5) * amp], q);
+    }
+    pts = next;
+  }
+  return pts;
+}
+function strike(r = stormRng, at = null) {
+  nextBolt = simT + 5 + r() * 10;
+  const a = r() * Math.PI * 2, d = at ? Math.hypot(at[0] - player.x, at[1] - player.z) : 30 + r() * 110;
+  const x = at ? at[0] : player.x + Math.cos(a) * d, z = at ? at[1] : player.z + Math.sin(a) * d, y = H(x, z);
+  // the bolt: three strands of the main channel, and one branch that dies in the air
+  const main = boltPath([x + (r() - 0.5) * 30, 115, z + (r() - 0.5) * 30], [x, y, z], r, 16, 6);
+  const fork = main[Math.floor(main.length * (0.25 + 0.2 * r()))];
+  const branch = boltPath(fork, [fork[0] + (r() - 0.5) * 40, fork[1] * 0.45, fork[2] + (r() - 0.5) * 40], r, 8, 4);
+  boltCount = 0;
+  const line = (pts, dx, dz) => { for (let i = 0; i + 1 < pts.length && boltCount + 2 <= BOLT_VERTS; i++) for (const p of [pts[i], pts[i + 1]]) boltBuf.set([p[0] + dx, p[1], p[2] + dz], 3 * boltCount++); };
+  line(main, 0, 0); line(main, 0.22, 0.1); line(main, -0.15, 0.2); line(branch, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, boltAttr.buffer); gl.bufferSubData(gl.ARRAY_BUFFER, 0, boltBuf, 0, boltCount * 3);
+  flash = 1; boltLight = 1; reflash = simT + 0.08 + r() * 0.14;
+  // where it lands, the ground lights up: a hot centre and a ring around it, in the glow field
+  if (Math.abs(x) < EXTENT / 2 - 8 && Math.abs(z) < EXTENT / 2 - 8) {
+    glowF.deposit(x, z, 24, 1);
+    for (let k = 0; k < 10; k++) { const b = k / 10 * 6.2832; glowF.deposit(x + Math.cos(b) * 6, z + Math.sin(b) * 6, 10, 0.8); }
+    groundF.deposit(x, z, 20, 0.6);
+  }
+  audio?.thunder(d, bearing(x, z));
+}
+
 // ---------------------------------------------------------------- camera + player
 const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vx: 0, vz: 0, stride: 0, bob: 0, foot: 1, wet: 0 };
 player.y = H(player.x, player.z);
@@ -2725,6 +2842,7 @@ function stepPlayer(dt) {
     const z = oldZ + (player.z - oldZ) * u + sy * 0.14 * player.foot;
     const footDepth = waterLevel(x, z) - H(x, z);
     footstep(x, z, footDepth > 0.015, player.wet, speed > 2.6, footDepth, simT - (1 - u) * dt);
+    audio?.footstep(footDepth > 0.015 ? 'water' : trailCover(x, z) > 0.3 || H(x, z) > 14 ? 'stone' : 'grass', speed > 2.6);
   }
   player.stride = phase % 1;
   const bob = (0.014 + 0.014 * sm(2, 4.2, speed)) * Math.min(1, speed) * Math.sin(player.stride * Math.PI) ** 2;
@@ -2756,6 +2874,7 @@ function stepStones(dt) {
     const remaining = (1 - hi) * dt, impactY = s.v[1] + 9.8 * remaining;
     const strength = Math.min(1.65, 0.5 + 0.085 * Math.hypot(impactY, 0.5 * s.v[0], 0.5 * s.v[2]));
     splash(px, pz, H(px, pz) < waterLevel(px, pz), strength, simT - remaining);
+    audio?.splash(H(px, pz) < waterLevel(px, pz), Math.hypot(px - player.x, pz - player.z), bearing(px, pz));
     stones.splice(i, 1);
   }
 }
@@ -2844,9 +2963,10 @@ function common(p, eye, VP, mirror, t) {
     p.worldFrame = frameNumber;
     gl.uniform3fv(p.u('uSunDir'), lightDirection); gl.uniform3fv(p.u('uSunCol'), lightColor);
     gl.uniform1f(p.u('uNight'), night);
-    gl.uniform1f(p.u('uExposure'), 0.95 + 0.3 * night); gl.uniform1f(p.u('uTime'), t);
+    gl.uniform1f(p.u('uExposure'), 0.95 + 0.3 * night + 0.3 * storm); gl.uniform1f(p.u('uTime'), t);
+    gl.uniform1f(p.u('uStorm'), storm); gl.uniform1f(p.u('uFlash'), flash * storm * (0.3 + 0.7 * night));
     gl.uniform1f(p.u('uSheet'), sheet); gl.uniformMatrix3fv(p.u('uSky'), false, skyTurn);
-    gl.uniform1f(p.u('uWind'), TEST ? 0.7 : (rain ? 1.15 : 0.7) + 0.2 * Math.sin(t * 0.13));
+    gl.uniform1f(p.u('uWind'), TEST ? 0.7 + 0.9 * storm : (rain ? 1.15 : 0.7) + 0.9 * storm + 0.2 * Math.sin(t * 0.13));
     if (p === GRASS || p === JLEAF || p === PLANT) {
       gl.uniform3f(p.u('uBrush'), player.x, player.z, brush.cells.size ? 1 : 0);
     }
@@ -2985,6 +3105,9 @@ function render(t, camOverride, glowTexture = texGlow) {
   for (let i = 0; i < PODS; i++) stoneBuf.set([...podPosition(i, t), 0.36], i * 4);
   gl.bindBuffer(gl.ARRAY_BUFFER, stoneVbo); gl.bufferSubData(gl.ARRAY_BUFFER, 0, stoneBuf);
   gl.uniform1i(POINTS.u('uRain'), 3); gl.bindVertexArray(vStone); gl.drawArrays(gl.POINTS, 0, PODS);
+  if (storm > 0.01) { common(RAINP, cam.eye, VP, 1, t); gl.bindVertexArray(vStreaks); gl.drawArrays(gl.LINES, 0, RAIN_STREAKS * 2); }
+  if (boltLight > 0.02 && boltCount) { common(BOLTP, cam.eye, VP, 1, t); gl.uniform1f(BOLTP.u('uBolt'), boltLight); gl.bindVertexArray(vBolt); gl.drawArrays(gl.LINES, 0, boltCount); }
+  common(POINTS, cam.eye, VP, 1, t);
   if (!camOverride) {
     if (rain) { gl.uniform1i(POINTS.u('uRain'), 1); gl.bindVertexArray(vRain); gl.drawArrays(gl.POINTS, 0, RAIN_N); }
     if (stones.length) {
@@ -3014,7 +3137,7 @@ const layers = () => [glowF, groundF, wearF];
 
 function advanceWorld(dt) {
   simT += dt;
-  stepPlayer(dt); stepStones(dt); riverEvents(simT, dt);
+  stepPlayer(dt); stepStones(dt); riverEvents(simT, dt); stepStorm(dt);
   if (rain) { sporeAcc += dt * 30; while (sporeAcc >= 1) { spore(sporeR, player.x, player.z); sporeAcc -= 1; } if (groundF.sheet < 0.45) groundF.rain(dt * 0.025); }
   const t0 = performance.now();
   for (const f of layers()) f.advance(dt);
@@ -3060,6 +3183,14 @@ function frame(now) {
   } else simT += dt;
   render(simT);
   if (!started) return;
+  if (audio) {
+    // what the ears get: the gust where you stand, how far the river and the lake are and which side they are on
+    const t = simT, gust = Math.sin(player.x * 0.31 + player.z * 0.18 + t * 1.25) * 0.55 + Math.sin((player.z * 0.41 - player.x * 0.23) * 1.7 + t * 2.3) * 0.3;
+    const rz = Math.max(spring.z, Math.min(-8, player.z)), rx = riverX(rz);
+    const riverDistance = Math.hypot(player.x - rx, Math.max(0, spring.z - player.z, player.z + 8));
+    audio.update({ wind: (rain ? 1.15 : 0.7) + 0.9 * storm, gust, height: player.y, night, storm,
+      river: [riverDistance, bearing(rx, rz)], lake: [Math.max(0, (lakeD(player.x, player.z) - 10.5) * 2.2), bearing(LAKE[0], LAKE[1])] });
+  }
   acc.t += dt;
   if (!wall) wall = now - elapsed * 1000;
   if (acc.t > 0.33 && acc.frames > 0) {
@@ -3104,6 +3235,8 @@ function bindInput() {
     if (!started || e.repeat) return;
     if (e.code === 'KeyF') throwStone();
     if (e.code === 'KeyR') toggleRain();
+    if (e.code === 'KeyT') toggleStorm();
+    if (e.code === 'KeyV' && audio) audio.toggle();
     if (e.code === 'KeyM') cycleMode();
     if (e.code === 'KeyH') toggleHud();
     if (e.code === 'KeyN') toggleNight();
@@ -3156,6 +3289,7 @@ function bindInput() {
   }
   document.getElementById('bThrow').onclick = () => started && throwStone();
   document.getElementById('bRain').onclick = () => started && toggleRain();
+  document.getElementById('bStorm').onclick = () => started && toggleStorm();
   document.getElementById('bMode').onclick = () => started && cycleMode();
   document.getElementById('bHud').onclick = toggleHud;
   document.getElementById('bNight').onclick = () => started && toggleNight();
@@ -3245,8 +3379,8 @@ function scripted(m, frames = 900, view = 'shore') {
   setMode(BOXEL);
   refreshModeUI();
   document.getElementById('status').textContent = `boxel ready: three certified fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
-  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, night, switch engine, readout</span>'; }
-  window.__game = { setNight: (v) => { night = nightTarget = v; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
+  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, switch engine, readout</span>'; }
+  window.__game = { setNight: (v) => { night = nightTarget = v; }, setStorm: (v) => { storm = stormTarget = v; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
     const darkField = gl.createTexture();
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, darkField);
@@ -3267,6 +3401,7 @@ function scripted(m, frames = 900, view = 'shore') {
   bindInput();
   document.getElementById('intro').addEventListener('click', () => {
     document.getElementById('intro').hidden = true; document.documentElement.classList.remove('intro'); started = true;
+    audio = createAudio(); audio?.resume();
     if (!touch) canvas.requestPointerLock?.()?.catch?.(() => {});
   });
   requestAnimationFrame((t) => { last = t; frame(t); });

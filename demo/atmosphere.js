@@ -1,7 +1,7 @@
 // Shared by the terrain vertex shader and the material fragment shaders.
 export const valleyAir = `
 uniform vec3 uCam, uStarDir, uPlanetDir;
-uniform float uNight;
+uniform float uNight, uStorm, uFlash;
 const vec3 STAR_COL = vec3(2.7, 1.9, 1.35);
 vec3 skyBase(vec3 d){
   float h = d.y;
@@ -13,23 +13,29 @@ vec3 skyBase(vec3 d){
   float s = max(dot(d, uStarDir), 0.);
   c += STAR_COL * (1. - uNight) * (0.05 * pow(s, 5.) + 0.25 * pow(s, 60.));
   c += vec3(0.10, 0.08, 0.20) * pow(max(dot(d, uPlanetDir), 0.), 4.) * 0.5;
+  // A storm closes the sky over in grey. Lightning lights the whole of it at once.
+  vec3 overcast = mix(vec3(0.17, 0.19, 0.22), vec3(0.27, 0.29, 0.33), smoothstep(-0.05, 0.45, h)) * (1. - 0.9 * uNight);
+  c = mix(c, overcast, uStorm * 0.88) + vec3(0.2, 0.23, 0.36) * uFlash * (0.35 + 0.65 * smoothstep(-0.1, 0.4, h));
   return mix(c, vec3(0.05, 0.04, 0.08), (1. - smoothstep(-0.25, 0.0, h)));
 }
 // RGB is incident scattered light. Alpha is transmission along this sightline.
 vec4 airAt(vec3 wp){
   vec3 d = wp - uCam; float dist = length(d);
   float f = (1. - exp(-dist * mix(0.0027, 0.0017, uNight))) * (1. - 0.49 * smoothstep(0., 135., wp.y));
+  // rain thickens the air: the far ridges go first
+  f = 1. - (1. - f) * exp(-dist * 0.0055 * uStorm);
   // Integrate exponential density between the eye and the surface. Looking
   // down from the summit and looking up from the river cross the same air.
   float eyeY = max(uCam.y, 0.), endY = max(wp.y, 0.), dy = (endY - eyeY) * 0.12;
   float column = abs(dy) < 0.01 ? exp(-0.06 * (eyeY + endY)) : (exp(-0.12 * eyeY) - exp(-0.12 * endY)) / dy;
-  float mist = (1. - exp(-dist * column * 0.017)) * mix(0.17, 0.30, uNight);
+  float mist = (1. - exp(-dist * column * 0.017)) * mix(0.17, 0.30, uNight) * (1. + 1.3 * uStorm);
   vec3 vd = normalize(vec3(d.x, max(d.y, 0.02 * dist), d.z));
   vec3 fc = skyBase(vd) * 0.75;
   // the haze glows where it lies between you and the star
   fc += STAR_COL * pow(max(dot(normalize(d), uStarDir), 0.), 8.) * 0.07 * (1. - uNight);
   float forward = max(dot(vd, uStarDir), 0.);
   vec3 mc = mix(vec3(0.17, 0.32, 0.37) + vec3(0.85, 0.48, 0.20) * pow(forward, 6.), vec3(0.025, 0.065, 0.108), uNight);
+  mc = mix(mc, vec3(0.2, 0.22, 0.25) * (1. - 0.85 * uNight), uStorm * 0.7) + vec3(0.16, 0.18, 0.28) * uFlash * 0.5;
   return vec4(mix(fc * f, mc, mist), (1. - f) * (1. - mist));
 }
 `;
