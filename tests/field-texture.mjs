@@ -45,6 +45,7 @@ test('the R8 upload covers changed texels, skips invisible changes and clears re
   const west = activate(-16, 0, 0, 0.51), east = activate(15, 0, 255, 0.8);
   activate(16, 0, 0, 1); // beyond the positive edge of the texture
   assert.equal(check(), 2);
+  assert.equal(cache.pages.size, 2);
   west[0] += 0.00001;
   assert.equal(check(), 0);
   east[254] = 1;
@@ -53,13 +54,30 @@ test('the R8 upload covers changed texels, skips invisible changes and clears re
   freed.push([15, 0]); activate(15, 0, 254, 0.4); // freed and reused between frames
   assert.ok(check() > 0);
   assert.equal(check(), 0);
+  assert.equal(cache.pages.size, 1);
+  live.clear(); freed.push([15, 0]);
+  assert.equal(check(), 1);
+  assert.equal(cache.pages.size, 0);
+
+  // Adjacent blocks share a page. Clearing one must retain the other.
+  activate(0, 1, 12, 0.60); activate(2, 1, 31, 0.72);
+  assert.ok(check() > 0);
+  assert.equal(cache.pages.size, 1);
+  live.delete(0); freed.push([0, 1]);
+  assert.equal(check(), 1);
+  assert.equal(cache.pages.size, 1);
+  live.get(2)[2][31] = 0.001; // rounds to black while the engine still holds the block
+  assert.equal(check(), 1);
+  assert.equal(cache.pages.size, 0);
+  assert.equal(check(), 0);
+  assert.equal(cache.pages.size, 0);
 });
 
 test('dense rows use the same byte convention and overwrite the entire previous image', () => {
   const size = 32, cache = new FieldTexture(size), gl = destination(size);
   const row = Float32Array.from({ length: size }, (_, x) => x / 24);
   gl.pixels.fill(73);
-  assert.equal(cache.uploadDense(gl, { row: y => y === -16 ? row : new Float32Array(size) }), size * size);
+  assert.equal(cache.uploadDense(gl, { row: y => y === -16 ? row : new Float32Array(size) }, new Uint8Array(size * size)), size * size);
   assert.deepEqual(gl.pixels.slice(0, size), Uint8Array.from(row, v => Math.min(255, Math.round(v * 255))));
   assert.ok(gl.pixels.slice(size).every(v => v === 0));
 });

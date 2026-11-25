@@ -81,8 +81,9 @@ storm, sparse bookkeeping outweighed the saving in cell updates.
 ## The picture
 
 The river fixture runs 900 frames of walking, impacts, spore rain, drifting river pods,
-and sailwing skims, covering 15 seconds of simulation. The dense and sparse engines receive
-the same events. At the final tick, the verifier compares all 1,048,576 cells in each of
+and sailwing skims, covering 15 seconds of simulation. Two additional impacts exercise the
+upland spring and the eastern shelf outside the original valley. The dense and sparse engines receive
+the same events. At the final tick, the verifier compares all 4,194,304 cells in each of
 three fields, including uniform rain. The picture check renders the same night exposure with
 each engine, then renders Boxel once more with a zero glow texture. All three use the same
 water, moisture, camera, simulation tick and five-frame temporal warmup.
@@ -91,23 +92,23 @@ Chrome on an Apple M4 Max at 720 × 480 pixels with the nighttime river fixture 
 
 | measurement | Boxel | dense |
 |---|---:|---:|
-| total cell updates | 129,889,024 | 1,415,577,600 |
-| field storage estimate at the last step | 3,010,816 bytes | 25,165,824 bytes |
-| final active blocks (glow, moisture, wear) | 610, 189, 25 | 4,096 per field |
+| total cell updates | 141,048,064 | 5,662,310,400 |
+| field storage estimate at the last step | 3,479,712 bytes | 100,663,296 bytes |
+| final active blocks (glow, moisture, wear) | 634, 253, 26 | 16,384 per field |
 
 | field | largest observed deficit | reported field bound |
 |---|---:|---:|
-| glow | 0.00185701 | 0.00335330 |
-| moisture | 0.00026188 | 0.00276765 |
-| wear | 0 | 0.00203862 |
+| glow | 0.00177913 | 0.00333956 |
+| moisture | 0.00026188 | 0.00276792 |
+| wear | 0 | 0.00203874 |
 
 Every sparse value was at or below its dense counterpart. Each measured deficit fit
 its field's reported bound and each bound fit the requested 1/255 tolerance. Both runs
 recorded zero block retirement audit failures. Pixel differences are a separate measurement
 that also depends on camera, viewport, shading and tone mapping.
 
-The Boxel and dense pictures measured 68.48 dB PSNR. Only 0.029% of pixels differed by
-more than two 8-bit levels in any channel. Removing glow changed 20.57% of pixels by that
+The Boxel and dense pictures measured 72.62 dB PSNR. Only 0.029% of pixels differed by
+more than two 8-bit levels in any channel. Removing glow changed 19.31% of pixels by that
 amount, with a peak change of 206 levels. CI requires scene contrast, a visible response
 to removing glow, at least 50 dB between engines and at most 1% of pixels over two levels.
 

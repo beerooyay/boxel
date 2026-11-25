@@ -50,7 +50,7 @@ export function groundAtlas(size, extent, groundAt, waterAt, addOccluders) {
 }
 
 export function bakeGroundLight(gl, extent, groundAt, waterAt, sc, highTrunks, pl) {
-  const size = 256;
+  const size = 2 * extent;
   const atlas = groundAtlas(size, extent, groundAt, waterAt, stamp => {
     for (let g = 0; g < sc.rv.length; g++) {
       if (g === 3) continue; // Individual shingle is smaller than one texel.

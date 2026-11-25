@@ -91,7 +91,7 @@ export function bakeClouds(gl, program, triangle, size) {
 // Approximate how much overhead sky remains visible below each crown. Use the
 // actual area and height of the leaves, then blur over a few metres of sky.
 export function bakeCanopy(gl, forest, extent) {
-  const size = 128, cellsPerMetre = size / extent, area = new Float32Array(size * size), moment = new Float32Array(area.length);
+  const size = extent, cellsPerMetre = size / extent, area = new Float32Array(size * size), moment = new Float32Array(area.length);
   const { R, D, M } = forest;
   for (let i = 0; i < R.length; i += 4) {
     const x = Math.floor((R[i] + 0.45 * D[i] * D[i + 3]) * cellsPerMetre + size / 2);

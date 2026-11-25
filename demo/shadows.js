@@ -1,6 +1,7 @@
 // Both light sources are fixed above the valley. Capture their depth from the actual
 // terrain, boulders and forest once, then reuse it in the scene and its reflection.
-export function bakeShadows(gl, size, directions, casters) {
+export function bakeShadows(gl, size, half, directions, casters) {
+  size = Math.min(size, gl.getParameter(gl.MAX_TEXTURE_SIZE));
   const texture = gl.createTexture();
   gl.activeTexture(gl.TEXTURE9);
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
@@ -42,12 +43,15 @@ export function bakeShadows(gl, size, directions, casters) {
 
   const matrices = directions.map(([x, y, z], layer) => {
     const horizontal = Math.hypot(x, z), rx = z / horizontal, rz = -x / horizontal;
-    // Orthographic projection centered six metres above the middle of the play area.
+    // Fit the projection to the whole square, including its diagonal and the upland canopy.
+    const centreY = 22, vertical = 46, along = half * (Math.abs(rx) + Math.abs(rz));
+    const width = along + 8, height = Math.abs(y) * along + horizontal * vertical + 4;
+    const depth = horizontal * along + Math.abs(y) * vertical + 8;
     const matrix = new Float32Array([
-      rx / 98, -y * x / horizontal / 76, -x / 125, 0,
-      0, horizontal / 76, -y / 125, 0,
-      rz / 98, -y * z / horizontal / 76, -z / 125, 0,
-      0, -6 * horizontal / 76, 6 * y / 125, 1,
+      rx / width, -y * x / horizontal / height, -x / depth, 0,
+      0, horizontal / height, -y / depth, 0,
+      rz / width, -y * z / horizontal / height, -z / depth, 0,
+      0, -centreY * horizontal / height, centreY * y / depth, 1,
     ]);
     gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, texture, 0, layer);
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw Error('Shadow depth target incomplete');

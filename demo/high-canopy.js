@@ -97,7 +97,7 @@ export function highCanopySites(heightAt, noise, random, half, pathCover, waterL
   for (let i = 0; i < 2400; i++) {
     const x = (random() * 2 - 1) * 200, z = (random() * 2 - 1) * 200;
     const edge = Math.max(Math.abs(x), Math.abs(z)), stand = noise(x * 0.045 + 3, z * 0.045 - 11);
-    if (edge < half - 12 || stand < 0.50 || edge < half && (stand < 0.73 || pathCover(x, z) > 0.01)) continue;
+    if (edge < half - 12 || stand < 0.50 || (edge < half && stand < 0.73) || pathCover(x, z) > 0.01) continue;
     const y = heightAt(x, z);
     if (y < waterLevel(x, z) + 0.8 || y > 38 || Math.abs(y - heightAt(x + 2, z + 1)) > 2.6) continue;
     const height = 4.8 + 9.8 * random() + stand * 3.3;

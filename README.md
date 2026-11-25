@@ -77,8 +77,9 @@ them. Peak allocations, event records and the certificate table also contribute 
 
 [Play Tarnished Promise in your browser](https://beerooyay.github.io/boxel/).
 
-Tarn is a 128 m square of playable lakeshore and upland trail. Coilferns line the western glen,
-amber fans circle the southeast terrace, and turquoise crystals mark a route up the northeast shelf.
+Tarn spans 256 × 256 metres, about 16 acres. Four connected upland walks add about 730 metres of trail
+around the original lake. Follow the river north to a spring, take the west walk through the coilferns,
+climb the eastern crystal shelf or look back across the lake from the amber fans on the southern ridge.
 Grass and low leaves part as you pass. Wading, skimming sailwings and thrown stones send ripples
 across the lake and downstream with the river current. Disturb the moss with a footstep or
 glowstone and its filaments pick up the local glow field. Cloud shadows cross the valley by

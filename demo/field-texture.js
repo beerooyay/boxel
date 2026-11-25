@@ -1,59 +1,76 @@
-// The engine owns the floats. This cache owns the R8 bytes the renderer actually sees.
+// R8 texels only need a CPU mirror where a field has visible activity. One
+// short row of blocks can share an upload without spanning distant splashes.
+const BLOCK = 16, STRIP = 8 * BLOCK;
 export class FieldTexture {
   constructor(size) {
     this.size = size;
-    this.bytes = new Uint8Array(size * size);
-    // One upload can join nearby changes, but never span a whole lake for two distant splashes.
-    this.strips = Math.ceil(size / 128);
-    const regions = this.strips * (size / 16);
-    this.left = new Uint16Array(regions);
-    this.right = new Uint16Array(regions);
-    this.top = new Uint16Array(regions);
-    this.bottom = new Uint16Array(regions);
+    this.strips = Math.ceil(size / STRIP);
+    this.pages = new Map();
+  }
+
+  reset() {
+    this.pages.clear();
   }
 
   uploadSparse(gl, field) {
-    const { size, strips, left, right, top, bottom, bytes } = this;
-    left.fill(size); right.fill(0); top.fill(size); bottom.fill(0);
+    const { size, strips, pages } = this;
     const visit = (bx, by, values) => {
-      const x = bx * 16 + size / 2, y = by * 16 + size / 2;
+      const x = bx * BLOCK + size / 2, y = by * BLOCK + size / 2;
       if (x < 0 || x >= size || y < 0 || y >= size) return;
-      const region = (y / 16) * strips + Math.floor(x / 128);
-      let x0 = 16, x1 = 0, y0 = 16, y1 = 0;
-      for (let row = 0; row < 16; row++) {
-        const dest = (y + row) * size + x;
-        let changed = false;
-        for (let col = 0; col < 16; col++) {
-          const value = values ? (Math.min(255, values[row * 16 + col] * 255 + 0.5) | 0) : 0;
+      const strip = Math.floor(x / STRIP), offset = x - strip * STRIP;
+      const key = y / BLOCK * strips + strip;
+      let page = pages.get(key);
+      const blockBit = 1 << (offset / BLOCK);
+      if (!page) {
+        if (!values) return;
+        let k = 0;
+        while (k < BLOCK * BLOCK && values[k] * 255 < 0.5) k++;
+        if (k === BLOCK * BLOCK) return;
+        page = { bytes: new Uint8Array(STRIP * BLOCK), x: x - offset, y, visibleBlocks: 0,
+          left: STRIP, right: 0, top: BLOCK, bottom: 0 };
+        pages.set(key, page);
+      } else if (!values && !(page.visibleBlocks & blockBit)) return;
+      const bytes = page.bytes;
+      let visible = 0;
+      for (let row = 0; row < BLOCK; row++) {
+        const dest = row * STRIP + offset, start = row * BLOCK;
+        let left = BLOCK, right = 0;
+        for (let col = 0; col < BLOCK; col++) {
+          const value = values ? (Math.min(255, values[start + col] * 255 + 0.5) | 0) : 0;
+          visible |= value;
           if (bytes[dest + col] === value) continue;
           bytes[dest + col] = value;
-          x0 = Math.min(x0, col); x1 = Math.max(x1, col + 1);
-          changed = true;
+          left = Math.min(left, col); right = col + 1;
         }
-        if (changed) { y0 = Math.min(y0, row); y1 = row + 1; }
+        if (right) {
+          page.left = Math.min(page.left, offset + left); page.right = Math.max(page.right, offset + right);
+          page.top = Math.min(page.top, row); page.bottom = Math.max(page.bottom, row + 1);
+        }
       }
-      if (x1 === 0) return;
-      left[region] = Math.min(left[region], x + x0); right[region] = Math.max(right[region], x + x1);
-      top[region] = Math.min(top[region], y + y0); bottom[region] = Math.max(bottom[region], y + y1);
+      if (visible) page.visibleBlocks |= blockBit;
+      else page.visibleBlocks &= ~blockBit;
     };
     // A retired block may already have been reused since the last render.
     field.freed((bx, by) => visit(bx, by, null));
     field.forgetFreed();
     field.blocks(visit);
     let sent = 0;
-    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, size);
-    for (let i = 0; i < left.length; i++) {
-      if (!right[i]) continue;
-      const width = right[i] - left[i], height = bottom[i] - top[i];
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, left[i], top[i], width, height, gl.RED, gl.UNSIGNED_BYTE, bytes, top[i] * size + left[i]);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, STRIP);
+    for (const [key, page] of pages) {
+      if (!page.right) continue;
+      const width = page.right - page.left, height = page.bottom - page.top;
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, page.x + page.left, page.y + page.top, width, height,
+        gl.RED, gl.UNSIGNED_BYTE, page.bytes, page.top * STRIP + page.left);
       sent += width * height;
+      if (!page.visibleBlocks) pages.delete(key);
+      else { page.left = STRIP; page.right = 0; page.top = BLOCK; page.bottom = 0; }
     }
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
     return sent;
   }
 
-  uploadDense(gl, grid) {
-    const { size, bytes } = this;
+  uploadDense(gl, grid, bytes) {
+    const size = this.size;
     for (let y = 0; y < size; y++) {
       const row = grid.row(y - size / 2);
       for (let x = 0; x < size; x++) bytes[y * size + x] = Math.min(255, row[x] * 255 + 0.5);
