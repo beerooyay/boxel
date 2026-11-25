@@ -164,19 +164,35 @@ const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer
 if (!gl) fail('WebGL2 is not available in this browser.');
 function fail(msg) { const el = document.getElementById('err'); el.hidden = false; el.textContent = msg; throw new Error(msg); }
 
+// Shaders compile in the GPU process, on worker threads where the driver allows it. Every program is queued here
+// without waiting on it, so the compiles run while the valley is built, and the results are read once, in boot.
+gl.getExtension('KHR_parallel_shader_compile');
+const queuedPrograms = [];
 function shader(type, src) {
   const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { const log = gl.getShaderInfoLog(s); console.error(src.split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n')); fail('shader: ' + log); }
   return s;
 }
 function program(vs, fs) {
-  const p = gl.createProgram();
-  gl.attachShader(p, shader(gl.VERTEX_SHADER, HEAD + vs)); gl.attachShader(p, shader(gl.FRAGMENT_SHADER, HEAD + COMMON + fs));
+  const p = gl.createProgram(), stages = [shader(gl.VERTEX_SHADER, HEAD + vs), shader(gl.FRAGMENT_SHADER, HEAD + COMMON + fs)];
+  for (const s of stages) gl.attachShader(p, s);
   gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) fail('link: ' + gl.getProgramInfoLog(p));
+  queuedPrograms.push([p, stages]);
   const cache = {};
   p.u = (n) => (n in cache ? cache[n] : (cache[n] = gl.getUniformLocation(p, n)));
   return p;
+}
+/** Stop at the first program that failed to compile or link, with its numbered source. */
+function checkPrograms() {
+  for (const [p, stages] of queuedPrograms.splice(0)) {
+    // a one-shot bake may already have used and deleted its program
+    if (!gl.isProgram(p) || gl.getProgramParameter(p, gl.LINK_STATUS)) continue;
+    for (const s of stages) {
+      if (gl.getShaderParameter(s, gl.COMPILE_STATUS)) continue;
+      console.error(gl.getShaderSource(s).split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n'));
+      fail('shader: ' + gl.getShaderInfoLog(s));
+    }
+    fail('link: ' + gl.getProgramInfoLog(p));
+  }
 }
 function uploadBuffer(target, data, usage = gl.STATIC_DRAW) {
   const buffer = gl.createBuffer();
@@ -1573,6 +1589,9 @@ function scatter(near) {
   const add = (v, x, z, sx, sy, sz, sink, rand = r) => {
     const yaw = rand() * 6.28, tint = rand();
     if (v !== 3 && trailDistance(x, z) < 0.85 + 1.2 * Math.max(sx, sz)) return;
+    // small stones only rest where the ground could hold them; a steep bank would leave them stuck to the wall
+    const ny = Math.max(sx, sz) < 0.6 ? nearNy(near, x, z) : 1;
+    if (ny < (v === 3 ? 0.84 : 0.62)) return;
     const base = v === 3 ? nearH(near, x, z) : H(x, z);
     rv[v].push(x, base - sink, z, yaw); rs[v].push(sx, sy, sz, tint);
   };
@@ -3155,7 +3174,8 @@ const VIEWS = {
   rose: skyView(skyBodies.rose),
   ocean: skyView(skyBodies.ocean),
   ice: skyView(skyBodies.ice),
-  summit: { eye: [summit[0], H(...summit) + 1.65, summit[1]], yaw: 2.48, pitch: -0.24 },
+  // from the crest, 4.6 m above the lookout's centre, over the valley to the lake
+  summit: { eye: [-43.5, H(-43.5, -41.5) + 1.8, -41.5], yaw: Math.atan2(LAKE[0] + 43.5, -41.5 - LAKE[1]), pitch: -0.2 },
   trail: { eye: [trail[0][0], H(...trail[0]) + 1.65, trail[0][1]], yaw: Math.atan2(trail[1][0] - trail[0][0], trail[0][1] - trail[1][1]), pitch: 0.02 },
   river: { eye: [riverX(-40) + 2.6, H(riverX(-40) + 2.6, -40) + 2.4, -40], yaw: -0.25, pitch: -0.32 },
   shore: { eye: [SHORE_CAM[0], H(...SHORE_CAM) + 2.6, SHORE_CAM[1]], yaw: -0.95, pitch: -0.24, motes: true },
@@ -3216,6 +3236,7 @@ function scripted(m, frames = 900, view = 'shore') {
 
 // ---------------------------------------------------------------- boot
 (async () => {
+  checkPrograms();
   engine = await loadEngine();
   const t0 = performance.now();
   glowF = new Layer(engine.boxel, SPECS.glow, texGlow);
