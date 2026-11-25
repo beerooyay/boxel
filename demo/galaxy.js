@@ -30,13 +30,16 @@ void main(){
   base = mix(base, vec3(1.0, 0.7, 0.42), core);
   base = mix(base, vec3(0.42, 0.48, 0.95), (1. - disc) * 0.55);
   float reach = smoothstep(0., 0.6, disc + 0.8 * broad + 0.5 * bulge);
+  // Resolve the halo's two grain octaves first. Its full 20 percent range alone
+  // can straddle several colour levels even where the dust is vanishingly thin.
+  float grain = 0.9 + 0.2 * fbmv(g * 150., 2);
   if (uBounded && abs(bb) > 2.7 * width) {
     // Every noise term lies in [0,1]. Bound the light the star clouds can add, the dust they can lose, and how far
     // each colour mix after the noise can move the pigment; finish here only when both ends round to the same code.
-    float laneMax = exp(-sq(max(0., abs(bb - 0.01) - 0.036) / 0.034));
+    float laneMax = exp(-sq(max(0., abs(bb - 0.01) - 0.0361) / 0.034));
     float dustMax = min(0.95, 0.85 * laneMax + 0.55 * reach + 0.45 * disc);
-    float lo = (0.08 * disc + broad + 0.3 * bulge) * falloff * (1. - dustMax) * 0.9 + stars * (1. - 0.6 * dustMax);
-    float hi = (2.08 * disc + broad + bulge) * falloff * 1.1 + stars;
+    float lo = (0.08 * disc + broad + 0.3 * bulge) * falloff * (1. - dustMax) * grain + stars * (1. - 0.6 * dustMax);
+    float hi = (2.08 * disc + broad + bulge) * falloff * grain + stars;
     float tintMax = 0.28 * (1. - warm) * disc + 0.3 * smoothstep(0.8, 1.6, hi) + 0.3 * dustMax;
     // Padding by 0.02 code on either side keeps floating-point roundoff
     // away from the rounding boundary. Only identical triples can finish here.
@@ -56,7 +59,7 @@ void main(){
   float filaments = min(1., smoothstep(0.86, 0.97, ridge(w * 7. + 2., 4)) * 0.7 + smoothstep(0.9, 0.98, ridge(w * 17. + 5., 3)) * 0.4);
   float darks = smoothstep(0.58, 0.82, fbmv(a * 9. + 9., 4)) * disc;
   float dust = clamp(lane * 0.85 + filaments * 0.55 * reach + darks * 0.45, 0., 0.95);
-  I *= (1. - dust) * (0.9 + 0.2 * fbmv(g * 150., 2));
+  I *= (1. - dust) * grain;
   I += stars * (1. - 0.6 * dust);
   // a violet cast in the arms' star clouds, white where they are brightest, brown where dust reddens what it passes
   vec3 col = mix(base, vec3(0.86, 0.66, 1.0), 0.28 * (1. - warm) * clouds * disc);
