@@ -769,7 +769,7 @@ void main(){
     // stay bare and the hiking tread keeps its worn mineral surface.
     float shelf = smoothstep(0.21, 0.78, vN.y + 0.32 * flutes - 0.18 * ledge);
     float cushion = smoothstep(0.30, 0.68, 0.60 * flutes + 0.40 * n1 + 0.15 * (n2 - 0.5)) * shelf;
-    vec3 lichen = mix(vec3(0.024, 0.057, 0.034), vec3(0.17, 0.20, 0.065), ledge * (0.53 + 0.42 * n2));
+    vec3 lichen = mix(vec3(0.030, 0.081, 0.034), vec3(0.235, 0.295, 0.074), shelf * (0.23 + 0.60 * ledge + 0.17 * n2));
     face = mix(face, lichen * (0.65 + 0.66 * n3), cushion);
     alb = mix(alb, face * (0.73 + 0.46 * n1), cliff);
     N = normalize(N + cliff * (vec3(0., 1., 0.) - N * N.y) * (0.68 * ledge - 0.26 - runnel * 0.20));
@@ -1069,7 +1069,10 @@ void main(){
   vec3 sky = ambient(face) * contactLight(vWP) * mix(vec3(1.), vec3(0.34, 0.48, 0.48), canopyCover(vWP));
   float direct = dot(face, uSunDir);
   vec3 light = albedo * (2.55 * sky + floraSpill(vWP) + sun * (0.06 + 0.55 * max(direct, 0.)));
-  light += sun * albedo * max(-direct, 0.) * (thin + 0.19 * edge) * (0.60 + 0.4 * u);
+  // Green laminae transmit more amber and green light at their thin edges.
+  float teal = smoothstep(0.01, 0.21, tint.g - tint.r);
+  vec3 transmitted = albedo * mix(vec3(1.), vec3(1.58, 1.23, 0.58), teal * (0.38 + 0.62 * edge));
+  light += sun * transmitted * max(-direct, 0.) * (thin + 0.19 * edge) * (0.60 + 0.4 * u);
   float sheen = max(dot(face, normalize(V + uSunDir)), 0.);
   float broad = sheen * sheen; broad *= broad; broad *= broad;
   float gloss = broad * broad; gloss *= gloss;
@@ -2234,8 +2237,7 @@ function moteScatter() {
 
 // ---------------------------------------------------------------- the night sky
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-// the galaxy's frame in the sky's, rows toward its core, its pole and the third axis: the core stands low in the south,
-// in the open sky between the rose giant and the ocean world, and the band climbs from it past the zenith
+// Galactic coordinates in the sky frame, with rows toward the core, the galactic pole and their cross product.
 const GAL = (() => {
   // the core stands 13 degrees from the pole, so it never sets and rides 40 to 65 degrees up all night
   const C = norm([0.192, 0.669, 0.718]), V0 = norm([-C[0] * C[1], 1 - C[1] * C[1], -C[2] * C[1]]), W = cross(C, V0), a = 0.45;
