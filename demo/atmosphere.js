@@ -63,7 +63,9 @@ float canopyCover(vec3 wp) {
 `;
 
 // One periodic cloud field feeds the sky, its reflection and sunlight on the valley.
-// Matching lattice periods at every octave keep the wind loop seamless.
+// Matching lattice periods at every octave keep the wind loop seamless. Fair-weather cumulus: rounded heads built from
+// three octaves of cells, gathered where a slow cover field allows, with clear sky between. Red is how much of the sky a
+// cloud hides, green the billows that roughen its edge, blue how thick it is toward its middle.
 export function bakeClouds(gl, program, triangle, size) {
   const cloud = program(triangle, `
     in vec2 vUv; out vec4 o;
@@ -74,21 +76,31 @@ export function bakeClouds(gl, program, triangle, size) {
       float c = hash12(mod(i + vec2(0., 1.), cells)), d = hash12(mod(i + 1., cells));
       return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
     }
+    // one rounded head per cell, jittered, wrapping every n cells: 1 at its centre, falling to 0 a cell away
+    float heads(vec2 uv, float cells, float seed) {
+      vec2 q = uv * cells, i = floor(q), f = fract(q);
+      float d = 8.;
+      for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+        vec2 c = vec2(float(x), float(y)), p = c + 0.15 + 0.7 * hash22(mod(i + c, cells) + seed) - f;
+        d = min(d, dot(p, p));
+      }
+      return 1. - min(sqrt(d), 1.);
+    }
     void main(){
       vec2 warp = vec2(periodicNoise(vUv, 9., vec2(3.)), periodicNoise(vUv, 9., vec2(17.4))) - 0.5;
-      vec2 q = vUv + warp * 0.027;
+      vec2 q = vUv + warp * 0.03;
       float cover = periodicNoise(q, 7., vec2(4.1)) * 0.64 + periodicNoise(q, 15., vec2(12.1)) * 0.36;
-      float lobes = 1. - abs(periodicNoise(q, 31., vec2(2.1)) * 2. - 1.);
-      float wisps = 0.62 * periodicNoise(q, 95., vec2(2.3)) + 0.38 * periodicNoise(q, 213., vec2(11.));
-      float optical = smoothstep(0.42, 0.78, 0.62 * cover + 0.24 * lobes + 0.24 * wisps - 0.06);
-      float curls = periodicNoise(vUv + warp * 0.047, 27., vec2(3.7)) * 0.45
-                  + periodicNoise(q, 61., vec2(6.4)) * 0.32 + wisps * 0.23;
-      o = vec4(optical, curls, 0., 1.);
+      float shape = 1.7 * (cover - 0.5) + 0.6 * heads(q, 16., 3.) + 0.28 * heads(q, 35., 17.) + 0.12 * heads(q, 77., 29.)
+                  + 0.06 * periodicNoise(q, 140., vec2(5.3));
+      float optical = smoothstep(0.66, 0.8, shape), thick = smoothstep(0.66, 1.15, shape);
+      float curls = heads(vUv + warp * 0.047, 27., 41.) * 0.5 + periodicNoise(q, 61., vec2(6.4)) * 0.3
+                  + periodicNoise(q, 213., vec2(11.)) * 0.2;
+      o = vec4(optical, curls, thick, 1.);
     }`);
   const texture = gl.createTexture(), fb = gl.createFramebuffer();
   gl.activeTexture(gl.TEXTURE11);
   gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texStorage2D(gl.TEXTURE_2D, 1 + Math.floor(Math.log2(size)), gl.RG8, size, size);
+  gl.texStorage2D(gl.TEXTURE_2D, 1 + Math.floor(Math.log2(size)), gl.RGBA8, size, size);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.bindFramebuffer(gl.FRAMEBUFFER, fb);

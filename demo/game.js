@@ -392,12 +392,16 @@ vec3 skyColor(vec3 d){
     // The deck is a slab, not a sheet: the ray enters its floor here and leaves its top farther on, and only the
     // densest heads reach the top. Low in the sky the two are far apart and the clouds stack up behind each other.
     vec2 cu = cloudUV(uCam, d);
-    float body = texture(uClouds, cu).r;
+    vec4 field = texture(uClouds, cu);
+    float body = field.r, thick = field.b;
     float curls = texture(uClouds, cu * 4. + vec2(0.17, 0.63)).g - 0.5;
     float density = clamp(body + 1.75 * curls * smoothstep(0., 0.14, body) * (1. - 0.65 * body), 0., 1.);
-    density = mix(density, 0.62 + 0.38 * body, uStorm);
+    // a storm deck is one soft grey ceiling; the heads blur into it
+    float soft = uStorm > 0. ? smoothstep(0.2, 0.8, 0.55 * vnoise(cu * 30. + 1.3) + 0.3 * vnoise(cu * 70. + 4.1) + 0.15 * vnoise(cu * 160.)) : 0.;
+    density = mix(density, 0.7 + 0.3 * soft, uStorm);
     float opacity = smoothstep(0.015, 0.18, d.y) * mix(mix(0.82, 0.44, uNight), 0.97, uStorm);
-    vec3 a = vec3(density, 0., 0.) * opacity;
+    // by night only the thicker heads show, so the stars keep the gaps
+    vec3 a = vec3(mix(density, smoothstep(0.3, 0.9, density), uNight * (1. - uStorm)), 0., 0.) * opacity;
     float stack = (1. - smoothstep(0.06, 0.24, d.y)) * (1. - uStorm);
     if (stack > 0.) {
       vec2 cuTop = cloudUV(uCam - vec3(0., 42., 0.), d);
@@ -410,17 +414,30 @@ vec3 skyColor(vec3 d){
       vec2 toward = normalize(uSunDir.xz + 1e-4) * mix(0.0068, 0.016, 1. - smoothstep(0.05, 0.4, uSunDir.y));
       float crossed = 0.;
       for (int k = 1; k <= 4; k++) crossed += textureLod(uClouds, cu + toward * float(k * k) * 0.45, 1.).r * (0.5 - 0.1 * float(k));
-      float rim = clamp((density - crossed) * 1.8 + 0.18 + 0.32 * (1. - density) + 0.45 * curls, 0., 1.);
-      // shadowed cloud takes the colour of the sky above it as the star goes down: blue-grey, not bruised
+      // each head and billow is brighter on the side toward the light and darker on the far side
+      float thickToward = textureLod(uClouds, cu + toward * 0.6, 0.).b;
+      float curlsToward = texture(uClouds, (cu + toward * 0.3) * 4. + vec2(0.17, 0.63)).g - 0.5;
+      float relief = (thick - thickToward) * 3.4 + (curls - curlsToward) * 1.5;
+      float rim = clamp((density - crossed) * 1.8 + 0.18 + 0.32 * (1. - density) + 0.45 * curls + relief, 0., 1.);
+      // a low star lights the heaps from underneath: the thin edges glow and the thick middles hold their own shadow
       float low = 1. - smoothstep(0.03, 0.36, uStarDir.y), dusk = low * low;
+      rim = mix(rim, clamp(0.15 + 0.8 * (1. - thick) + 0.6 * relief + 0.45 * curls, 0., 1.), dusk);
+      // under a storm the deck has no edges to light: only broad, soft swells of darker and lighter grey
+      rim = mix(rim, 0.2 + 0.7 * soft, uStorm);
+      // shadowed cloud takes the colour of the sky above it as the star goes down: blue-grey, not bruised
       vec3 zenith = skyBase(vec3(0., 1., 0.));
       vec3 shade = mix(vec3(0.16, 0.22, 0.34), zenith * 0.9, dusk);
       // and the sky fills the lit side too, so a sunset cloud is salmon and rose rather than flat orange
-      vec3 cc = mix(shade, vec3(1.20, 1.12, 0.95) * uCloudTint + zenith * 0.35 * dusk, rim);
+      vec3 cc = mix(shade, vec3(1.20, 1.12, 0.95) * uCloudTint * (1. - 0.2 * dusk) + zenith * 0.35 * dusk, rim);
+      // the thick middle of a heap is its flat grey floor, seen from underneath
+      cc *= 1. - 0.38 * thick * (1. - rim * 0.5) * (1. - uNight) * (1. - uStorm);
       cc += vec3(0.58, 0.33, 0.15) * uCloudTint * pow(max(dot(d, uStarDir), 0.), 8.) * (1. - density);
-      cc = mix(cc, vec3(0.008, 0.013, 0.032) + vec3(0.045, 0.07, 0.13) * rim, uNight);
+      // by night: dark heaps with a cool edge toward the planet, without the daytime relief
+      float edge = clamp((density - crossed) * 1.8 + 0.1 + 0.3 * (1. - density), 0., 1.);
+      edge = mix(edge, 0.1 + 0.9 * soft, uStorm);
+      cc = mix(cc, vec3(0.006, 0.01, 0.024) + vec3(0.04, 0.062, 0.115) * edge, uNight);
       // storm cloud: a low, dark, heavy deck, and lightning lighting it from inside
-      cc = mix(cc, vec3(0.13, 0.145, 0.17) * (0.55 + 0.7 * rim) * (1. - 0.88 * uNight), uStorm * 0.85);
+      cc = mix(cc, vec3(0.13, 0.145, 0.17) * (0.55 + 0.7 * edge) * (1. - 0.88 * uNight), uStorm * 0.85);
       cc += vec3(0.42, 0.46, 0.66) * uFlash * (0.45 + 0.8 * rim);
       // the heads behind stand in more light than the floor in front
       float rise = 0.2 * (1. - uNight);
@@ -1358,27 +1375,36 @@ void main(){
          : uFace == 3 ? vec3(uv.x, -1., -uv.y) : uFace == 4 ? vec3(uv.x, -uv.y, 1.) : vec3(-uv.x, -uv.y, -1.);
   vec3 g = normalize(s) * uGal;
   float b = asin(clamp(g.y, -1., 1.)), l = atan(g.z, g.x), lr = abs(l);
-  float width = mix(0.16, 0.085, smoothstep(0., 2.4, lr));
+  float width = mix(0.21, 0.12, smoothstep(0., 2.4, lr));
   float bb = b - (fbmv(g * 3. + 1.7, 3) - 0.5) * 0.11 - 0.03 * sin(l * 2. + 0.5);
-  float disc = exp(-sq(bb / width)), broad = exp(-sq(bb / (width * 2.8))) * 0.22;
+  // the disc, a broad glow around it, and a faint halo over half the sky
+  float disc = exp(-sq(bb / width)), broad = exp(-sq(bb / (width * 3.2))) * 0.28 + exp(-sq(bb / 0.75)) * 0.025;
   float clouds = smoothstep(0.28, 0.78, fbmv(g * 7. + 11., 4)), fine = fbmv(g * 42., 4);
-  float bulgeR = sqrt(l * l + sq(b * 1.8)), bulge = exp(-sq(bulgeR / 0.24)) * 1.1;
-  float I = disc * (0.38 + clouds * (0.55 + 0.45 * fine)) + broad + bulge * (0.55 + 0.45 * fine);
-  I *= mix(1., 0.42, smoothstep(1.4, 3., lr));
-  float lane = exp(-sq((bb - 0.012 + (fbmv(g * 9. + 3.3, 3) - 0.5) * 0.07) / 0.034)) * smoothstep(-1.25, -0.15, l) * (1. - smoothstep(0.9, 1.6, l));
+  // bright star clouds knotted along the band
+  float knots = smoothstep(0.55, 0.85, fbmv(g * 16. + 2., 4)) * disc;
+  float bulgeR = sqrt(l * l + sq(b * 1.8)), bulge = exp(-sq(bulgeR / 0.3)) * 1.25;
+  float I = disc * (0.42 + clouds * (0.6 + 0.45 * fine)) + broad + knots * 0.6 * (0.6 + 0.4 * fine) + bulge * (0.55 + 0.45 * fine);
+  I *= mix(1., 0.45, smoothstep(1.4, 3., lr));
+  float lane = exp(-sq((bb - 0.012 + (fbmv(g * 9. + 3.3, 3) - 0.5) * 0.07) / 0.038)) * smoothstep(-1.25, -0.15, l) * (1. - smoothstep(0.9, 1.6, l));
   float dpatch = smoothstep(0.56, 0.82, fbmv(g * 13. + 9., 4)) * smoothstep(0., 0.5, disc + bulge * 0.4);
   float coal = smoothstep(0.62, 0.9, fbmv(g * 30. + 4., 3)) * disc;
   float streak = bb + 0.065 + (fbmv(g * 11. + 7., 4) - 0.5) * 0.16;
   float threads = exp(-sq(streak / 0.013)) + 0.58 * exp(-sq((streak + 0.022) / 0.007));
   float dust = clamp(lane * 0.86 + dpatch * 0.56 + coal * 0.46 + threads * disc * 0.58, 0., 0.96);
   I *= (1. - dust) * (0.8 + 0.4 * fbmv(g * 170., 2));
-  vec3 col = mix(vec3(0.52, 0.66, 1.0), vec3(1.0, 0.8, 0.52), clamp(exp(-sq(bulgeR / 0.5)) * 1.2, 0., 1.));
-  col = mix(col, vec3(0.62, 0.5, 1.0), (1. - disc) * 0.4);
-  col = mix(col, vec3(1.0, 0.56, 0.4), dust * 0.55);
-  float neb = smoothstep(0.62, 0.84, fbmv(g * 22. + 5.5, 3)) * disc;
-  col = mix(col, vec3(1.0, 0.4, 0.55), neb * smoothstep(-0.5, 0.3, l) * (1. - smoothstep(0.7, 1.2, l)) * 0.6);
-  col = mix(col, vec3(0.35, 0.92, 0.88), neb * smoothstep(1.4, 2.0, lr) * 0.45);
-  o = vec4(col * sqrt(max(I * 0.5, 0.)), 1.);
+  // the grain of stars too faint to resolve: dense in the band, a few brighter ones, all of them in front of the dust
+  vec3 cell = floor(normalize(s) * uSize * 0.9);
+  float faint = pow(h13(cell), 7.), bright = pow(h13(cell + 31.7), 40.);
+  I += (faint * 0.3 + bright * 4.) * (disc * disc + broad * 0.5 + bulge * 0.8) * (1. - 0.6 * dust);
+  // warm and dusty toward the core, violet along the arms, rose where gas glows
+  vec3 col = mix(vec3(0.6, 0.55, 1.0), vec3(1.0, 0.72, 0.42), clamp(exp(-sq(bulgeR / 0.75)) * 1.3, 0., 1.));
+  col = mix(col, vec3(0.6, 0.5, 1.0), (1. - disc) * 0.4);
+  col = mix(col, vec3(1.0, 0.92, 0.95), knots * 0.35);
+  col = mix(col, vec3(1.0, 0.5, 0.32), dust * 0.6);
+  float neb = smoothstep(0.6, 0.84, fbmv(g * 22. + 5.5, 3)) * disc;
+  col = mix(col, vec3(1.0, 0.38, 0.62), neb * smoothstep(-0.9, 0.2, l) * (1. - smoothstep(1.1, 1.8, l)) * 0.75);
+  col = mix(col, vec3(0.35, 0.92, 0.88), neb * smoothstep(1.5, 2.1, lr) * 0.45);
+  o = vec4(col * sqrt(max(I * 0.62, 0.)), 1.);
 }`);
 
 // ---------------------------------------------------------------- geometry
