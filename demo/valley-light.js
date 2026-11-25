@@ -122,6 +122,8 @@ void main(){
   vec3 light = vec3(0.);
   float forward = pow(max(dot(dir, uStarDir), 0.), 6.);
   vec3 day = vec3(0.19, 0.29, 0.32) + forward * vec3(1., 0.68, 0.39) * uStarTint;
+  // Moist soil and standing water keep some low mist even under a high star.
+  vec2 densityRange = vec2(0.008, 0.064) * (1. - vec2(0.76, 0.42) * clearAfternoon());
   float start = 0.;
   for (int i = 1; i <= 10; ++i) {
     float end = reach * float(i*i) * 0.01, stepLength = end - start;
@@ -134,7 +136,7 @@ void main(){
     if (above < -0.3 || above > 3.8) continue;
     float wet = clamp(textureLod(uGround, uv, 0.).r + uSheet + 0.53 * (1. - smoothstep(-0.1, 1., bed - water)), 0., 1.);
     float drift = vnoise(wp.xz * 0.29 + vec2(-0.054, 0.017) * uTime + above * 0.16);
-    float density = atlasCoverage(uv) * mix(0.008, 0.064, wet) * (0.3 + drift) * exp(-max(0., above) * 1.35);
+    float density = atlasCoverage(uv) * mix(densityRange.x, densityRange.y, wet) * (0.3 + drift) * exp(-max(0., above) * 1.35);
     float scatter = 1. - exp(-density * stepLength);
     vec3 incident = vec3(0.021, 0.040, 0.068);
     if (uNight < 0.999) {
