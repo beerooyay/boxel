@@ -87,7 +87,11 @@ day, and the pigments in leaves and wetland flowers set the colour of their ligh
 Mist gathers over wet ground and water. At night, a fresh disturbance lights the mist above it
 from the same Boxel field that lights the surface.
 Four worlds share the same stellar light direction above the mountains. Press **N** for night
-and **M** to restart the fields under the other engine. Touch controls offer both actions.
+and **M** to restart the fields under the other engine. Press **C** to let the day run: the star
+crosses the sky about the same pole the stars turn on, its light reddens through the air toward a
+sunset, and its shadows are baked again as it moves. Press **T** for a storm: rain rings the
+water, lightning flashes the glow field and thunder arrives as late as the distance says. **V**
+turns the sound, made as it plays, on or off. Touch controls offer each of these.
 
 The browser renderer uses WebGL2 and the Rust field engine compiled to WebAssembly.
 Pages builds the engine from the published revision with Rust 1.92.0 and checks its native replay before deployment.

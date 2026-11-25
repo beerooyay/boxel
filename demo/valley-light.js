@@ -116,7 +116,7 @@ void main(){
   float transmission = 1.;
   vec3 light = vec3(0.);
   float forward = pow(max(dot(dir, uStarDir), 0.), 6.);
-  vec3 day = vec3(0.19, 0.29, 0.32) + forward * vec3(1., 0.68, 0.39);
+  vec3 day = vec3(0.19, 0.29, 0.32) + forward * vec3(1., 0.68, 0.39) * uStarTint;
   float start = 0.;
   for (int i = 1; i <= 10; ++i) {
     float end = reach * float(i*i) * 0.01, stepLength = end - start;

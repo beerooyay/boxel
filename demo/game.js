@@ -263,7 +263,7 @@ vec3 impactWave(vec2 p){
 }
 `;
 const COMMON = WAVES + valleyAir + `
-uniform vec3 uSunDir, uSunCol;
+uniform vec3 uSunDir, uSunCol, uCloudTint;
 uniform mat3 uSky;
 uniform samplerCube uMilky;
 uniform float uTime, uExposure, uExtent, uSheet, uWind, uHDR;
@@ -311,7 +311,7 @@ vec3 skyColor(vec3 d){
     vec3 mw = texture(uMilky, uSky * d).rgb;
     c += mw * mw * uNight * smoothstep(-0.02, 0.22, d.y) * 0.5;
   }
-  c += STAR_COL * (1. - uNight) * (1. - uStorm) * 3. * smoothstep(0.99935, 0.99965, dot(d, uStarDir));
+  c += STAR_COL * uStarTint * (1. - uNight) * (1. - uStorm) * 3. * smoothstep(0.99935, 0.99965, dot(d, uStarDir));
   vec3 P = uPlanetDir; vec3 T = normalize(cross(P, vec3(0., 1., 0.))); vec3 B = cross(T, P);
   float dp = dot(d, P);
   if (dp > 0.7) {
@@ -389,24 +389,45 @@ vec3 skyColor(vec3 d){
   // a full storm swallows the worlds and the stars behind its deck
   c = mix(c, skyBase(d), uStorm * 0.85); starTransmission *= 1. - uStorm;
   if (d.y > 0.015) {
+    // The deck is a slab, not a sheet: the ray enters its floor here and leaves its top farther on, and only the
+    // densest heads reach the top. Low in the sky the two are far apart and the clouds stack up behind each other.
     vec2 cu = cloudUV(uCam, d);
     float body = texture(uClouds, cu).r;
     float curls = texture(uClouds, cu * 4. + vec2(0.17, 0.63)).g - 0.5;
     float density = clamp(body + 1.75 * curls * smoothstep(0., 0.14, body) * (1. - 0.65 * body), 0., 1.);
     density = mix(density, 0.62 + 0.38 * body, uStorm);
-    float cov = density * smoothstep(0.015, 0.18, d.y) * mix(mix(0.82, 0.44, uNight), 0.97, uStorm);
-    if (cov > 0.001) {
-      // A short second sample along the light direction distinguishes a bright lip from the shaded column.
-      float towardLight = texture(uClouds, cu + uSunDir.xz * 0.009).r;
-      float rim = clamp((density - towardLight) * 1.8 + 0.18 + 0.32 * (1. - density) + 0.45 * curls, 0., 1.);
-      vec3 cc = mix(vec3(0.16, 0.22, 0.34), vec3(1.20, 1.12, 0.95), rim);
-      cc += vec3(0.58, 0.33, 0.15) * pow(max(dot(d, uStarDir), 0.), 8.) * (1. - density);
+    float opacity = smoothstep(0.015, 0.18, d.y) * mix(mix(0.82, 0.44, uNight), 0.97, uStorm);
+    vec3 a = vec3(density, 0., 0.) * opacity;
+    float stack = (1. - smoothstep(0.06, 0.24, d.y)) * (1. - uStorm);
+    if (stack > 0.) {
+      vec2 cuTop = cloudUV(uCam - vec3(0., 42., 0.), d);
+      a.y = smoothstep(0.5, 0.82, texture(uClouds, mix(cu, cuTop, 0.5)).r) * 0.5 * stack * opacity;
+      a.z = smoothstep(0.62, 0.92, texture(uClouds, cuTop).r) * 0.4 * stack * opacity;
+    }
+    if (a.x + a.y + a.z > 0.002) {
+      // Light marched toward its source through the field, the nearest cloud counting most. A lip facing the light
+      // is bright, the column behind it shaded; a low star crosses far more cloud on its way in.
+      vec2 toward = normalize(uSunDir.xz + 1e-4) * mix(0.0068, 0.016, 1. - smoothstep(0.05, 0.4, uSunDir.y));
+      float crossed = 0.;
+      for (int k = 1; k <= 4; k++) crossed += textureLod(uClouds, cu + toward * float(k * k) * 0.45, 1.).r * (0.5 - 0.1 * float(k));
+      float rim = clamp((density - crossed) * 1.8 + 0.18 + 0.32 * (1. - density) + 0.45 * curls, 0., 1.);
+      // shadowed cloud takes the colour of the sky above it as the star goes down: blue-grey, not bruised
+      float low = 1. - smoothstep(0.03, 0.36, uStarDir.y), dusk = low * low;
+      vec3 zenith = skyBase(vec3(0., 1., 0.));
+      vec3 shade = mix(vec3(0.16, 0.22, 0.34), zenith * 0.9, dusk);
+      // and the sky fills the lit side too, so a sunset cloud is salmon and rose rather than flat orange
+      vec3 cc = mix(shade, vec3(1.20, 1.12, 0.95) * uCloudTint + zenith * 0.35 * dusk, rim);
+      cc += vec3(0.58, 0.33, 0.15) * uCloudTint * pow(max(dot(d, uStarDir), 0.), 8.) * (1. - density);
       cc = mix(cc, vec3(0.008, 0.013, 0.032) + vec3(0.045, 0.07, 0.13) * rim, uNight);
       // storm cloud: a low, dark, heavy deck, and lightning lighting it from inside
       cc = mix(cc, vec3(0.13, 0.145, 0.17) * (0.55 + 0.7 * rim) * (1. - 0.88 * uNight), uStorm * 0.85);
       cc += vec3(0.42, 0.46, 0.66) * uFlash * (0.45 + 0.8 * rim);
-      c = mix(c, cc, cov);
-      starTransmission *= 1. - cov;
+      // the heads behind stand in more light than the floor in front
+      float rise = 0.2 * (1. - uNight);
+      c = mix(c, cc * (1. + rise), a.z);
+      c = mix(c, cc * (1. + 0.5 * rise), a.y);
+      c = mix(c, cc, a.x);
+      starTransmission *= (1. - a.x) * (1. - a.y) * (1. - a.z);
     }
   }
   return c;
@@ -414,6 +435,9 @@ vec3 skyColor(vec3 d){
 ${canopyShelter}
 vec3 ambient(vec3 n){
   vec3 day = mix(vec3(0.028, 0.030, 0.035), vec3(0.095, 0.143, 0.177), n.y * 0.5 + 0.5);
+  // the open sky gives less as the star sinks
+  float low = 1. - smoothstep(0.03, 0.36, uStarDir.y);
+  day *= mix(vec3(1.), vec3(0.66, 0.64, 0.8), low * low);
   vec3 nite = mix(vec3(0.004, 0.007, 0.015), vec3(0.015, 0.026, 0.060), n.y * 0.5 + 0.5);
   vec3 a = mix(day, nite, uNight);
   // under a storm deck the light goes flat and grey; lightning floods everything for an instant
@@ -434,7 +458,9 @@ vec3 floraSpill(vec3 wp){
   return sampleLight.rgb * (1. - smoothstep(0.25, 2.4, abs(wp.y - height))) * uNight * uNight;
 }
 uniform highp sampler2DArrayShadow uShadows;
-uniform mat4 uLightVP[2];
+uniform mat4 uLightVP[3];
+// While the day runs, the star's shadow fades from the layer baked for where it was to the one for where it will be.
+uniform ivec2 uSunLayers; uniform float uSunBlend;
 float shadowAt(vec3 wp, int layer){
   vec3 uv = (uLightVP[layer] * vec4(wp, 1.)).xyz * 0.5 + 0.5;
   if (any(lessThan(uv, vec3(0.))) || any(greaterThan(uv, vec3(1.)))) return 1.;
@@ -449,7 +475,11 @@ float shadowAt(vec3 wp, int layer){
 }
 float directLight(vec3 wp){
   float day = 1., moon = 1.;
-  if (uNight < 0.999) day = mix(0.13, 1., shadowAt(wp, 0));
+  if (uNight < 0.999) {
+    float lit = shadowAt(wp, uSunLayers.x);
+    if (uSunBlend > 0.) lit = mix(lit, shadowAt(wp, uSunLayers.y), uSunBlend);
+    day = mix(0.13, 1., lit);
+  }
   if (uNight > 0.001) moon = mix(0.32, 1., shadowAt(wp, 1));
   float light = mix(day, moon, uNight) * (1. - 0.82 * uStorm);
   if (wp.y >= 120.) return light;
@@ -1175,7 +1205,7 @@ void main(){
   vWave = waterWave(aXZ, uTime).x + impactWave(aXZ).x;
   vWP = vec3(aXZ.x, aWater.x + vWave, aXZ.y); vDepth = aWater.y; vFlow = aWater.z; gl_Position = project(vWP);
 }`,
-`uniform sampler2D uRefl; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel;
+`uniform sampler2D uRefl, uUnder; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel;
 in vec3 vWP; in float vDepth, vWave, vFlow; out vec4 o;
 // raindrops: in every cell a drop lands at its own moment and sends out one ring; two cell sizes, offset, so no
 // lattice shows
@@ -1218,10 +1248,11 @@ void main(){
   float F = 0.022 + 0.978 * pow(1. - NdV, 5.);
   vec2 forward = vec2(uRightXZ.y, -uRightXZ.x);
   vec2 distortion = vec2(dot(N.xz, uRightXZ) * uRes.y / uRes.x, dot(N.xz, forward));
+  // the waves bend the mirrored picture less toward the frame's edges, so nothing is ever read from outside it
   vec2 suv = gl_FragCoord.xy / uRes;
-  vec2 warped = suv + distortion * mix(0.065, 0.16, NdV);
-  float edge = min(min(warped.x, warped.y), min(1. - warped.x, 1. - warped.y));
-  float planar = (1. - smoothstep(0.08, 0.85, abs(level - uMirrorLevel))) * smoothstep(0., 0.025, edge);
+  float frame = smoothstep(0., 0.06, min(min(suv.x, suv.y), min(1. - suv.x, 1. - suv.y)));
+  vec2 warped = suv + distortion * mix(0.065, 0.16, NdV) * frame;
+  float planar = 1. - smoothstep(0.08, 0.85, abs(level - uMirrorLevel));
   vec3 refl = mix(tonemap(skyBase(reflect(-V, N))), texture(uRefl, clamp(warped, 0., 1.)).rgb, planar);
 
   // At a grazing angle the ray travels farther through water. Alpha carries the
@@ -1243,8 +1274,12 @@ void main(){
   float light = uNight * uNight * glowI(glow);
   col = mix(col, tonemap(vec3(0.68, 0.78, 0.81) * (ambient(N) * 2.4 + uSunCol * sun * 0.16)), foam * 0.48);
   col += tonemap(glowCol(p * 1.3 + 7.) * light * (0.5 + 1.3 * uNight));
-  alpha = min(1., alpha + foam * 0.2 + light * 0.40) * smoothstep(-0.02, 0.035, depth);
-  o = vec4(col, alpha);
+  alpha = min(1., alpha + foam * 0.2 + light * 0.40);
+  // the bed and whatever stands in the water, seen through the surface: bent by the same waves, more as it deepens,
+  // and tinted by the water it passes through. At the very edge the true bed shows, unbent.
+  vec2 bend = suv - distortion * clamp(depth * 0.25, 0., 0.09) * frame;
+  vec3 under = texture(uUnder, clamp(bend, 0.002, 0.998)).rgb * mix(vec3(1.), vec3(0.78, 0.95, 0.92), absorb);
+  o = vec4(mix(under, col, alpha), smoothstep(-0.02, 0.035, depth));
 }`);
 
 const POINTS = program(WORLD_VS + `
@@ -2533,8 +2568,8 @@ const post = { w: 0, h: 0, ms: null, previous: null, write: 0 };
 function ensurePost(w, h) {
   if (post.w === w && post.h === h) return;
   if (post.res) {
-    for (const f of [post.ms, post.resF, ...post.mips.map((m) => m.f), post.rays.f, post.mist.f, ...post.history.map(m => m.f)]) if (f) gl.deleteFramebuffer(f);
-    for (const t of [post.res, ...post.mips.map((m) => m.t), post.rays.t, post.depth, post.mist.t, ...post.history.map(m => m.t)]) gl.deleteTexture(t);
+    for (const f of [post.ms, post.resF, ...post.mips.map((m) => m.f), post.rays.f, post.mist.f, post.under.f, ...post.history.map(m => m.f)]) if (f) gl.deleteFramebuffer(f);
+    for (const t of [post.res, ...post.mips.map((m) => m.t), post.rays.t, post.depth, post.mist.t, post.under.t, ...post.history.map(m => m.t)]) gl.deleteTexture(t);
     for (const rb of [post.msC, post.msD]) if (rb) gl.deleteRenderbuffer(rb);
   }
   post.w = w; post.h = h; post.ms = null;
@@ -2566,6 +2601,19 @@ function ensurePost(w, h) {
   post.mips = [];
   for (let i = 1; i <= 2; i++) { const mw = Math.max(2, w >> i), mh = Math.max(2, h >> i), t = colorTex(mw, mh); post.mips.push({ t, f: fboFor(t), w: mw, h: mh }); }
   const rw = Math.max(2, w >> 1), rh = Math.max(2, h >> 1), rt = colorTex(rw, rh); post.rays = { t: rt, f: fboFor(rt), w: rw, h: rh };
+  const ut = colorTex(rw, rh); post.under = { t: ut, f: fboFor(ut), w: rw, h: rh };
+}
+/** What lies under the water, copied at half resolution just before the water is drawn over it. */
+function copyUnderwater(w, h) {
+  if (post.ms) {
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, post.ms); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, post.resF);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  }
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, post.resF); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, post.under.f);
+  gl.blitFramebuffer(0, 0, w, h, 0, 0, post.under.w, post.under.h, gl.COLOR_BUFFER_BIT, gl.LINEAR);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, post.ms || post.resF); gl.viewport(0, 0, w, h);
+  gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, post.under.t);
 }
 function pass(prog, fbo, w, h, tex) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.viewport(0, 0, w, h); gl.useProgram(prog);
@@ -2589,7 +2637,7 @@ function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
   if (rayStrength > 0) {
     pass(P_RAYS, post.rays.f, post.rays.w, post.rays.h, post.res);
     gl.uniform2f(P_RAYS.u('uSunUV'), cw > 0 ? cx / cw * 0.5 + 0.5 : 0.5, cw > 0 ? cy / cw * 0.5 + 0.5 : 0.5);
-    gl.uniform1f(P_RAYS.u('uVis'), vis); gl.uniform3fv(P_RAYS.u('uRayCol'), [1.0 * (1 - night) + 0.25 * night, 0.62 * (1 - night) + 0.38 * night, 0.36 * (1 - night) + 0.8 * night]);
+    gl.uniform1f(P_RAYS.u('uVis'), vis); gl.uniform3fv(P_RAYS.u('uRayCol'), [1.0 * starTint[0] * (1 - night) + 0.25 * night, 0.62 * starTint[1] * (1 - night) + 0.38 * night, 0.36 * starTint[2] * (1 - night) + 0.8 * night]);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
   const history = post.history[post.write];
@@ -2938,12 +2986,74 @@ const valleyShadows = bakeShadows(gl, touch ? 1536 : 2560, WORLD_HALF, [SUN, PLA
     gl.bindVertexArray(leaves.tiles[0].vao);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, leaves.verts, leaves.count);
   } },
-]);
+], 1);
 // the night sky turns about a tilted pole, once in about fifteen minutes
 const POLE = norm([0.25, 0.8, 0.55]), skyTurn = new Float32Array(9);
 function turnSky(t) {
-  const a = t * 0.007, c = Math.cos(a), s = Math.sin(a), k = 1 - c, [x, y, z] = POLE;
+  const a = t * 0.007 + skyOffset, c = Math.cos(a), s = Math.sin(a), k = 1 - c, [x, y, z] = POLE;
   skyTurn.set([c + x * x * k, y * x * k + z * s, z * x * k - y * s, x * y * k - z * s, c + y * y * k, z * y * k + x * s, x * z * k + y * s, y * z * k - x * s, c + z * z * k]);
+}
+
+// ---------------------------------------------------------------- the day
+// Tarn's star crosses the sky about the same pole the stars turn on. Seen from this valley it never climbs past 33
+// degrees: a long low afternoon, a sunset in the south-west, a night a little longer than the day, a sunrise in the
+// north-east. The hand-set afternoon is where the clock stands until it is let run.
+const DAY_RATE = 0.02, SHADOW_STEP = 0.012, EXTINCTION = [0.06, 0.12, 0.27];
+// relative air mass toward a star `y` (the sine of its elevation) above the horizon (Kasten and Young, 1989)
+const airMass = (y) => 1 / (Math.max(y, 0) + 0.50572 * Math.pow(96.07995 - Math.asin(Math.max(-1, Math.min(1, y))) * 180 / Math.PI, -1.6364));
+const SET_AIR = airMass(SUN[1]);
+let day = 'still', dayAngle = 0, skyOffset = 0;
+let starDirection = SUN, starColor = SUNCOL, starTint = [1, 1, 1], cloudTint = starTint;
+// the two star layers in use (fading from, fading to), the clock angles they were baked for, and whether they must be
+// baked afresh (the clock jumped) or the hand-set star restored to layer 0
+const shadowKeys = { angles: [0, 0], layers: [0, 2], blend: 0, stale: true, moved: false };
+function starAt(a) {
+  const c = Math.cos(a), s = Math.sin(a), [x, y, z] = POLE, [u, v, w] = SUN, d = (u * x + v * y + w * z) * (1 - c);
+  return [u * c + (y * w - z * v) * s + x * d, v * c + (z * u - x * w) * s + y * d, w * c + (x * v - y * u) * s + z * d];
+}
+/** Put the star where the clock says, colour its light by the air it crosses, and keep its shadow up with it. */
+function placeStar() {
+  if (day === 'still') {
+    starDirection = SUN; starColor = SUNCOL; starTint = cloudTint = [1, 1, 1];
+    if (shadowKeys.moved) { valleyShadows.rebake(0, SUN); shadowKeys.layers = [0, 2]; shadowKeys.moved = false; }
+    shadowKeys.blend = 0; shadowKeys.stale = true;
+    return;
+  }
+  starDirection = starAt(dayAngle);
+  const y = starDirection[1], air = airMass(y) - SET_AIR, up = sm(-0.035, 0.03, y);
+  starTint = EXTINCTION.map((k) => Math.min(1.15, Math.exp(-k * air)) * up);
+  starColor = SUNCOL.map((c, i) => c * starTint[i]);
+  // the deck stands high enough to keep the star a little after the valley has lost it
+  const high = airMass(y + 0.035) - SET_AIR, lit = sm(-0.09, -0.015, y);
+  cloudTint = EXTINCTION.map((k) => Math.min(1.15, Math.exp(-k * high)) * lit);
+  night = nightTarget = sm(0.035, -0.15, y);
+  if (y < -0.04) return; // under the horizon its last shadow fades out with its light
+  const [from, to] = shadowKeys.angles;
+  shadowKeys.moved = true;
+  if (shadowKeys.stale || dayAngle < from || dayAngle >= to + SHADOW_STEP) {
+    shadowKeys.angles = [dayAngle, dayAngle + SHADOW_STEP]; shadowKeys.stale = false;
+    valleyShadows.rebake(shadowKeys.layers[0], starDirection);
+    valleyShadows.rebake(shadowKeys.layers[1], starAt(dayAngle + SHADOW_STEP));
+  } else if (dayAngle >= to) {
+    // reached the layer baked ahead: it becomes the one fading out, and the other is baked ahead again
+    shadowKeys.layers.reverse(); shadowKeys.angles = [to, to + SHADOW_STEP];
+    valleyShadows.rebake(shadowKeys.layers[1], starAt(to + SHADOW_STEP));
+  }
+  shadowKeys.blend = Math.max(0, Math.min(1, (dayAngle - shadowKeys.angles[0]) / SHADOW_STEP));
+}
+function advanceDay(dt) {
+  if (day !== 'running') return;
+  dayAngle += DAY_RATE * dt;
+  if (dayAngle > Math.PI) { dayAngle -= 2 * Math.PI; shadowKeys.stale = true; }
+  // the stars turn with the star, the same way
+  skyOffset -= (DAY_RATE + 0.007) * dt;
+}
+function toggleDay() {
+  if (day === 'still') {
+    // from the hand-set afternoon toward sunset; from the hand-set night to a little before dawn
+    dayAngle = night > 0.5 ? -2.55 : 0; day = 'running';
+  } else day = day === 'running' ? 'paused' : 'running';
+  document.getElementById('bDay').setAttribute('aria-pressed', String(day === 'running'));
 }
 
 let frameNumber = 0, lightDirection = SUN, lightColor = SUNCOL;
@@ -2954,14 +3064,19 @@ function common(p, eye, VP, mirror, t) {
     gl.uniform1i(p.u('uClouds'), 11); gl.uniform1i(p.u('uCanopy'), 12);
     gl.uniform1i(p.u('uBendTex'), 13); gl.uniform1i(p.u('uValleyGround'), 14); gl.uniform2fv(p.u('uGroundRange'), heightRange);
     gl.uniform1i(p.u('uGlow'), 0); gl.uniform1i(p.u('uGround'), 1); gl.uniform1i(p.u('uWear'), 7);
-    gl.uniform1i(p.u('uMilky'), 8); gl.uniform1i(p.u('uRefl'), 2);
-    gl.uniformMatrix4fv(p.u('uLightVP[0]'), false, valleyShadows.matrices);
-    gl.uniform3fv(p.u('uStarDir'), SUN); gl.uniform3fv(p.u('uPlanetDir'), PLANET);
+    gl.uniform1i(p.u('uMilky'), 8); gl.uniform1i(p.u('uRefl'), 2); gl.uniform1i(p.u('uUnder'), 15);
+    gl.uniform3fv(p.u('uPlanetDir'), PLANET);
     gl.uniform1f(p.u('uHDR'), HDR ? 1 : 0); gl.uniform1f(p.u('uExtent'), EXTENT);
   }
   if (p.worldFrame !== frameNumber) {
     p.worldFrame = frameNumber;
     gl.uniform3fv(p.u('uSunDir'), lightDirection); gl.uniform3fv(p.u('uSunCol'), lightColor);
+    gl.uniform3fv(p.u('uStarDir'), starDirection); gl.uniform3fv(p.u('uStarTint'), starTint); gl.uniform3fv(p.u('uCloudTint'), cloudTint);
+    if (p.shadowVersion !== valleyShadows.version) {
+      p.shadowVersion = valleyShadows.version;
+      gl.uniformMatrix4fv(p.u('uLightVP[0]'), false, valleyShadows.matrices);
+    }
+    gl.uniform2i(p.u('uSunLayers'), shadowKeys.layers[0], shadowKeys.layers[1]); gl.uniform1f(p.u('uSunBlend'), shadowKeys.blend);
     gl.uniform1f(p.u('uNight'), night);
     gl.uniform1f(p.u('uExposure'), 0.95 + 0.3 * night + 0.3 * storm); gl.uniform1f(p.u('uTime'), t);
     gl.uniform1f(p.u('uStorm'), storm); gl.uniform1f(p.u('uFlash'), flash * storm * (0.3 + 0.7 * night));
@@ -3060,11 +3175,12 @@ function render(t, camOverride, glowTexture = texGlow) {
     brush.dirty = false;
   }
   sheet = groundF ? groundF.sheet : 0;
+  placeStar();
   turnSky(t);
   prepareRipples(t);
   frameNumber++;
-  lightDirection = norm(SUN.map((v, i) => v * (1 - night) + PLANET[i] * night));
-  lightColor = SUNCOL.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
+  lightDirection = norm(starDirection.map((v, i) => v * (1 - night) + PLANET[i] * night));
+  lightColor = starColor.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
   const waterPlanes = prepareViewPlanes(VP, 1);
   const waterInView = wm.patches.some(tile => !outsideView(waterPlanes, tile, tile.width, tile.depth));
   if (waterInView) {
@@ -3089,6 +3205,7 @@ function render(t, camOverride, glowTexture = texGlow) {
   drawScene(cam.eye, b, VP, 1, t, { tanX, tanY, grass: true, px: h / 800, jitter: jitter.offset });
   gl.enable(gl.BLEND);
   if (waterInView) {
+    copyUnderwater(w, h);
     gl.colorMask(true, true, true, false);
     common(WATERP, cam.eye, VP, 1, t);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, reflTex);
@@ -3170,6 +3287,7 @@ function frame(now) {
   last = now;
   if (elapsed < 0.25) adaptDensity(elapsed);
   const dt = Math.min(0.1, elapsed);
+  if (started) advanceDay(dt);
   night += (nightTarget - night) * Math.min(1, dt * 0.7);
   // Finish the crossfade so day-only and night-only passes can go idle again.
   if (Math.abs(nightTarget - night) < 0.0001) night = nightTarget;
@@ -3240,6 +3358,7 @@ function bindInput() {
     if (e.code === 'KeyM') cycleMode();
     if (e.code === 'KeyH') toggleHud();
     if (e.code === 'KeyN') toggleNight();
+    if (e.code === 'KeyC') toggleDay();
   });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
   addEventListener('blur', () => {
@@ -3293,10 +3412,15 @@ function bindInput() {
   document.getElementById('bMode').onclick = () => started && cycleMode();
   document.getElementById('bHud').onclick = toggleHud;
   document.getElementById('bNight').onclick = () => started && toggleNight();
+  document.getElementById('bDay').onclick = () => started && toggleDay();
 }
 function look(dx, dy, s) { player.yaw += dx * s; player.pitch = Math.max(-1.35, Math.min(1.35, player.pitch - dy * s)); }
 function toggleRain() { rain = !rain; document.getElementById('bRain').setAttribute('aria-pressed', String(rain)); }
-function toggleNight() { nightTarget = nightTarget > 0.5 ? 0 : 1; document.getElementById('bNight').setAttribute('aria-pressed', String(nightTarget > 0.5)); }
+function toggleNight() {
+  // the hand-set day and night: stops the clock, and the star goes back to the afternoon
+  if (day !== 'still') { day = 'still'; document.getElementById('bDay').setAttribute('aria-pressed', 'false'); }
+  nightTarget = night > 0.5 ? 0 : 1; document.getElementById('bNight').setAttribute('aria-pressed', String(nightTarget > 0.5));
+}
 function toggleHud() { hudOn = !hudOn; document.getElementById('hud').hidden = !hudOn; document.getElementById('bHud').setAttribute('aria-pressed', String(hudOn)); }
 
 // ---------------------------------------------------------------- test hooks (?test): deterministic scripted session, fixed camera
@@ -3379,8 +3503,9 @@ function scripted(m, frames = 900, view = 'shore') {
   setMode(BOXEL);
   refreshModeUI();
   document.getElementById('status').textContent = `boxel ready: three certified fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
-  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, switch engine, readout</span>'; }
-  window.__game = { setNight: (v) => { night = nightTarget = v; }, setStorm: (v) => { storm = stormTarget = v; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
+  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, day cycle, switch engine, readout</span>'; }
+  window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
+    runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
     const darkField = gl.createTexture();
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, darkField);

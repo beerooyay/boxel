@@ -1,17 +1,27 @@
 // Shared by the terrain vertex shader and the material fragment shaders.
 export const valleyAir = `
-uniform vec3 uCam, uStarDir, uPlanetDir;
+uniform vec3 uCam, uStarDir, uPlanetDir, uStarTint;
 uniform float uNight, uStorm, uFlash;
 const vec3 STAR_COL = vec3(2.7, 1.9, 1.35);
 vec3 skyBase(vec3 d){
   float h = d.y;
   vec3 c = mix(vec3(0.52, 0.60, 0.66), vec3(0.16, 0.35, 0.58), smoothstep(-0.03, 0.32, h));
   c = mix(c, vec3(0.054, 0.16, 0.36), smoothstep(0.23, 0.94, h));
+  // As the star sinks the day sky dims and cools, a band of fire lies along the horizon under it, and a rose belt
+  // rises opposite. None of it shows while the star stands at its hand-set afternoon height or above.
+  float low = 1. - smoothstep(0.03, 0.36, uStarDir.y);
+  if (low > 0.) {
+    vec2 across = d.xz / max(length(d.xz), 1e-3), under = uStarDir.xz / max(length(uStarDir.xz), 1e-3);
+    float toward = dot(across, under), dusk = low * low;
+    c *= mix(vec3(1.), vec3(0.6, 0.6, 0.76), dusk);
+    c += vec3(1.05, 0.44, 0.16) * dusk * pow(max(toward, 0.), 2.) * (1. - smoothstep(-0.03, 0.30, h)) * 0.55;
+    c += vec3(0.36, 0.20, 0.32) * dusk * pow(max(-toward, 0.), 1.5) * smoothstep(-0.02, 0.05, h) * (1. - smoothstep(0.05, 0.3, h)) * 0.3;
+  }
   vec3 n = mix(vec3(0.030, 0.040, 0.088), vec3(0.008, 0.014, 0.047), smoothstep(0.0, 0.35, h));
   n = mix(n, vec3(0.0018, 0.003, 0.014), smoothstep(0.28, 0.94, h));
   c = mix(c, n, uNight);
   float s = max(dot(d, uStarDir), 0.);
-  c += STAR_COL * (1. - uNight) * (0.05 * pow(s, 5.) + 0.25 * pow(s, 60.));
+  c += STAR_COL * uStarTint * (1. - uNight) * (0.05 * pow(s, 5.) + 0.25 * pow(s, 60.));
   c += vec3(0.10, 0.08, 0.20) * pow(max(dot(d, uPlanetDir), 0.), 4.) * 0.5;
   // A storm closes the sky over in grey. Lightning lights the whole of it at once.
   vec3 overcast = mix(vec3(0.17, 0.19, 0.22), vec3(0.27, 0.29, 0.33), smoothstep(-0.05, 0.45, h)) * (1. - 0.9 * uNight);
@@ -32,9 +42,9 @@ vec4 airAt(vec3 wp){
   vec3 vd = normalize(vec3(d.x, max(d.y, 0.02 * dist), d.z));
   vec3 fc = skyBase(vd) * 0.75;
   // the haze glows where it lies between you and the star
-  fc += STAR_COL * pow(max(dot(normalize(d), uStarDir), 0.), 8.) * 0.07 * (1. - uNight);
+  fc += STAR_COL * uStarTint * pow(max(dot(normalize(d), uStarDir), 0.), 8.) * 0.07 * (1. - uNight);
   float forward = max(dot(vd, uStarDir), 0.);
-  vec3 mc = mix(vec3(0.17, 0.32, 0.37) + vec3(0.85, 0.48, 0.20) * pow(forward, 6.), vec3(0.025, 0.065, 0.108), uNight);
+  vec3 mc = mix(vec3(0.17, 0.32, 0.37) + vec3(0.85, 0.48, 0.20) * uStarTint * pow(forward, 6.), vec3(0.025, 0.065, 0.108), uNight);
   mc = mix(mc, vec3(0.2, 0.22, 0.25) * (1. - 0.85 * uNight), uStorm * 0.7) + vec3(0.16, 0.18, 0.28) * uFlash * 0.5;
   return vec4(mix(fc * f, mc, mist), (1. - f) * (1. - mist));
 }
