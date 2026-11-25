@@ -1401,7 +1401,7 @@ void main(){
   col = mix(col, vec3(0.6, 0.5, 1.0), (1. - disc) * 0.4);
   col = mix(col, vec3(1.0, 0.92, 0.95), knots * 0.35);
   col = mix(col, vec3(1.0, 0.5, 0.32), dust * 0.6);
-  float neb = smoothstep(0.6, 0.84, fbmv(g * 22. + 5.5, 3)) * disc;
+  float neb = smoothstep(0.6, 0.84, fbmv(g * 22. + 5.5, 3)) * disc * smoothstep(0.35, 0.75, fbmv(g * 64. + 2.2, 3));
   col = mix(col, vec3(1.0, 0.38, 0.62), neb * smoothstep(-0.9, 0.2, l) * (1. - smoothstep(1.1, 1.8, l)) * 0.75);
   col = mix(col, vec3(0.35, 0.92, 0.88), neb * smoothstep(1.5, 2.1, lr) * 0.45);
   o = vec4(col * sqrt(max(I * 0.62, 0.)), 1.);
@@ -2164,7 +2164,8 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 // the galaxy's frame in the sky's, rows toward its core, its pole and the third axis: the core stands low in the south,
 // in the open sky between the rose giant and the ocean world, and the band climbs from it past the zenith
 const GAL = (() => {
-  const C = norm([0.24, 0.375, 0.896]), V0 = norm([-C[0] * C[1], 1 - C[1] * C[1], -C[2] * C[1]]), W = cross(C, V0), a = 0.45;
+  // the core stands 13 degrees from the pole, so it never sets and rides 40 to 65 degrees up all night
+  const C = norm([0.192, 0.669, 0.718]), V0 = norm([-C[0] * C[1], 1 - C[1] * C[1], -C[2] * C[1]]), W = cross(C, V0), a = 0.45;
   const P = norm(cross(C, V0.map((v, i) => v * Math.cos(a) + W[i] * Math.sin(a))));
   return [...C, ...P, ...cross(C, P)];
 })();
@@ -3468,7 +3469,7 @@ const VIEWS = {
   outcrop: { eye: [12, H(12, -14) + 1.7, -14], yaw: 0.9, pitch: 0.05, motes: true },
   beach: { eye: [12.5, H(12.5, 28) + 1.5, 28], yaw: -1.9, pitch: -0.32, motes: false },
   stack: { eye: [ISLET[0] + 9, 1.4, ISLET[1] + 6], yaw: -0.98, pitch: -0.08, motes: false },
-  galaxy: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 2.6, pitch: 0.75, motes: false },
+  galaxy: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 2.75, pitch: 0.48, motes: false },
   coil: coilView,
   get crystals() { const [x, z] = sc.crystalSites[3], ex = x + 2.4, ez = z + 2.4; return { eye: [ex, H(ex, ez) + 1.4, ez], yaw: -0.785, pitch: -0.28, motes: false }; },
   lantern: lanternView,
