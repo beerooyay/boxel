@@ -13,16 +13,18 @@ function clumpHash(x, y) {
   h ^= h >>> 15; h = Math.imul(h, 0x846ca68b) >>> 0;
   return (h ^ (h >>> 16)) >>> 0;
 }
-/** Distance, in cells, from (x, z) to the nearest tuft centre. */
-export function clumpDistance(x, z) {
-  const qx = x / CLUMP, qz = z / CLUMP, ix = Math.floor(qx), iz = Math.floor(qz);
-  let best = 9;
+// Save the neighbour containing the nearest tuft in four bits of the root.
+export function readTuft(x, z, result, hashAt = clumpHash) {
+  const qx = x/CLUMP, qz = z/CLUMP, ix = Math.floor(qx), iz = Math.floor(qz);
+  let best = Infinity;
   for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
-    const h = clumpHash(ix + i, iz + j);
-    const dx = ix + i + 0.15 + 0.7 * (h & 0xffff) / 65536 - qx, dz = iz + j + 0.15 + 0.7 * (h >>> 16) / 65536 - qz;
-    best = Math.min(best, dx * dx + dz * dz);
+    const h = hashAt(ix+i, iz+j);
+    const dx = ix+i + 0.15 + 0.7*(h & 0xffff)/65536 - qx;
+    const dz = iz+j + 0.15 + 0.7*(h >>> 16)/65536 - qz;
+    const d2 = dx*dx + dz*dz;
+    if (d2 < best) { best = d2; result.neighbour = 3*(j+1) + i+1; }
   }
-  return Math.sqrt(best);
+  result.distance = Math.sqrt(best);
 }
 export const clumpGLSL = `
 uint clumpHash(ivec2 c){
@@ -48,6 +50,11 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
   gl.bindBuffer(gl.ARRAY_BUFFER, detailBuffer); gl.bufferData(gl.ARRAY_BUFFER, details, gl.STATIC_DRAW);
   const detailLoc = gl.getAttribLocation(shader, 'aDetail'), rootLoc = gl.getAttribLocation(shader, 'aRoot');
   const scratch = new Uint16Array(details.length), orders = new Map(), tiles = [];
+  const margin = Math.ceil(half/CLUMP) + 1, tuftSide = 2*margin + 1;
+  const centres = Uint32Array.from({length: tuftSide*tuftSide}, (_, i) =>
+    clumpHash(i % tuftSide - margin, Math.floor(i/tuftSide) - margin));
+  const hashAt = (x,z) => centres[(z+margin)*tuftSide + x+margin];
+  const tuft = { neighbour: 4, distance: 0 };
   let count = 0;
   for (let z0 = -half; z0 < half; z0 += tileSize) for (let x0 = -half; x0 < half; x0 += tileSize) {
     const minDistance = Math.max(x0, z0, -x0 - tileSize, -z0 - tileSize);
@@ -73,18 +80,22 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
       const a = 3 * ((iz + half) * side + ix + half), b = a + 3 * side;
       const w0 = (1 - fx) * (1 - fz), w1 = fx * (1 - fz), w2 = (1 - fx) * fz, w3 = fx * fz;
       let coverage = habitat[a] * w0 + habitat[a + 3] * w1 + habitat[b] * w2 + habitat[b + 3] * w3;
-      // Where the stand thins, what survives keeps to the tufts: at half cover nearly every blade is in one.
-      if (coverage < 0.98) coverage *= 1 + (1 - coverage) * (1 - 3.4 * Math.max(0, clumpDistance(x, z) - 0.12));
-      if (random() >= coverage) continue;
-      const blade = habitat[a + 1] * w0 + habitat[a + 4] * w1 + habitat[b + 1] * w2 + habitat[b + 4] * w3;
-      const edge = habitat[a + 2] * w0 + habitat[a + 5] * w1 + habitat[b + 2] * w2 + habitat[b + 5] * w3;
+      const roll = random();
+      if (roll >= coverage*(2-coverage)) continue;
+      const rootX = Math.round((x/extent + 0.5)*65535), rootZ = Math.round((z/extent + 0.5)*65535);
+      // Select the tuft at the position the GPU will decode.
+      readTuft((rootX/65535 - 0.5)*extent, (rootZ/65535 - 0.5)*extent, tuft, hashAt);
+      if (coverage < 0.98) coverage *= 1 + (1-coverage)*(1 - 3.4*Math.max(0, tuft.distance-0.12));
+      if (roll >= coverage) continue;
+      const blade = habitat[a+1]*w0 + habitat[a+4]*w1 + habitat[b+1]*w2 + habitat[b+4]*w3;
+      const edge = habitat[a+2]*w0 + habitat[a+5]*w1 + habitat[b+2]*w2 + habitat[b+5]*w3;
       const y = heightAt(x, z) - 0.015;
-      scratch[used++] = Math.round((x / extent + 0.5) * 65535);
-      scratch[used++] = Math.round((z / extent + 0.5) * 65535);
-      scratch[used++] = Math.round((y - heightRange[0]) * (65535 / heightRange[1]));
-      // twelve bits of height, four of tread
-      scratch[used++] = Math.round(Math.min(1, blade * (0.91 + 0.18 * random()) / BLADE_HEIGHT_RANGE) * 4095) * 16
-        + Math.round(Math.min(1, Math.max(0, edge)) * 15);
+      scratch[used++] = rootX;
+      scratch[used++] = rootZ;
+      scratch[used++] = Math.round((y-heightRange[0])*(65535/heightRange[1]));
+      // Nine bits of height (6 mm increments), three of tread, four of tuft.
+      scratch[used++] = Math.round(Math.min(1, blade*(0.91 + 0.18*random())/BLADE_HEIGHT_RANGE)*511)*128
+        + Math.round(Math.min(1, Math.max(0,edge))*7)*16 + tuft.neighbour;
       y0 = Math.min(y, y0); y1 = Math.max(y, y1);
     }
     if (!used) continue;
@@ -98,7 +109,7 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
     count += used / 4;
   }
   gl.bindVertexArray(null); gl.useProgram(shader); gl.uniform2fv(shader.u('uGrassHeight'), heightRange);
-  const widthLoc = shader.u('uLodW'), simpleLoc = shader.u('uSimpleBlade'), far = touch ? 72 : 84;
+  const widthLoc = shader.u('uLodW'), rowsLoc = shader.u('uBladeRows'), far = touch ? 72 : 84;
   return {
     count,
     draw(planes, eye, densityScale) {
@@ -116,9 +127,9 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
         if (!n) continue;
         gl.bindVertexArray(tile.vao);
         gl.uniform1f(widthLoc, Math.min(2.2, 1 / Math.sqrt(fraction)));
-        const simple = d > 24;
-        gl.uniform1i(simpleLoc, Number(simple));
-        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, simple ? 5 : 7, n);
+        const rows = d < 9 ? 4 : d < 24 ? 3 : 2;
+        gl.uniform1i(rowsLoc, rows);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, rows === 4 ? 18 : 2*rows + 1, n);
         drawn += n;
       }
       return drawn;

@@ -15,6 +15,27 @@ async function main() {
     await page.goto(process.argv[2] || 'http://127.0.0.1:8790/demo/?test');
     await page.waitForFunction(() => window.__game?.ready || document.getElementById('err')?.textContent, null, { timeout: 120000 });
     assert.equal(await page.locator('#err').textContent(), '');
+    // Read the tile the rock shader actually uses. A missing scan uses a
+    // neutral fallback and otherwise the entire rendered scene still passes.
+    const relief = await page.evaluate(() => {
+      const gl = document.querySelector('canvas').getContext('webgl2');
+      const unit = gl.getParameter(gl.ACTIVE_TEXTURE), read = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+      const fb = gl.createFramebuffer();
+      gl.activeTexture(gl.TEXTURE0 + 19);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, gl.getParameter(gl.TEXTURE_BINDING_2D), 2);
+      const data = new Uint8Array(48 * 48 * 4), range = [0, 0, 0];
+      if (gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) {
+        gl.readPixels(0, 0, 48, 48, gl.RGBA, gl.UNSIGNED_BYTE, data);
+        for (let c = 0; c < 3; c++) {
+          const values = data.filter((_, i) => i % 4 === c);
+          range[c] = Math.max(...values) - Math.min(...values);
+        }
+      }
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, read); gl.deleteFramebuffer(fb); gl.activeTexture(unit);
+      return range;
+    });
+    assert.ok(relief.every(v => v > 45), 'The stone tile must retain relief in both directions and mineral tone');
     const result = await page.evaluate(() => window.__game.verify('river'));
     console.log(JSON.stringify(result, null, 2));
     const sky = await page.evaluate(() => window.__game.verifySky());
