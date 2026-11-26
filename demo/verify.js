@@ -112,3 +112,26 @@ export function compareSkyFaces(gl, size, optimized, reference) {
     gl.deleteFramebuffer(fb);
   }
 }
+
+// Compare integrated sunlight, skylight, distance haze and opacity over a
+// full hemisphere. Bright crowns, shaded bases and clear sky act as controls.
+export function compareClouds(gl, clouds, rain) {
+  const state = { t: 12 + 30 * rain, eye: [8 - 87 * rain, 3 + 14 * rain, 30 + 12 * rain],
+    light: [-0.86, 0.4, -0.32], base: 360 - 190 * rain, rain };
+  const pixels = clouds.width * clouds.height, bounded = new Uint8Array(pixels * 4), full = new Uint8Array(bounded.length);
+  clouds.readOptics(state, true, bounded);
+  clouds.readOptics(state, false, full);
+  let different = 0, clear = 0, opaque = 0, sunlit = 0, shaded = 0;
+  for (let i = 0; i < bounded.length; i += 4) {
+    if (bounded[i] !== full[i] || bounded[i + 1] !== full[i + 1] ||
+        bounded[i + 2] !== full[i + 2] || bounded[i + 3] !== full[i + 3]) different++;
+    const alpha = full[i + 3];
+    if (alpha < 8) clear++;
+    if (alpha > 210) {
+      opaque++;
+      if (full[i] > 120) sunlit++;
+      if (full[i] < 60) shaded++;
+    }
+  }
+  return { pixels, different, clear, opaque, sunlit, shaded, glError: gl.getError() };
+}

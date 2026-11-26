@@ -86,7 +86,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 <div id="hud" aria-live="off">
   <div class="mode" id="hMode"><span>boxel</span><span id="hFps">— fps</span></div>
   <div class="bar"><i id="hBar"></i></div>
-  <div class="row"><span>cells stepped / frame</span><b id="hStep">—</b></div>
+  <div class="row"><span>surface cells stepped / frame</span><b id="hStep">—</b></div>
   <div class="row"><span>a dense engine would step</span><b id="hDense">—</b></div>
   <div class="row"><span>blocks: glow · moisture · wear</span><b id="hAwake">—</b></div>
   <div class="row"><span>field sim / frame</span><b id="hMs">—</b></div>
@@ -103,14 +103,14 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
   <button id="bStorm" type="button" aria-pressed="false">Storm</button>
   <button id="bNight" type="button" aria-pressed="false">Night</button>
   <button id="bDay" type="button" aria-pressed="false">Day cycle</button>
-  <button id="bMode" type="button" title="Switch the field engine">boxel</button>
+  <button id="bMode" type="button" title="Switch the surface field engine">boxel</button>
   <button id="bHud" type="button" aria-pressed="true">Readout</button>
 </div>
 
 <div id="intro">
   <div class="card">
     <h1>T<span>A</span>RNISHED<br>PROMISE</h1>
-    <p>Follow the river upstream to the spring, or climb the eastern crystal shelf for a view across the valley. After dark, throw a glowstone and watch the moss wake where it lands.</p>
+    <p>Follow the river upstream to the spring, or climb the eastern rock shelf for a view across the valley. After dark, throw a glowstone and watch the moss wake where it lands.</p>
     <div class="keys" id="keys">
       <b>WASD</b><span>walk · Shift to run</span>
       <b>mouse</b><span>look (click to capture)</span>
@@ -119,7 +119,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
       <b>T</b><span>storm: rain, lightning, thunder</span>
       <b>N</b><span>night: the biome lights up</span>
       <b>C</b><span>let the day run: sunset, night, sunrise</span>
-      <b>M</b><span>switch engine: boxel · dense</span>
+      <b>M</b><span>surface fields · boxel or dense</span>
       <b>H</b><span>hide the readout</span>
       <b>V</b><span>sound on or off</span>
     </div>

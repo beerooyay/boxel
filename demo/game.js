@@ -6,7 +6,8 @@ import { waterBounds } from './water-view.js';
 import { coarsePatch } from './terrain-lod.js';
 import { highCanopyMesh, highCanopySites } from './high-canopy.js';
 import { createSailwings } from './fauna.js';
-import { bakeClouds, bakeCanopy, valleyAir, canopyShelter } from './atmosphere.js';
+import { cloudSky, createClouds } from './clouds.js';
+import { bakeCanopy, valleyAir, canopyShelter } from './atmosphere.js';
 import { createAudio } from './audio.js';
 import { bakeGroundLight, groundLight, mistFragment, viewRay } from './valley-light.js';
 import { cameraJitter, depthRange, historyColor, temporalFragment } from './temporal.js';
@@ -305,13 +306,7 @@ float inField(vec2 uv){ return step(0., uv.x) * step(0., uv.y) * step(uv.x, 1.) 
 
 ${groundLight}
 ${companionWorlds}
-uniform sampler2D uClouds;
-vec2 cloudUV(vec3 origin, vec3 ray) {
-  // The same thin cloud deck drifts over the camera and the terrain beneath it.
-  const float deck = 120.;
-  vec2 p = origin.xz / deck + ray.xz * max(0., 1. - origin.y / deck) / (max(0., ray.y) + 0.07);
-  return p / 9. + vec2(0.37, 0.62) + WIND_DIR * (uTime * 0.00054);
-}
+${cloudSky}
 vec3 skyColor(vec3 d){
   vec3 c = skyBase(d);
   gBehind = c;
@@ -397,66 +392,10 @@ vec3 skyColor(vec3 d){
     }
   }
   c = companions(d, c);
-  // a full storm swallows the worlds and the stars behind its deck
-  c = mix(c, skyBase(d), uStorm * 0.85); starTransmission *= 1. - uStorm;
-  if (d.y > 0.015) {
-    // The deck is a slab, not a sheet: the ray enters its floor here and leaves its top farther on, and only the
-    // densest heads reach the top. Low in the sky the two are far apart and the clouds stack up behind each other.
-    vec2 cu = cloudUV(uCam, d);
-    vec4 field = texture(uClouds, cu);
-    float body = field.r, thick = field.b;
-    float curls = texture(uClouds, cu * 4. + vec2(0.17, 0.63)).g - 0.5;
-    float density = clamp(body + 1.75 * curls * smoothstep(0., 0.14, body) * (1. - 0.65 * body), 0., 1.);
-    // a storm deck is one soft grey ceiling; the heads blur into it
-    float soft = uStorm > 0. ? smoothstep(0.2, 0.8, 0.55 * vnoise(cu * 30. + 1.3) + 0.3 * vnoise(cu * 70. + 4.1) + 0.15 * vnoise(cu * 160.)) : 0.;
-    density = mix(density, 0.7 + 0.3 * soft, uStorm);
-    float opacity = smoothstep(0.015, 0.18, d.y) * mix(mix(0.82, 0.44, uNight), 0.97, uStorm);
-    // by night only the thicker heads show, so the stars keep the gaps
-    vec3 a = vec3(mix(density, smoothstep(0.3, 0.9, density), uNight * (1. - uStorm)), 0., 0.) * opacity;
-    float stack = (1. - smoothstep(0.06, 0.24, d.y)) * (1. - uStorm);
-    if (stack > 0.) {
-      vec2 cuTop = cloudUV(uCam - vec3(0., 42., 0.), d);
-      a.y = smoothstep(0.5, 0.82, texture(uClouds, mix(cu, cuTop, 0.5)).r) * 0.5 * stack * opacity;
-      a.z = smoothstep(0.62, 0.92, texture(uClouds, cuTop).r) * 0.4 * stack * opacity;
-    }
-    if (a.x + a.y + a.z > 0.002) {
-      // Light marched toward its source through the field, the nearest cloud counting most. A lip facing the light
-      // is bright, the column behind it shaded; a low star crosses far more cloud on its way in.
-      vec2 toward = normalize(uSunDir.xz + 1e-4) * mix(0.0068, 0.016, 1. - smoothstep(0.05, 0.4, uSunDir.y));
-      float crossed = 0.;
-      for (int k = 1; k <= 4; k++) crossed += textureLod(uClouds, cu + toward * float(k * k) * 0.45, 1.).r * (0.5 - 0.1 * float(k));
-      // each head and billow is brighter on the side toward the light and darker on the far side
-      float thickToward = textureLod(uClouds, cu + toward * 0.6, 0.).b;
-      float curlsToward = texture(uClouds, (cu + toward * 0.3) * 4. + vec2(0.17, 0.63)).g - 0.5;
-      float relief = (thick - thickToward) * 3.4 + (curls - curlsToward) * 1.5;
-      float rim = clamp((density - crossed) * 1.8 + 0.18 + 0.32 * (1. - density) + 0.45 * curls + relief, 0., 1.);
-      // a low star lights the heaps from underneath: the thin edges glow and the thick middles hold their own shadow
-      float low = 1. - smoothstep(0.03, 0.36, uStarDir.y), dusk = low * low;
-      rim = mix(rim, clamp(0.15 + 0.8 * (1. - thick) + 0.6 * relief + 0.45 * curls, 0., 1.), dusk);
-      // under a storm the deck has no edges to light: only broad, soft swells of darker and lighter grey
-      rim = mix(rim, 0.2 + 0.7 * soft, uStorm);
-      // shadowed cloud takes the colour of the sky above it as the star goes down: blue-grey, not bruised
-      vec3 zenith = skyBase(vec3(0., 1., 0.));
-      vec3 shade = mix(vec3(0.16, 0.22, 0.34), zenith * 0.9, dusk);
-      // and the sky fills the lit side too, so a sunset cloud is salmon and rose rather than flat orange
-      vec3 cc = mix(shade, vec3(1.20, 1.12, 0.95) * uCloudTint * (1. - 0.2 * dusk) + zenith * 0.35 * dusk, rim);
-      // the thick middle of a heap is its flat grey floor, seen from underneath
-      cc *= 1. - 0.38 * thick * (1. - rim * 0.5) * (1. - uNight) * (1. - uStorm);
-      cc += vec3(0.58, 0.33, 0.15) * uCloudTint * pow(max(dot(d, uStarDir), 0.), 8.) * (1. - density);
-      // by night: dark heaps with a cool edge toward the planet, without the daytime relief
-      float edge = clamp((density - crossed) * 1.8 + 0.1 + 0.3 * (1. - density), 0., 1.);
-      edge = mix(edge, 0.1 + 0.9 * soft, uStorm);
-      cc = mix(cc, vec3(0.006, 0.01, 0.024) + vec3(0.04, 0.062, 0.115) * edge, uNight);
-      // storm cloud: a low, dark, heavy deck, and lightning lighting it from inside
-      cc = mix(cc, vec3(0.13, 0.145, 0.17) * (0.55 + 0.7 * edge) * (1. - 0.88 * uNight), uStorm * 0.85);
-      cc += vec3(0.42, 0.46, 0.66) * uFlash * (0.45 + 0.8 * rim);
-      // the heads behind stand in more light than the floor in front
-      float rise = 0.2 * (1. - uNight);
-      c = mix(c, cc * (1. + rise), a.z);
-      c = mix(c, cc * (1. + 0.5 * rise), a.y);
-      c = mix(c, cc, a.x);
-      starTransmission *= (1. - a.x) * (1. - a.y) * (1. - a.z);
-    }
+  if (d.y > 0.) {
+    vec4 cloud = cloudColumn(uCam, d);
+    c = cloudLight(c, d, cloud);
+    starTransmission *= 1. - cloud.a;
   }
   return c;
 }
@@ -510,9 +449,10 @@ float directLight(vec3 wp){
   }
   if (uNight > 0.001) moon = mix(0.32, 1., shadowAt(wp, 1));
   float light = mix(day, moon, uNight) * (1. - 0.82 * uStorm);
-  if (wp.y >= 120.) return light;
-  float cloud = textureLod(uClouds, cloudUV(wp, uSunDir), 2.).r;
-  return light * (1. - cloud * (0.62 - 0.33 * uNight) * (1. - smoothstep(70., 120., wp.y)));
+  float cloudFloor = uCloudEye.y + uCloudEye.w - 165.;
+  if (wp.y >= cloudFloor + 180.) return light;
+  float cloud = cloudColumn(wp, uSunDir).a;
+  return light * (1. - cloud * (0.62 - 0.33 * uNight) * (1. - smoothstep(cloudFloor, cloudFloor + 180., wp.y)));
 }
 vec3 pbr(vec3 albedo, float rough, float metal, vec3 N, vec3 V, vec3 wp, float sun, float cover){
   vec3 L = uSunDir; vec3 Hh = normalize(L + V);
@@ -906,32 +846,6 @@ void main(){
     col += mossTint * moss * uNight * (0.28 + glowI(glow));
     col += lichC * lich * (0.075 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
   }
-  o = vec4(tonemap(fogged(col, vWP)), 0.);
-}`);
-
-// crystal: clear, cool and faceted, a milky foot that clears toward the tip, veils of inclusions drifting up through it,
-// a light inside that brightens toward the tip and breathes with the wind at night, and the glow you stir around it
-const CRYSTAL = program(WORLD_VS + `
-in vec3 aPos; in vec3 aNor; in vec4 aC; out vec3 vWP; out vec3 vN; out vec4 vC;
-void main(){ vWP = aPos; vN = aNor; vC = aC; gl_Position = project(aPos); }`,
-`uniform float uClip; in vec3 vWP; in vec3 vN; in vec4 vC; out vec4 o;
-void main(){
-  if (vWP.y < uClip) discard;
-  vec3 N = normalize(vN), V = normalize(uCam - vWP);
-  vec2 uv = fieldUV(vWP.xz); float glow = texture(uGlow, uv).r * inField(uv);
-  float u = clamp(vC.y, 0., 1.), seed = vC.z;
-  vec3 tint = pigment(vC.x * 0.62), deep = tint * tint;
-  float fres = pow(1. - abs(dot(N, V)), 3.);
-  float facet = hash12(floor(N.xz * 40. + N.y * 17.));
-  float bands = 0.5 + 0.5 * sin(u * 38. + seed * 20.);
-  float veil = smoothstep(0.45, 0.8, vnoise(vec2(u * 7. + seed * 13., seed * 31. + dot(vWP, vec3(1.3, 0.4, 0.9)))));
-  float milk = 1. - smoothstep(0., 0.55, u), shoreWet;
-  vec3 body = deep * mix(0.07, 0.17, milk) * (0.8 + 0.35 * facet) * (1. - 0.3 * veil);
-  vec3 col = pbr(waterline(body, vWP, 0., shoreWet), 0.08, 0., N, V, vWP);
-  float inner = (0.025 + 0.22 * uNight * (0.45 + 0.7 * smoothstep(-0.7, 0.85, windWave(vWP.xz)))) * (smoothstep(0.3, 1., u) * 1.4 + 0.15) * (0.8 + 0.2 * bands);
-  // and the star shining through it from behind
-  float through = pow(clamp(dot(-V, uSunDir), 0., 1.), 2.) * (0.4 + 0.6 * u) * (1. - 0.7 * uNight);
-  col += deep * (inner + (0.012 + 0.22 * fres) * (1. + uNight) + uSunCol * through * 0.14) + deep * glow * 2. * uNight * uNight * (0.4 + 0.6 * u);
   o = vec4(tonemap(fogged(col, vWP)), 0.);
 }`);
 
@@ -1347,7 +1261,12 @@ void main(){
   float frame = smoothstep(0., 0.06, min(min(suv.x, suv.y), min(1. - suv.x, 1. - suv.y)));
   vec2 warped = suv + distortion * mix(0.065, 0.16, NdV) * frame;
   float planar = 1. - smoothstep(0.08, 0.85, abs(level - uMirrorLevel));
-  vec3 refl = mix(tonemap(skyBase(reflect(-V, N))), texture(uRefl, clamp(warped, 0., 1.)).rgb, planar);
+  vec3 refl = texture(uRefl, clamp(warped, 0., 1.)).rgb;
+  if (planar < 1.) {
+    vec3 ray = reflect(-V, N), sky = skyBase(ray);
+    if (ray.y > 0.) sky = cloudLight(sky, ray, cloudColumn(vWP, ray));
+    refl = mix(tonemap(sky), refl, planar);
+  }
 
   // At a grazing angle the ray travels farther through water. Alpha carries the
   // fraction blocked by reflection and extinction; the actual bed shows through the rest.
@@ -1620,78 +1539,6 @@ function rockMesh(seed, sub, tall, stack) {
   return { pos: new Float32Array(pos.flat()), nor: new Float32Array(nor.map(n => { const length = Math.hypot(...n) || 1; return n.map(v => v / length); }).flat()),
     idx: new Uint16Array(f.flat()), coarseIdx: new Uint16Array(coarseFaces.flat()), detailError };
 }
-// crystals, each grown on its own: an uneven hexagonal prism that swells a little, then narrows into a pyramid set off
-// its axis (or snapped flat where it broke), a child crystal now and then at its foot. Every crystal leans, between 7 and
-// 43 degrees and roughly away from its cluster's heart, as a druse grows. Each one is a capsule for spacing, and is only
-// kept when it clears every capsule already grown, so no two crystals ever pass through each other.
-const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const clamp01 = (x) => Math.min(1, Math.max(0, x));
-/** The least distance between the segments p1 q1 and p2 q2. */
-function segDist(p1, q1, p2, q2) {
-  const d1 = sub3(q1, p1), d2 = sub3(q2, p2), w = sub3(p1, p2), a = dot3(d1, d1), e = dot3(d2, d2), b = dot3(d1, d2), c = dot3(d1, w), f = dot3(d2, w), den = a * e - b * b;
-  let s = den > 1e-9 ? clamp01((b * f - c * e) / den) : 0, t = (b * s + f) / e;
-  if (t < 0) { t = 0; s = clamp01(-c / a); } else if (t > 1) { t = 1; s = clamp01((b - c) / a); }
-  return Math.hypot(...sub3([p1[0] + d1[0] * s, p1[1] + d1[1] * s, p1[2] + d1[2] * s], [p2[0] + d2[0] * t, p2[1] + d2[1] * t, p2[2] + d2[2] * t]));
-}
-function growCrystals(sites) {
-  const r = rng(4747), W = { pos: [], nor: [], c: [] }, caps = [];
-  const fits = (a, b, rad) => caps.every(([p, q, cr]) => segDist(a, b, p, q) > rad + cr + 0.025);
-  // one face, wound and lit outward from the crystal's axis point m
-  const tri = (A, B, C, m, attr) => {
-    const u = sub3(B, A), w = sub3(C, A); let n = norm(cross(u, w));
-    const ctr = [(A[0] + B[0] + C[0]) / 3 - m[0], (A[1] + B[1] + C[1]) / 3 - m[1], (A[2] + B[2] + C[2]) / 3 - m[2]];
-    if (dot3(n, ctr) < 0) { n = n.map((x) => -x); [B, C] = [C, B]; }
-    for (const P of [A, B, C]) { W.pos.push(...P); W.nor.push(...n); W.c.push(attr[0], attr[1](P), attr[2], 0); }
-  };
-  const crystal = (base, dir, L, rad, hue) => {
-    const top = [base[0] + dir[0] * L, base[1] + dir[1] * L, base[2] + dir[2] * L];
-    if (!fits(base, top, rad * 1.08)) return false;
-    caps.push([base, top, rad * 1.08]);
-    const e1 = norm(cross(dir, Math.abs(dir[1]) < 0.95 ? [0, 1, 0] : [1, 0, 0])), e2 = cross(dir, e1), seed = r();
-    const corner = Array.from({ length: 6 }, () => 0.8 + 0.38 * r()), twist = (r() - 0.5) * 0.12, swell = 1 + r() * 0.1;
-    const at = (u, k, s) => { const a = k / 6 * Math.PI * 2 + twist * u, q = rad * corner[k % 6] * s; return [base[0] + dir[0] * L * u + (e1[0] * Math.cos(a) + e2[0] * Math.sin(a)) * q, base[1] + dir[1] * L * u + (e1[1] * Math.cos(a) + e2[1] * Math.sin(a)) * q, base[2] + dir[2] * L * u + (e1[2] * Math.cos(a) + e2[2] * Math.sin(a)) * q]; };
-    const along = (P) => dot3(sub3(P, base), dir) / L, attr = [hue, along, seed];
-    const broken = r() < 0.22, shoulder = broken ? 0.86 : 0.7 + r() * 0.1;
-    const rings = [[-0.12, 1], [0.38, swell], [shoulder, 0.97]];
-    for (let j = 0; j < rings.length - 1; j++) for (let k = 0; k < 6; k++) {
-      const a0 = at(rings[j][0], k, rings[j][1]), a1 = at(rings[j][0], k + 1, rings[j][1]), b0 = at(rings[j + 1][0], k, rings[j + 1][1]), b1 = at(rings[j + 1][0], k + 1, rings[j + 1][1]);
-      const m = [base[0] + dir[0] * L * 0.4, base[1] + dir[1] * L * 0.4, base[2] + dir[2] * L * 0.4];
-      tri(a0, a1, b0, m, attr); tri(a1, b1, b0, m, attr);
-    }
-    const m = [base[0] + dir[0] * L * shoulder, base[1] + dir[1] * L * shoulder, base[2] + dir[2] * L * shoulder];
-    if (broken) {
-      // a snapped top: a flat, slightly tilted break with a bevel
-      const cap = Array.from({ length: 6 }, (_, k) => at(0.9 + 0.05 * Math.sin(k + seed * 9), k, 0.82));
-      const mid = [cap.reduce((s, p) => s + p[0], 0) / 6, cap.reduce((s, p) => s + p[1], 0) / 6, cap.reduce((s, p) => s + p[2], 0) / 6];
-      for (let k = 0; k < 6; k++) { const s0 = at(shoulder, k, 0.97), s1 = at(shoulder, k + 1, 0.97); tri(s0, s1, cap[k], m, attr); tri(s1, cap[(k + 1) % 6], cap[k], m, attr); tri(cap[k], cap[(k + 1) % 6], mid, [mid[0] - dir[0], mid[1] - dir[1], mid[2] - dir[2]], attr); }
-    } else {
-      const off = [(r() - 0.5) * 0.7 * rad, (r() - 0.5) * 0.7 * rad], tip = [top[0] + e1[0] * off[0] + e2[0] * off[1], top[1] + e1[1] * off[0] + e2[1] * off[1], top[2] + e1[2] * off[0] + e2[2] * off[1]];
-      for (let k = 0; k < 6; k++) tri(at(shoulder, k, 0.97), at(shoulder, k + 1, 0.97), tip, m, attr);
-    }
-    return true;
-  };
-  const lean = (out, t) => { const a = Math.atan2(out[1], out[0]); return [Math.sin(t) * Math.cos(a), Math.cos(t), Math.sin(t) * Math.sin(a)]; };
-  for (const [cx, cz, hue, n, size] of sites) {
-    for (let i = 0, tries = 0; i < n && tries < n * 40; tries++) {
-      const first = i === 0, ang = r() * 6.2832, d = first ? r() * 0.12 : 0.12 + r() * 0.6 * size;
-      const x = cx + Math.cos(ang) * d, z = cz + Math.sin(ang) * d;
-      const L = (first ? 1.5 + r() * 0.9 : 0.45 + Math.pow(r(), 1.4) * 1.5) * size, rad = L * (0.085 + r() * 0.05);
-      const t = first ? 0.12 + r() * 0.22 : 0.22 + r() * 0.53, wob = (r() - 0.5) * 1.1;
-      const dir = lean([Math.cos(ang + wob), Math.sin(ang + wob)], t);
-      const base = [x - dir[0] * 0.12 * L, H(x, z) - 0.05 - dir[1] * 0.12 * L, z - dir[2] * 0.12 * L];
-      if (!crystal(base, dir, L, rad, clamp01(hue + (r() - 0.5) * 0.16))) continue;
-      i++;
-      // a child at the foot, leaning harder
-      if (r() < 0.35) {
-        const ca = ang + (r() - 0.5) * 2, cl = L * (0.3 + r() * 0.25), cd = lean([Math.cos(ca), Math.sin(ca)], t + 0.3 + r() * 0.35);
-        const cx2 = x + Math.cos(ca) * rad * 1.6, cz2 = z + Math.sin(ca) * rad * 1.6;
-        crystal([cx2 - cd[0] * 0.12 * cl, H(cx2, cz2) - 0.04 - cd[1] * 0.12 * cl, cz2 - cd[2] * 0.12 * cl], cd, cl, cl * (0.1 + r() * 0.04), clamp01(hue + (r() - 0.5) * 0.2));
-      }
-    }
-  }
-  return { pos: new Float32Array(W.pos), nor: new Float32Array(W.nor), c: new Float32Array(W.c), count: W.pos.length / 3 };
-}
-
 // ---------------------------------------------------------------- scatter
 const STACK_GEO = rockMesh(9.31, 4, true, true), STACK_S = [4.05, 4.8, 3.5];
 // terrain height and slope from the near mesh (fast, for a million blades)
@@ -1802,21 +1649,8 @@ function scatter(near) {
     }
   }
 
-  // crystal clusters along the shore, grown later (see growCrystals): [x, z, hue, crystals, size]
-  r = rng(636504159); // Pebble density must not move crystal beds or trees.
-  const crystalSites = [];
-  for (let c = 0; c < 17; c++) {
-    let cx, cz, k = 0;
-    do { cx = LAKE[0] + (r() * 2 - 1) * 36; cz = LAKE[1] + (r() * 2 - 1) * 30; k++; } while ((lakeD(cx, cz) < 11.2 || lakeD(cx, cz) > 13.8 || !clearOf(cx, cz)) && k < 80);
-    crystalSites.push([cx, cz, r(), 5 + Math.floor(r() * 6), 0.8 + r() * 0.5]);
-  }
-
-  // Low turquoise seams line the bare stone shoulder just off the tread.
-  for (const [x, z, hue, count, size] of [[25, -13, 0.28, 5, 0.66], [26, -20, 0.32, 6, 0.75],
-    [31, -24, 0.23, 5, 0.71], [34, -33, 0.29, 8, 0.86], [40, -26, 0.34, 5, 0.72]]) {
-    crystalSites.push([x, z, hue, count, size]);
-  }
   // Common trees, saplings and a few old giants with space for their low branches.
+  r = rng(2628268434); // The forest has its own seed, independent of the shoreline.
   const trees = [];
   const ground = (x, z) => { const y = H(x, z); return y > 0.3 && y < 11 && normalAt(x, z)[1] > 0.84 && lakeD(x, z) > 12.3 && clearOf(x, z) && Math.hypot(x - START[0], z - START[1]) > 7 && Math.hypot(x - SHORE_CAM[0], z - SHORE_CAM[1]) > 7 && inMap(x, z, 4) && outcrop(x, z) < 0.5; };
   const room = (x, z, d) => {
@@ -1849,7 +1683,8 @@ function scatter(near) {
       const y = nearH(near, x, z);
       if (y < waterLevel(x, z) + 0.2 || nearNy(near, x, z) < 0.76) continue;
       if (habitat === 'east' && i % 3 === 0 && trailDistance(x, z) > 3.7) {
-        crystalSites.push([x, z, 0.22 + 0.17 * upland(), 6 + Math.floor(upland() * 5), 0.85 + 0.73 * upland()]);
+        const size = 0.42 + 0.5 * upland();
+        add(0, x, z, 1.35 * size, 0.44 * size, size, 0.14 * size, upland);
       } else if (habitat === 'east' || i % 3 === 0) {
         const radius = 0.6 + upland() * 1.45;
         add(i % 2, x, z, radius * 1.1, radius * (habitat === 'east' ? 1.65 : 0.71), radius, radius * 0.22, upland);
@@ -1871,7 +1706,7 @@ function scatter(near) {
     const scale = i % 19 === 0 ? 0.65 + 0.52 * upland() : 0.07 + 0.19 * upland();
     add(i % 19 === 0 ? 0 : 3, x, z, scale * 1.3, scale * 0.55, scale, 0.12 * scale, upland);
   }
-  return { rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), crystalSites, trees: new Float32Array(trees) };
+  return { rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), trees: new Float32Array(trees) };
 }
 
 // ---------------------------------------------------------------- junipers
@@ -2451,7 +2286,6 @@ function buildValley() {
       drawCounts: new Int32Array(forest.patches.length), byteOffsets: new Int32Array(forest.patches.length) },
     leaves, grass, plants, coilView: plantView(pl, 3), lanternView: plantView(pl, 4) };
 }
-const crystals = growCrystals(sc.crystalSites);
 const highTrees = uploadHighCanopy(highCanopyMesh(rng(9942)), highSites);
 function uploadHighCanopy(mesh, sites) {
   const attrs = [
@@ -2553,10 +2387,9 @@ function drawRocks(VP, mirror = 1, focalPixels, planes) {
     }
   }
 }
-const vCrys = vao([{ loc: loc(CRYSTAL, 'aPos'), size: 3, data: crystals.pos }, { loc: loc(CRYSTAL, 'aNor'), size: 3, data: crystals.nor }, { loc: loc(CRYSTAL, 'aC'), size: 4, data: crystals.c }]);
 let grassDensity = 1;
 const stars = starScatter(), vStars = vao([{ loc: loc(STARS, 'aS'), size: 4, data: stars.S }, { loc: loc(STARS, 'aC'), size: 4, data: stars.C }]);
-bakeClouds(gl, program, FSQ, touch ? 512 : 1024);
+let clouds;
 const milkyWay = bakeMilkyWay();
 const motes = moteScatter();
 const vMotes = vao([{ loc: loc(POINTS, 'aP'), size: 4, data: motes }]);
@@ -3216,6 +3049,8 @@ function common(p, eye, VP, mirror, t) {
   }
   if (p.worldFrame !== frameNumber) {
     p.worldFrame = frameNumber;
+    gl.uniform4fv(p.u('uCloudEye'), clouds.eyeUniform); gl.uniform4fv(p.u('uLastCloudEye'), clouds.lastEyeUniform);
+    gl.uniform2f(p.u('uCloudLayerMix'), clouds.front, clouds.blend);
     gl.uniform3fv(p.u('uSunDir'), lightDirection); gl.uniform3fv(p.u('uSunCol'), lightColor);
     gl.uniform3fv(p.u('uStarDir'), starDirection); gl.uniform3fv(p.u('uStarTint'), starTint); gl.uniform3fv(p.u('uCloudTint'), cloudTint);
     if (p.shadowVersion !== valleyShadows.version) {
@@ -3231,7 +3066,7 @@ function common(p, eye, VP, mirror, t) {
     if (p === GRASS || p === JLEAF || p === PLANT) {
       gl.uniform3f(p.u('uBrush'), player.x, player.z, brush.cells.size ? 1 : 0);
     }
-    if (p === WATERP || p === ROCK || p === CRYSTAL) {
+    if (p === WATERP || p === ROCK) {
       gl.uniform1i(p.u('uRipCount'), rippleCount);
       if (rippleCount) gl.uniform4fv(p.u('uRip[0]'), rippleUniform, 0, rippleCount * 4);
     }
@@ -3275,7 +3110,6 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   drawIndexedPatches(near, planes, eye, opts.px * 400 / opts.tanY);
   drawIndexedPatches(far, planes);
   common(ROCK, eye, VP, mirror, t); drawRocks(VP, mirror, opts.px * 400 / opts.tanY, planes);
-  common(CRYSTAL, eye, VP, mirror, t); gl.bindVertexArray(vCrys); gl.drawArrays(gl.TRIANGLES, 0, crystals.count);
   gl.disable(gl.CULL_FACE);
   common(HIGH_CANOPY, eye, VP, mirror, t); drawHighCanopy(planes, mirror, eye);
   common(sailwings.shader, eye, VP, mirror, t); sailwings.draw(t, planes, eye, b.f, mirror);
@@ -3342,6 +3176,7 @@ function render(t, camOverride, glowTexture = texGlow) {
   frameNumber++;
   lightDirection = norm(starDirection.map((v, i) => v * (1 - night) + PLANET[i] * night));
   lightColor = starColor.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
+  clouds.update(t, cam.eye, lightDirection, sm(0, 0.41, starDirection[1]) * (1 - night), storm, Boolean(camOverride));
   const waterPlanes = prepareViewPlanes(VP, 1);
   const waterInView = waterBounds(wm.patches, VP, waterPlanes, outsideView, depthRange[0], w, h);
   if (waterInView) {
@@ -3464,6 +3299,7 @@ function frame(now) {
     for (const field of layers()) acc.up += field.upload();
     acc.frames++;
   } else simT += dt;
+  clouds.advance(dt, sm(0, 0.41, starDirection[1]) * (1 - night), storm, simT, groundF.sheet);
   render(simT);
   if (!started) return;
   if (audio) {
@@ -3609,7 +3445,6 @@ const VIEWS = {
   stack: { eye: [ISLET[0] + 9, 1.4, ISLET[1] + 6], yaw: -0.98, pitch: -0.08, motes: false },
   galaxy: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 2.75, pitch: 0.48, motes: false },
   coil: coilView,
-  get crystals() { const [x, z] = sc.crystalSites[3], ex = x + 2.4, ez = z + 2.4; return { eye: [ex, H(ex, ez) + 1.4, ez], yaw: -0.785, pitch: -0.28, motes: false }; },
   lantern: lanternView,
   get grove() { const x = sc.trees[7 * 5] + 2.2, z = sc.trees[7 * 5 + 2] + 2.2; return { eye: [x, H(x, z) + 1.1, z], yaw: -0.785, pitch: -0.3, motes: false }; },
 };
@@ -3659,15 +3494,17 @@ function scripted(m, frames = 900, view = 'shore') {
 
 // ---------------------------------------------------------------- boot
 (async () => {
-  checkPrograms();
   engine = await loadEngine();
+  clouds = createClouds(gl, program, FSQ, engine.boxel, { mobile: touch, test: TEST,
+    sources: [[...LAKE, 1], [spring.x, spring.z, 0.55]] });
+  checkPrograms();
   const t0 = performance.now();
   glowF = new Layer(engine.boxel, SPECS.glow, texGlow);
   groundF = new Layer(engine.boxel, SPECS.moist, texGround);
   wearF = new Layer(engine.boxel, SPECS.wear, texWear);
   setMode(BOXEL);
   refreshModeUI();
-  document.getElementById('status').textContent = `boxel ready: three certified fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
+  document.getElementById('status').textContent = `boxel ready: three surface fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
   if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, day cycle, switch engine, readout</span>'; }
   window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
     runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
@@ -3676,6 +3513,10 @@ function scripted(m, frames = 900, view = 'shore') {
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, darkField);
     gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, 1, 1);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    window.__game.verifyClouds = async (rain = 0) => {
+      const { compareClouds } = await import('./verify.js');
+      return compareClouds(gl, clouds, rain);
+    };
     window.__game.verifySky = async () => {
       const { compareSkyFaces } = await import('./verify.js');
       const full = bakeMilkyWay(false);

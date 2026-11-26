@@ -65,60 +65,6 @@ float canopyCover(vec3 wp) {
 }
 `;
 
-// One periodic cloud field feeds the sky, its reflection and sunlight on the valley.
-// Matching lattice periods at every octave keep the wind loop seamless. Fair-weather cumulus: rounded heads built from
-// three octaves of cells, gathered where a slow cover field allows, with clear sky between. Red is how much of the sky a
-// cloud hides, green the billows that roughen its edge, blue how thick it is toward its middle.
-export function bakeClouds(gl, program, triangle, size) {
-  const cloud = program(triangle, `
-    in vec2 vUv; out vec4 o;
-    float periodicNoise(vec2 uv, float cells, vec2 offset) {
-      vec2 q = uv * cells + offset, i = floor(q), f = fract(q);
-      vec2 s = f*f*(3.-2.*f);
-      float a = hash12(mod(i, cells)), b = hash12(mod(i + vec2(1., 0.), cells));
-      float c = hash12(mod(i + vec2(0., 1.), cells)), d = hash12(mod(i + 1., cells));
-      return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
-    }
-    // one rounded head per cell, jittered, wrapping every n cells: 1 at its centre, falling to 0 a cell away
-    float heads(vec2 uv, float cells, float seed) {
-      vec2 q = uv * cells, i = floor(q), f = fract(q);
-      float d = 8.;
-      for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
-        vec2 c = vec2(float(x), float(y)), p = c + 0.15 + 0.7 * hash22(mod(i + c, cells) + seed) - f;
-        d = min(d, dot(p, p));
-      }
-      return 1. - min(sqrt(d), 1.);
-    }
-    void main(){
-      vec2 warp = vec2(periodicNoise(vUv, 9., vec2(3.)), periodicNoise(vUv, 9., vec2(17.4))) - 0.5;
-      vec2 q = vUv + warp * 0.03;
-      float cover = periodicNoise(q, 7., vec2(4.1)) * 0.64 + periodicNoise(q, 15., vec2(12.1)) * 0.36;
-      float shape = 1.7 * (cover - 0.5) + 0.6 * heads(q, 16., 3.) + 0.28 * heads(q, 35., 17.) + 0.12 * heads(q, 77., 29.)
-                  + 0.06 * periodicNoise(q, 140., vec2(5.3));
-      float optical = smoothstep(0.66, 0.8, shape), thick = smoothstep(0.66, 1.15, shape);
-      float curls = heads(vUv + warp * 0.047, 27., 41.) * 0.5 + periodicNoise(q, 61., vec2(6.4)) * 0.3
-                  + periodicNoise(q, 213., vec2(11.)) * 0.2;
-      o = vec4(optical, curls, thick, 1.);
-    }`);
-  const texture = gl.createTexture(), fb = gl.createFramebuffer();
-  gl.activeTexture(gl.TEXTURE11);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texStorage2D(gl.TEXTURE_2D, 1 + Math.floor(Math.log2(size)), gl.RGBA8, size, size);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-  gl.viewport(0, 0, size, size);
-  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
-  gl.useProgram(cloud); gl.bindVertexArray(null); gl.drawArrays(gl.TRIANGLES, 0, 3);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.generateMipmap(gl.TEXTURE_2D);
-  gl.deleteFramebuffer(fb);
-  gl.useProgram(null);
-  for (const shader of gl.getAttachedShaders(cloud)) gl.deleteShader(shader);
-  gl.deleteProgram(cloud);
-}
-
 // Approximate how much overhead sky remains visible below each crown. Use the
 // actual area and height of the leaves, then blur over a few metres of sky.
 export function bakeCanopy(gl, forest, extent) {
