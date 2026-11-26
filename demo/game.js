@@ -2,6 +2,7 @@ import { bindCapture } from './capture.js';
 import { floraPalette, understoryPigment } from './flora-palette.js';
 import { createWind, windShader } from './wind.js';
 import { bakeTrailMaterial } from './trail-material.js';
+import { bakeLeafSpraysAsync, uploadLeafSprays, sprayGLSL, SPRAY_ASPECT } from './leaf-spray.js';
 import { loadRockSurface, uploadRockSurface } from './rock-material.js';
 import { galaxyFragment } from './galaxy.js';
 import { FieldTexture } from './field-texture.js';
@@ -38,6 +39,7 @@ const WATER = 0;                                          // water level
 const BOXEL = 0, DENSE = 1;
 const MODE_NAME = { 0: 'boxel', 1: 'dense' };
 const rockSurfaceReady = loadRockSurface();
+const leafSpraysReady = bakeLeafSpraysAsync(2024, matchMedia('(pointer: coarse)').matches ? 128 : 256);
 const qs = new URLSearchParams(location.search);
 const TEST = qs.has('test');
 const touch = matchMedia('(pointer: coarse)').matches;
@@ -1022,7 +1024,7 @@ vec3 brushBend(vec3 wp) {
 const JLEAF = program(WORLD_VS + BRUSH_VS + `
 uniform bool uSimpleLeaf; in vec4 aR; in vec4 aD; in vec4 aM; in vec4 aB;
 centroid out vec3 vWP, vN;
-centroid out vec2 vBlade; flat out vec4 vLeaf; flat out vec3 vAcross;
+centroid out vec2 vBlade; flat out vec4 vLeaf; flat out vec3 vAcross; centroid out vec3 vTan;
 vec3 turnAbout(vec3 v, vec3 k, float t){ float c = cos(t), s = sin(t); return v * c + cross(k, v) * s + k * dot(k, v) * (1. - c); }
 void main(){
   // Nearby leaves share a raised spine between two curved faces. The distant
@@ -1053,85 +1055,65 @@ void main(){
   vec3 upper = normalize(cross(tang, sd));
   vec3 across = normalize(sd + upper * ((seed - 0.5) * (0.40 + 1.65 * u)));
   upper = normalize(cross(tang, across));
-  float width = aM.z * uLodW * (0.045 * (1. - u) + sin(3.14159 * pow(u, 0.86))) * 0.5;
-  float rim = 1. + min(kind, 1.) * 0.085 * sin(u * 16. + seed * 18. + side) * curve;
-  width *= rim;
+  // Each leaf slot holds a card: a whole leafy spray (or, for the ground plants, one strap leaf) grown into the atlas.
+  // The card keeps one width from stalk to tip so the picture lies on it undistorted.
+  float width = L * (kind >= 1.5 ? ${SPRAY_ASPECT[2]} : kind >= 0.5 ? ${SPRAY_ASPECT[0]} : ${SPRAY_ASPECT[1]}) * (0.9 + 0.2 * seed) * uLodW;
   p += sd * (seed - 0.5) * L * u * u * (0.09 + 0.34 * min(kind, 1.));
-  float fold = 0.26 + 0.20 * min(kind, 1.) + 0.10 * curve;
+  float fold = (0.26 + 0.20 * min(kind, 1.) + 0.10 * curve) * 0.6;
   p += across * side * width;
   if (!uSimpleLeaf) p += upper * (1. - abs(side)) * width * fold;
   vN = normalize(upper + across * side * fold * 1.65);
   vec2 uv = fieldUV(aB.xy);
   vLeaf = vec4(aB.w, aM.w, textureLod(uGlow, uv, 0.).r, clamp(textureLod(uGround, uv, 0.).r + uSheet, 0., 1.));
-  vAcross = sd; vWP = p; vBlade = vec2(u, side);
+  vAcross = sd; vWP = p; vBlade = vec2(u, side); vTan = tang;
   gl_Position = project(p);
-}`, `
-uniform float uClip; centroid in vec3 vWP, vN; centroid in vec2 vBlade; flat in vec4 vLeaf; flat in vec3 vAcross; out vec4 o;
+}`, sprayGLSL + `
+uniform float uClip; uniform bool uCoverage;
+centroid in vec3 vWP, vN, vTan; centroid in vec2 vBlade; flat in vec4 vLeaf; flat in vec3 vAcross; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   float u = clamp(vBlade.x, 0., 1.), side = clamp(vBlade.y, -1., 1.);
   float kind = floor(vLeaf.y), seed = fract(vLeaf.y), wet = vLeaf.w;
+  vec4 spray = texture(uLeafSprays, sprayUV(u, side, kind, seed));
+  // Coverage sharpened to about a pixel: crisp leaf edges up close, the mips keep far crowns full.
+  float cover = clamp((spray.a - 0.5) / max(fwidth(spray.a), 1e-4) + 0.5, 0., 1.);
+  if (uCoverage ? cover < 0.02 : spray.a < 0.5) discard;
   vec3 tint = crownPigment(vLeaf.x) * mix(vec3(0.83,0.92,0.87),vec3(1.12,1.02,0.92),seed);
   // Moist leaves deepen within the same pigment family as the dry tissue.
   tint *= mix(vec3(1.),vec3(0.91,0.95,0.94),wet);
-  vec3 N = normalize(vN), V = normalize(uCam - vWP);
-  float thin = mix(0.75, 0.36, min(kind, 1.)), edge = abs(side);
-  // Taper the midrib towards the point. Cross veins join it in staggered
-  // pairs and fade as their spacing approaches a pixel.
-  float spread = (0.42 * edge + 0.85 * edge * edge) * (1. - 0.27 * u);
-  float row = u * (8. + 2. * seed) - spread + sign(side) * (0.18 + 0.07 * sin(u * 8.));
-  float fp = max(0.006, fwidth(row)), sw = max(0.005, fwidth(side));
-  float midWidth = mix(0.025, 0.006, u);
-  float midrib = (1. - smoothstep(0., midWidth + 0.5 * sw, edge)) * min(1., 2. * midWidth / sw);
-  float veinDist = abs(fract(row + 0.5) - 0.5);
-  float sideVein = (1. - smoothstep(0.008, 0.042 + fp * 0.5, veinDist)) * min(1., 0.075 / fp);
-  float veins = max(midrib, sideVein * (0.69 - 0.40 * edge)) * smoothstep(0.025, 0.17, u);
-  // Thick leaves hold pigment through the belly. The thin, sheltered
-  // edges transmit it. A wet cuticle darkens the surface between highlights.
-  float belly = sin(3.14159 * u);
-  vec3 albedo = floraRamp(tint, u) * (0.53 + 0.38 * seed);
-  albedo += tint * min(kind, 1.) * belly * (0.16 + 0.10 * edge);
-  albedo *= (0.89 + 0.19 * veins) * (1. - 0.19 * wet);
-  float facing = dot(N, V);
-  float furrow = 0.;
-  float rib = u * (16. + seed * 6.) - 1.8 * edge - 1.45 * edge * edge + seed * 3.;
-  float detail = 1. - smoothstep(0.12, 0.48, fwidth(rib));
-  if (kind > 0.5 && detail > 0.) {
-    // Fine pleats sweep forward from the spine. Their footprint fades them
-    // continuously before they can sparkle on a distant or edge-on leaf.
-    float grain = sin(6.2832 * rib) * detail;
-    float fibre = vnoise(vec2(u * 31. + 3.8 * edge, side * 16. + seed * 37.));
-    float spine = exp(-20. * edge);
-    furrow = detail * (0.50 * grain + 0.50 * (2. * fibre - 1.));
-    N = normalize(N + vAcross * (sign(side) * (0.18 * grain * edge + 0.33 * spine) + 0.09 * furrow));
-    albedo *= 0.87 + 0.17 * furrow + 0.34 * spine;
-    albedo += tint * vec3(0.42, 0.34, 0.13) * (veins * 0.38 + spine * 0.44);
-  }
-  vec3 face = facing >= 0. ? N : -N;
+  // the leaf's own surface from the atlas: cupped, creased at the midrib, veined
+  vec3 Ng = normalize(vN), T = normalize(vTan - Ng * dot(vTan, Ng)), B = cross(Ng, T);
+  B *= sign(dot(B, vAcross) + 1e-4);
+  vec2 slope = (spray.rg * 2. - 1.) * 2.;
+  vec3 N = normalize(Ng + 0.55 * (slope.x * B + slope.y * T)), V = normalize(uCam - vWP);
+  float tone = spray.b, stem = 1. - smoothstep(0.02, 0.06, tone);
+  float vein = smoothstep(0.82, 0.97, tone);
+  vec3 albedo = tint * (0.3 + 0.62 * tone) * (1. - 0.19 * wet);
+  albedo = mix(albedo, vec3(0.15, 0.1, 0.075), stem);
+  float thin = mix(0.75, 0.36, min(kind, 1.));
+  vec3 face = dot(N, V) >= 0. ? N : -N;
   vec3 sun = uSunCol * directLight(vWP);
   vec3 sky = ambient(face) * contactLight(vWP) * mix(vec3(1.), vec3(0.34, 0.48, 0.48), canopyCover(vWP));
   float direct = dot(face, uSunDir);
   vec3 light = albedo * (2.55 * sky + floraSpill(vWP) + sun * (0.06 + 0.55 * max(direct, 0.)));
-  // Green laminae transmit more amber and green light at their thin edges.
+  // Green laminae transmit more amber and green light, most where they are thin.
   float green = smoothstep(0.01, 0.21, tint.g - tint.r);
-  vec3 transmitted = albedo * mix(vec3(1.), vec3(1.58, 1.23, 0.58), green * (0.38 + 0.62 * edge));
-  light += sun * transmitted * max(-direct, 0.) * (thin + 0.19 * edge) * (0.60 + 0.4 * u);
+  vec3 transmitted = albedo * mix(vec3(1.), vec3(1.58, 1.23, 0.58), green * 0.6);
+  light += sun * transmitted * max(-direct, 0.) * thin * (1. - stem) * (0.7 + 0.3 * u);
   float sheen = max(dot(face, normalize(V + uSunDir)), 0.);
   float broad = sheen * sheen; broad *= broad; broad *= broad;
   float gloss = broad * broad; gloss *= gloss;
-  light += sun * max(direct, 0.) * (broad * 0.025 + gloss * (0.15 + 0.27 * wet)) * (0.76 + 0.24 * furrow);
+  light += sun * max(direct, 0.) * (broad * 0.025 + gloss * (0.15 + 0.27 * wet)) * (1. - stem);
   // A waxy leaf also catches a broad strip of open sky between the boughs.
   float skyFacing = max(0., reflect(-V, face).y);
   float rim = 1. - abs(dot(face, V)); rim *= rim;
-  light += sky * (skyFacing * skyFacing) * (0.10 + 0.64 * rim) * (0.60 + wet) * min(kind, 1.);
+  light += sky * (skyFacing * skyFacing) * (0.10 + 0.64 * rim) * (0.60 + wet) * min(kind, 1.) * (1. - stem);
   float night = smoothstep(0.12, 0.95, uNight), response = glowI(vLeaf.z);
-  float branch = (1. - smoothstep(0.02, 0.10, abs(furrow))) * detail * 0.12 * edge * belly;
-  float tissue = (veins + branch) * (0.23 + 0.43 * min(kind, 1.) + 0.33 * step(1.5, kind));
-  float reached = smoothstep(0.01, 0.45 + 0.27 * u + 0.13 * edge, response);
-  float tips = smoothstep(0.64, 0.97, u);
+  float reached = smoothstep(0.01, 0.45 + 0.27 * u, response);
+  float tips = smoothstep(0.64, 0.97, u) * (1. - stem);
   vec3 luminous = kind > 1.5 ? mix(tint, sqrt(tint), 0.45) : tint;
-  light += luminous * night * (tissue * (0.08 + 0.13 * seed + 1.47 * reached * response) + tips * (0.044 + 0.22 * response));
-  o = vec4(tonemap(fogged(light, vWP)), 0.);
+  light += luminous * night * (vein * (0.06 + 0.1 * seed + 1.2 * reached * response) + tips * (0.044 + 0.22 * response));
+  o = vec4(tonemap(fogged(light, vWP)), uCoverage ? cover : 0.);
 }`);
 
 // grass: Corey's blade (ceeboozwah/grass), ported. Three rows plus a tip, quadratic bend, width taper,
@@ -3338,7 +3320,12 @@ const valleyShadows = bakeShadows(gl, touch ? 1536 : 2560, WORLD_HALF, [SUN, PLA
   { source: ROCK, draw: () => drawRocks() },
   { source: HIGH_CANOPY, draw: () => drawHighCanopy() },
   { source: WOOD, draw() { gl.bindVertexArray(wood.vao); gl.drawElements(gl.TRIANGLES, wood.count, gl.UNSIGNED_INT, 0); } },
-  { source: JLEAF, slices: 4, draw(i, slices) {
+  { source: JLEAF, slices: 4, fragmentSource: `#version 300 es
+precision highp float;
+centroid in vec2 vBlade; flat in vec4 vLeaf;
+${sprayGLSL}
+void main(){ if (texture(uLeafSprays, sprayUV(clamp(vBlade.x, 0., 1.), clamp(vBlade.y, -1., 1.), floor(vLeaf.y), fract(vLeaf.y))).a < 0.5) discard; }`,
+    setup: (p) => gl.uniform1i(gl.getUniformLocation(p, 'uLeafSprays'), 20), draw(i, slices) {
     // Each VAO starts at its tile in a contiguous buffer. Draw neighbouring
     // tiles together, spreading the forest across successive clock frames.
     const start = Math.floor(i * leaves.tiles.length / slices), end = Math.floor((i + 1) * leaves.tiles.length / slices);
@@ -3433,7 +3420,7 @@ function windStrength() { return (rain && !TEST ? 1.18 : 1.0) + 0.7 * storm; }
 function common(p, eye, VP, mirror, t) {
   gl.useProgram(p);
   if (p.worldFrame === undefined) {
-    gl.uniform1i(p.u('uOceanAtlas'),18); gl.uniform1i(p.u('uRockSurface'), 19); gl.uniform1i(p.u('uGusts'),16); gl.uniform1i(p.u('uTrailMaterial'),17);
+    gl.uniform1i(p.u('uOceanAtlas'),18); gl.uniform1i(p.u('uLeafSprays'), 20); gl.uniform1i(p.u('uRockSurface'), 19); gl.uniform1i(p.u('uGusts'),16); gl.uniform1i(p.u('uTrailMaterial'),17);
     gl.uniform1i(p.u('uShadows'), 9); gl.uniform1i(p.u('uFloraSpill'), 10);
     gl.uniform1i(p.u('uClouds'), 11); gl.uniform1i(p.u('uCanopy'), 12);
     gl.uniform1i(p.u('uBendTex'), 13); gl.uniform1i(p.u('uValleyGround'), 14); gl.uniform2fv(p.u('uGroundRange'), heightRange);
@@ -3511,7 +3498,13 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   common(sailwings.shader, eye, VP, mirror, t); sailwings.draw(t, planes, eye, b.f, mirror);
   common(WOOD, eye, VP, mirror, t); drawIndexedPatches(wood, planes);
   // The half-resolution water image uses fewer, wider leaf strips to preserve canopy cover.
-  common(JLEAF, eye, VP, mirror, t); leaves.draw(planes, eye, mirror < 0 ? 0.62 : 1);
+  common(JLEAF, eye, VP, mirror, t);
+  // Cards resolve their leaf edges by coverage where the view is multisampled; the alpha channel is left alone.
+  const coverage = mirror > 0 && SAMPLES > 1 && !opts.crop;
+  gl.uniform1i(JLEAF.u('uCoverage'), coverage);
+  if (coverage) { gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true, true, true, false); }
+  leaves.draw(planes, eye, mirror < 0 ? 0.62 : 1);
+  if (coverage) { gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true, true, true, true); }
   common(PLANT, eye, VP, mirror, t); plants.draw(planes, eye, mirror < 0 ? 0.72 : 1);
   if (opts.grass) { common(GRASS, eye, VP, mirror, t); grassDrawn = grass.draw(planes, eye, grassDensity); }
   // Shade the sky only through gaps left in the opaque scene.
@@ -3915,9 +3908,12 @@ function scripted(m, frames = 900, view = 'shore') {
 
 // ---------------------------------------------------------------- boot
 (async () => {
-  const [fieldEngine, rockSurface] = await Promise.all([loadEngine(), rockSurfaceReady]);
+  const [fieldEngine, rockSurface, sprays] = await Promise.all([loadEngine(), rockSurfaceReady, leafSpraysReady]);
   engine = fieldEngine;
   uploadRockSurface(gl, rockSurface, 19);
+  uploadLeafSprays(gl, sprays, 20);
+  // the boot bake drew the leaf cards whole; now that their pictures are here, cut the shadows to the leaves
+  valleyShadows.rebake(0, SUN); valleyShadows.rebake(1, PLANET); shadowKeys.stale = true;
   wind = createWind(engine.boxel, H);
   gl.activeTexture(gl.TEXTURE0+16); gl.bindTexture(gl.TEXTURE_2D,gustTexture);
   gl.texStorage2D(gl.TEXTURE_2D,1+Math.log2(wind.size),gl.RGBA8,wind.size,wind.size);

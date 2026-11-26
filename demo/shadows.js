@@ -42,11 +42,20 @@ export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
   gl.shaderSource(fragment, '#version 300 es\nprecision highp float; void main() {}');
   gl.compileShader(fragment);
   const draws = [];
-  for (const { source, draw, slices = 1 } of casters) {
+  // A caster may bring its own fragment stage, to cut its shadow to what it draws (a leaf card to its leaves).
+  const own = [];
+  for (const { source, draw, slices = 1, fragmentSource, setup } of casters) {
     const p = gl.createProgram();
     const vs = gl.getAttachedShaders(source).find(s => gl.getShaderParameter(s, gl.SHADER_TYPE) === gl.VERTEX_SHADER);
     gl.attachShader(p, vs);
-    gl.attachShader(p, fragment);
+    let fs = fragment;
+    if (fragmentSource) {
+      fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, fragmentSource); gl.compileShader(fs);
+      if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) throw Error(gl.getShaderInfoLog(fs));
+      own.push(fs);
+    }
+    gl.attachShader(p, fs);
     for (let i = 0; i < gl.getProgramParameter(source, gl.ACTIVE_ATTRIBUTES); i++) {
       const { name } = gl.getActiveAttrib(source, i);
       const location = gl.getAttribLocation(source, name);
@@ -59,6 +68,7 @@ export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
     gl.uniform1f(gl.getUniformLocation(p, 'uMirror'), 1);
     gl.uniform1f(gl.getUniformLocation(p, 'uLodW'), 1);
     gl.uniform1i(gl.getUniformLocation(p, 'uSimpleLeaf'), 1);
+    setup?.(p);
     for (let i = 0; i < slices; i++) {
       draws.push(matrix => {
         gl.useProgram(p);
@@ -69,6 +79,7 @@ export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
   }
 
   gl.deleteShader(fragment);
+  for (const fs of own) gl.deleteShader(fs);
 
   const matrices = new Float32Array(16 * (directions.length + spare));
   const prepare = (layer, [x, y, z]) => {
