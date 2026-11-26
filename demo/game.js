@@ -802,16 +802,18 @@ void main(){
     // olive with old roots, and the stand's litter lies over it in drifts, thinnest toward the tread, so the path is
     // where the cover ends rather than a different ground.
     vec3 loam = mix(tread, vec3(0.185,0.158,0.096)*(0.72+0.62*crumb), 0.43);
-    float drifts = 0.53*thatch + 0.30*clump + 0.17*hummocks;
-    float cover = smoothstep(0.23,0.79,drifts - 0.48*pathMask);
+    float drifts = 0.51*thatch + 0.32*clump + 0.17*hummocks;
+    float cover = smoothstep(0.12,0.66,drifts - 0.49*pathMask);
     // Earth and embedded grit show between grass roots. Fallen material takes
     // on a little of the stand's pigment even where the live blades fan apart.
-    vec3 duff = mix(loam*0.62, moss, 0.44 + 0.18*thatch);
+    float bare = smoothstep(0.11,0.66,pathMask + 0.22 * smoothstep(0.04,0.55,wear));
+    vec3 rootMat = stand * mix(0.23,0.57,thatch) * (0.72 + 0.4 * clump);
+    vec3 duff = mix(mix(moss, rootMat, 0.65), loam * 0.62, 0.17 + 0.51 * bare);
     vec3 meadow = mix(loam, duff, cover);
     alb = mix(alb, meadow, meadowFloor);
     alb = mix(alb, mix(meadow, tread, smoothstep(0.03,0.91,soilCover)), soilCover);
     vec2 relief=(2.*coarse.rg-1.)*0.65 + transpose(rot)*(2.*detail.rg-1.)*0.53;
-    N=normalize(N+vec3(relief.x,0.,relief.y)*max(soilCover,meadowFloor*(1.-0.65*cover))*0.78);
+    N=normalize(N+vec3(relief.x,0.,relief.y)*max(soilCover,meadowFloor*(1.-0.88*cover))*0.78);
     rough=mix(rough,0.89-0.12*grit,soilCover);
   }
   float vein = rk * smoothstep(0.74, 0.8, n3) * (1. - smoothstep(12., 28., dist));
@@ -1160,7 +1162,7 @@ void main(){
   // up, narrowing a little into its sheath at the foot.
   float W0 = (0.05 + 0.03*aR.z)*mix(1.6, 1., clamp(H / 0.2, 0., 1.))*mix(1.,0.48,reed)*uLodW
            * mix(1.,0.68,slender)*mix(1.,1.19,broad)*mix(1.22,1.,sisters);
-  float wd = W0 * (0.7 + 0.3*smoothstep(0.,0.2,by)) * pow(1.-by,0.75);
+  float wd = W0 * (0.43 + 0.57*smoothstep(0.,0.27,by)) * pow(1.-by,0.75);
   if (sister) wd *= 0.79*sisters;
   // Rain weighs the blades: water held along a blade bends it from the foot and lays its tip over, and the stand
   // rises again as the moisture field dries.
@@ -1172,7 +1174,10 @@ void main(){
   // A stronger front keeps travelling through the stand. A soft limit
   // preserves local differences even where an entire patch is laid over.
   float force = load * flexibility;
-  float angle = by * 1.55 * force / sqrt(0.70 + force*force);
+  // The taller blades follow the gust. Shorter shoots shelter in each tuft
+  // and keep volume between the blades that bend farther.
+  float shelter = mix(0.65,1.,smoothstep(0.08,0.62,H));
+  float angle = by * 1.49 * force * shelter / sqrt(0.80 + force*force);
   float recoil = tipFlutter(aG.xy,uWindFrame.x,tuft) * (0.035 + 0.075*abs(load));
   float bow = sin(angle), upright = cos(angle);
   // The arc turns the blade face into the sky and lowers its tip. Its foot stays planted.
@@ -3571,7 +3576,7 @@ function render(t, camOverride, glowTexture = texGlow) {
   frameNumber++;
   lightDirection = norm(starDirection.map((v, i) => v * (1 - night) + PLANET[i] * night));
   lightColor = starColor.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
-  clouds.update(t, cam.eye, lightDirection, sm(0, 0.41, starDirection[1]) * (1 - night), storm, Boolean(camOverride));
+  clouds.update(t, cam.eye, starDirection, sm(0, 0.41, starDirection[1]), storm, Boolean(camOverride));
   const waterPlanes = prepareViewPlanes(VP, 1);
   const waterInView = waterBounds(wm.patches, VP, waterPlanes, outsideView, depthRange[0], w, h);
   if (waterInView) {
@@ -3697,7 +3702,7 @@ function frame(now) {
     acc.frames++;
   } else simT += dt;
   wind.update(dt, storm);
-  clouds.advance(dt, sm(0, 0.41, starDirection[1]) * (1 - night), storm, simT, groundF.sheet);
+  clouds.advance(dt, sm(0, 0.41, starDirection[1]), storm, simT, groundF.sheet);
   render(simT);
   capture?.frame(now);
   if (!started) return;

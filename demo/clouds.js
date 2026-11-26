@@ -31,18 +31,18 @@ vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
   vec3 topLight = mix(vec3(0.13, 0.15, 0.215), vec3(0.21, 0.14, 0.15), dusk);
   float forward = pow(max(dot(ray, uStarDir), 0.), 12.);
   vec3 direct = vec3(1.72, 1.265, 0.97) * uCloudTint * (1. + 0.8 * forward);
-  // Preserve the warm sun on individual lobes and the cool skylight inside
-  // their folds. Work in the cloud's own opacity before compositing it.
-  float visibleSun = col.r / max(col.a, 0.0039);
-  float relief = mix(visibleSun, smoothstep(0.13, 0.72, visibleSun), 0.72);
+  // The atlas stores premultiplied light. Keeping it premultiplied all the
+  // way to the composite lets a single quantization level fade into blue sky.
   float rim = col.a * (1. - col.a) * forward;
-  vec3 lit = ambientLight * col.a + topLight * col.g + direct * (col.a * relief + 0.46 * rim);
+  vec3 lit = ambientLight * col.a + topLight * col.g + direct * (col.r + 0.46 * rim);
   lit = mix(lit, col.a * vec3(0.050, 0.067, 0.098) + col.g * vec3(0.16, 0.175, 0.20)
     + direct * col.r * 0.42, uStorm);
-  vec3 moon = vec3(0.0035, 0.0062, 0.015) * col.a + vec3(0.009, 0.015, 0.034) * col.g
-    + vec3(0.044, 0.062, 0.108) * col.r;
+  float towardsMoon = pow(max(dot(ray, uPlanetDir), 0.), 5.);
+  vec3 moon = vec3(0.009, 0.013, 0.028) * col.a + vec3(0.023, 0.034, 0.067) * col.g
+    + vec3(0.038, 0.051, 0.080) * towardsMoon * (col.g + 0.70 * col.a * (1. - col.a));
   lit = mix(lit, moon, uNight);
-  lit = mix(lit, skyBase(ray) * col.a, col.b / max(col.a, 0.005) * 0.56);
+  // Distance haze is integrated with the same weights as opacity.
+  lit = lit * (1. - 0.45 * col.b) + skyBase(ray) * (0.45 * col.b);
   lit += vec3(0.43, 0.48, 0.69) * uFlash * (0.38 * col.a + 0.62 * col.g);
   return behind * (1. - col.a) + lit;
 }`;
@@ -104,7 +104,7 @@ float density(vec3 p, out float height) {
   if (height < -0.07 || height > 1.03) return 0.;
   // Wind shear inclines the upper lobes. The base stays nearly level where
   // rising air first reaches its dew point. Smaller billows erode the edge.
-  vec3 q = p - vec3(0.18, 0., 0.070) * (p.y - uBase);
+  vec3 q = p - vec3(0.10, 0., 0.055) * (p.y - uBase);
   vec3 warp = textureLod(uBillows, q.zxy / 1690. + vec3(0.21, 0.38, 0.72), 0.).rgb;
   q += (warp - 0.68) * vec3(77., 46., 43.);
   vec3 large = textureLod(uBillows, q / 1200., 0.).rgb;
@@ -121,13 +121,16 @@ float density(vec3 p, out float height) {
   float cleft = (1. - smoothstep(0.25, 0.48, fine.g)) * smoothstep(0.12, 0.59, height);
   float envelope = 0.55 * sqrt(water) + lobes + curls - 0.15 - 0.075 * cleft;
   envelope -= 0.68 * pow(max(height, 0.), 1.72);
-  float base = smoothstep(floorHeight, floorHeight + 0.105, height);
-  return smoothstep(0., 0.17, envelope) * base * (0.69 + 0.31 * large.g);
+  float base = smoothstep(floorHeight, floorHeight + 0.135, height);
+  float crown = 1. - smoothstep(0.76 + 0.13 * warp.g, 1.03, height);
+  float moisture = smoothstep(MIN_WATER, 0.13, water);
+  return smoothstep(0., 0.21, envelope) * base * crown * moisture * (0.69 + 0.31 * large.g);
 }
 float sunlight(vec3 p, float rho) {
   float h, nearLight = density(p + uLight * 13., h);
-  float tau = 24. * nearLight + 54. * density(p + uLight * 51., h)
-            + 116. * density(p + uLight * 139., h) + 245. * density(p + uLight * 313., h);
+  float offset = 0.85 + 0.32 * smoothstep(0.05, 0.70, rho);
+  float tau = 24. * nearLight + 54. * density(p + uLight * (51. * offset), h)
+            + 116. * density(p + uLight * (139. * offset), h) + 245. * density(p + uLight * (313. * offset), h);
   float face = clamp(0.69 + 1.35 * (rho - nearLight), 0.24, 1.08);
   return face * (0.90 * exp(-0.024 * tau) + 0.10 * exp(-0.0048 * tau));
 }
@@ -137,40 +140,39 @@ void main() {
   float start = max(0., (uBase - 62. - uOrigin.y) / max(d.y, 0.001));
   float end = min(8300., (uBase + 1.03 * ceiling(1.) - uOrigin.y) / max(d.y, 0.001));
   if (start >= end) { o = vec4(0.); return; }
-  float ds = (end - start) / float(${steps}), trans = 1.;
+  float range = end - start, trans = 1.;
   vec3 sum = vec3(0.);
-  // A different, fixed phase per angular texel breaks up integration bands
-  // on nearly level cloud bases. The pattern stays still as the camera turns.
-  uvec2 px = uvec2(gl_FragCoord.xy);
-  uint hash = (px.x * 1597334677u) ^ (px.y * 3812015801u);
-  hash = (hash ^ (hash >> 16u)) * 2246822519u;
-  float phase = (float(hash >> 8u) + 0.5) / 16777216.;
-  int tileEnd = -1;
-  float maxWater = 0.;
+  // Use more samples near the observer. Adjacent rays share a continuous
+  // phase so the lookup texture has neither random flecks nor a texel lattice.
+  float phase = 0.5 + 0.31 * sin(19. * d.x + 11. * d.y) * sin(17. * d.z - 12. * d.y);
+  float bias = 0.36 * smoothstep(1400., 7000., range);
+  float tileExit = -1., maxWater = 0.;
   for (int i = 0; i < ${steps}; i++) {
-    float dist = start + (float(i) + phase) * ds;
+    float a = float(i) / float(${steps}), b = float(i + 1) / float(${steps});
+    float begin = start + range * mix(a, a * a, bias);
+    float finish = start + range * mix(b, b * b, bias);
+    float dist = mix(begin, finish, phase);
     vec3 p = uOrigin + d * dist;
     if (uSkip) {
-      if (i > tileEnd) {
+      if (dist >= tileExit) {
         vec2 cell = (p.xz + WORLD * 0.5) / TILE;
         maxWater = texelFetch(uTileMax, ivec2(mod(floor(cell), ${WEATHER_SIZE / WEATHER_TILE}.)), 0).r;
         maxWater = mix(maxWater, 0.33 + 0.64 * maxWater, uRainDeck);
         vec2 remain = mix(fract(cell), 1. - fract(cell), step(vec2(0.), d.xz));
         vec2 crossing = remain * TILE / max(abs(d.xz), vec2(0.00001));
-        tileEnd = i + int(clamp(floor(min(crossing.x, crossing.y) / ds - 0.001), 0., float(${steps}) - float(i) - 1.));
+        tileExit = dist + min(crossing.x, crossing.y) - 0.01;
       }
-      if (maxWater <= MIN_WATER || p.y > uBase + 1.03 * ceiling(maxWater)) {
-        i = tileEnd;
-        continue;
-      }
+      if (maxWater <= MIN_WATER || p.y > uBase + 1.03 * ceiling(maxWater)) continue;
     }
     float height, rho = density(p, height);
     if (rho <= 0.) continue;
-    float alpha = 1. - exp(-rho * ds * 0.0145);
+    float alpha = 1. - exp(-rho * (finish - begin) * 0.016);
     float weight = trans * alpha;
-    sum += weight * vec3(sunlight(p, rho), smoothstep(-0.02, 0.90, height), smoothstep(1700., 8000., dist));
+    float light = sunlight(p, rho);
+    light = mix(light, smoothstep(0.13, 0.72, light), 0.72);
+    sum += weight * vec3(light, smoothstep(-0.02, 0.90, height), smoothstep(1700., 8000., dist));
     trans *= 1. - alpha;
-    if (trans < 0.004) break;
+    if (trans < 0.003) break;
   }
   o = vec4(sum, 1. - trans);
 }`;
@@ -179,7 +181,7 @@ void main() {
 export function createClouds(gl, program, triangle, boxel, { mobile, test, sources }) {
   const weather = createWeather(boxel, { sources });
   const width = test ? 512 : mobile ? 1024 : 1536, height = width / 4;
-  const march = program(triangle, volumeShader(test ? 64 : mobile ? 104 : 160));
+  const march = program(triangle, volumeShader(test ? 72 : mobile ? 120 : 168));
   const fb = gl.createFramebuffer();
   function texture(unit, format, w, h, filter, levels = 1) {
     const t = gl.createTexture();
@@ -204,7 +206,10 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
   const eyeUniform = new Float32Array(4), lastEyeUniform = new Float32Array(4);
-  let front = 0, shown, previous, pending, row = 0, swappedAt = 0, blend = 1, weatherAge = 0, dirty = true;
+  const priorWater = weather.water.slice(), priorMaxima = weather.maxima.slice();
+  const waterMix = weather.water.slice(), maxMix = weather.maxima.slice();
+  const WEATHER_PERIOD = 4, BLEND_SECONDS = 0.8;
+  let front = 0, shown, previous, pending, row = 0, swappedAt = 0, blend = 1, weatherAge = 0;
   function marchRows(state, first, count, dest, skip) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, atlas, 0, dest);
@@ -218,20 +223,23 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
     gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_3D, noise);
     gl.uniform1i(march.u('uWaterMap'), 4); gl.uniform1i(march.u('uTileMax'), 5); gl.uniform1i(march.u('uBillows'), 6);
     gl.uniform3f(march.u('uOrigin'), state.eye[0] - CLOUD_WIND[0] * state.t, state.eye[1], state.eye[2] - CLOUD_WIND[1] * state.t);
-    gl.uniform3fv(march.u('uLight'), state.light); gl.uniform1f(march.u('uDriftTime'), state.t);
+    gl.uniform3fv(march.u('uLight'), state.direction ?? state.light); gl.uniform1f(march.u('uDriftTime'), state.t);
     gl.uniform1f(march.u('uBase'), state.base); gl.uniform1f(march.u('uRainDeck'), state.rain);
     gl.uniform1i(march.u('uSkip'), skip);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disable(gl.SCISSOR_TEST); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
-  function upload() {
+  function upload(fraction) {
+    for (let i = 0; i < waterMix.length; i++) waterMix[i] = Math.round(priorWater[i] + fraction * (weather.water[i] - priorWater[i]));
+    // An upward-rounded crossfade of maxima bounds every interpolated texel
+    // in the tile, including the bilinear apron.
+    for (let i = 0; i < maxMix.length; i++) maxMix[i] = Math.ceil(priorMaxima[i] + fraction * (weather.maxima[i] - priorMaxima[i]));
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    for (const [unit, tex, bytes, size] of [[4, map, weather.water, WEATHER_SIZE], [5, tiles, weather.maxima, WEATHER_SIZE / WEATHER_TILE]]) {
+    for (const [unit, tex, bytes, size] of [[4, map, waterMix, WEATHER_SIZE], [5, tiles, maxMix, WEATHER_SIZE / WEATHER_TILE]]) {
       gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, size, size, gl.RED, gl.UNSIGNED_BYTE, bytes);
       if (tex === map) gl.generateMipmap(gl.TEXTURE_2D);
     }
-    dirty = false;
   }
   function anchor(state, t, out) {
     const dt = t - state.t;
@@ -240,39 +248,47 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
   }
   function update(t, eye, light, sun, rain, fixture) {
     const alignment = shown ? light[0] * shown.light[0] + light[1] * shown.light[1] + light[2] * shown.light[2] : 0;
-    const jump = !shown || t < shown.t || Math.abs(rain - shown.rain) > 0.38 || alignment < 0.96;
+    const reset = !shown || t < shown.t;
     const displaced = shown && Math.hypot(eye[0] - shown.eye[0], eye[1] - shown.eye[1], eye[2] - shown.eye[2]) > 18;
-    if (previous && (fixture || t - swappedAt >= 0.65)) previous = null;
-    const changed = shown && (t - shown.t > 1.25 || displaced ||
+    const weatherChanged = shown && Math.abs(rain - shown.rain) > 0.10;
+    if (previous && (fixture || t - swappedAt >= BLEND_SECONDS)) previous = null;
+    const changed = shown && (t - shown.t > 1.25 || displaced || weatherChanged ||
       (fixture && (alignment < 0.99999 || Math.abs(rain - shown.rain) > 0.001)));
-    if (jump || (!pending && !previous && changed)) {
-      if (dirty) upload();
-      pending = { t, eye: [...eye], light: [...light], rain, base: cloudBase(sun, rain) };
+    if (reset || (!pending && !previous && changed)) {
+      upload(weatherAge / WEATHER_PERIOD);
+      // Deep twilight lights the existing volume in the composite. Keep the
+      // optical light ray above the horizon as the sun sets.
+      const direction = [light[0], Math.max(0.14, light[1]), light[2]];
+      const length = Math.hypot(...direction);
+      pending = { t, eye: [...eye], light: [...light], rain, base: cloudBase(sun, rain), direction: direction.map(x => x / length) };
       row = 0;
     }
     if (pending) {
-      const count = jump || fixture ? height : Math.min(height - row, Math.ceil(height / 24));
+      const count = Math.min(height - row, reset || fixture ? height : Math.ceil(height / 27));
       marchRows(pending, row, count, 1 - front, true);
       row += count;
       if (row >= height) {
-        previous = jump || fixture ? null : shown;
+        previous = reset || fixture ? null : shown;
         front = 1 - front; shown = pending; pending = null; swappedAt = t;
       }
     }
-    blend = previous ? Math.min(1, Math.max(0, (t - swappedAt) / 0.65)) : 1;
+    const fraction = previous ? Math.min(1, Math.max(0, (t - swappedAt) / BLEND_SECONDS)) : 1;
+    blend = fraction * fraction * (3 - 2 * fraction);
     anchor(shown, t, eyeUniform);
     if (previous) anchor(previous, t, lastEyeUniform);
     gl.activeTexture(gl.TEXTURE11); gl.bindTexture(gl.TEXTURE_2D_ARRAY, atlas);
   }
   function advance(dt, sun, rain, time, wet) {
     weatherAge += dt;
-    if (weatherAge < 4) return;
-    weatherAge %= 4;
-    weather.advance(sun, rain, time, wet); dirty = true;
+    if (weatherAge < WEATHER_PERIOD) return;
+    weatherAge %= WEATHER_PERIOD;
+    priorWater.set(weather.water);
+    priorMaxima.set(weather.maxima);
+    weather.advance(sun, rain, time, wet);
   }
   // Read the spare layer only when the browser fixture compares marches.
   function readOptics(state, skip, rgba) {
-    if (dirty) upload();
+    upload(weatherAge / WEATHER_PERIOD);
     marchRows(state, 0, height, 1 - front, skip);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     try {
