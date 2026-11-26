@@ -222,8 +222,8 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
     gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, tiles);
     gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_3D, noise);
     gl.uniform1i(march.u('uWaterMap'), 4); gl.uniform1i(march.u('uTileMax'), 5); gl.uniform1i(march.u('uBillows'), 6);
-    gl.uniform3f(march.u('uOrigin'), state.eye[0] - CLOUD_WIND[0] * state.t, state.eye[1], state.eye[2] - CLOUD_WIND[1] * state.t);
-    gl.uniform3fv(march.u('uLight'), state.direction ?? state.light); gl.uniform1f(march.u('uDriftTime'), state.t);
+    gl.uniform3f(march.u('uOrigin'), state.eye[0] - CLOUD_WIND[0] * state.weatherTime, state.eye[1], state.eye[2] - CLOUD_WIND[1] * state.weatherTime);
+    gl.uniform3fv(march.u('uLight'), state.direction ?? state.light); gl.uniform1f(march.u('uDriftTime'), state.weatherTime);
     gl.uniform1f(march.u('uBase'), state.base); gl.uniform1f(march.u('uRainDeck'), state.rain);
     gl.uniform1i(march.u('uSkip'), skip);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -241,12 +241,12 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
       if (tex === map) gl.generateMipmap(gl.TEXTURE_2D);
     }
   }
-  function anchor(state, t, out) {
-    const dt = t - state.t;
+  function anchor(state, weatherTime, out) {
+    const dt = weatherTime - state.weatherTime;
     out[0] = state.eye[0] + CLOUD_WIND[0] * dt; out[1] = state.eye[1];
     out[2] = state.eye[2] + CLOUD_WIND[1] * dt; out[3] = state.base + 165 - state.eye[1];
   }
-  function update(t, eye, light, sun, rain, fixture) {
+  function update(t, eye, light, sun, rain, fixture, weatherTime = t) {
     const alignment = shown ? light[0] * shown.light[0] + light[1] * shown.light[1] + light[2] * shown.light[2] : 0;
     const reset = !shown || t < shown.t;
     const displaced = shown && Math.hypot(eye[0] - shown.eye[0], eye[1] - shown.eye[1], eye[2] - shown.eye[2]) > 18;
@@ -260,7 +260,7 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
       // optical light ray above the horizon as the sun sets.
       const direction = [light[0], Math.max(0.14, light[1]), light[2]];
       const length = Math.hypot(...direction);
-      pending = { t, eye: [...eye], light: [...light], rain, base: cloudBase(sun, rain), direction: direction.map(x => x / length) };
+      pending = { t, weatherTime, eye: [...eye], light: [...light], rain, base: cloudBase(sun, rain), direction: direction.map(x => x / length) };
       row = 0;
     }
     if (pending) {
@@ -274,22 +274,23 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
     }
     const fraction = previous ? Math.min(1, Math.max(0, (t - swappedAt) / BLEND_SECONDS)) : 1;
     blend = fraction * fraction * (3 - 2 * fraction);
-    anchor(shown, t, eyeUniform);
-    if (previous) anchor(previous, t, lastEyeUniform);
+    anchor(shown, weatherTime, eyeUniform);
+    if (previous) anchor(previous, weatherTime, lastEyeUniform);
     gl.activeTexture(gl.TEXTURE11); gl.bindTexture(gl.TEXTURE_2D_ARRAY, atlas);
   }
   function advance(dt, sun, rain, time, wet) {
     weatherAge += dt;
-    if (weatherAge < WEATHER_PERIOD) return;
-    weatherAge %= WEATHER_PERIOD;
-    priorWater.set(weather.water);
-    priorMaxima.set(weather.maxima);
-    weather.advance(sun, rain, time, wet);
+    while (weatherAge >= WEATHER_PERIOD) {
+      weatherAge -= WEATHER_PERIOD;
+      priorWater.set(weather.water);
+      priorMaxima.set(weather.maxima);
+      weather.advance(sun, rain, time - weatherAge, wet);
+    }
   }
   // Read the spare layer only when the browser fixture compares marches.
   function readOptics(state, skip, rgba) {
     upload(weatherAge / WEATHER_PERIOD);
-    marchRows(state, 0, height, 1 - front, skip);
+    marchRows({ ...state, weatherTime: state.t }, 0, height, 1 - front, skip);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     try {
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw Error('Cloud comparison framebuffer incomplete');

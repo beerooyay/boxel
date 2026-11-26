@@ -1,3 +1,4 @@
+import { DAY_RATE, TIMELAPSE_SECONDS, timelapseTravel } from './sky-clock.js';
 import { bindCapture } from './capture.js';
 import { floraPalette, understoryPigment } from './flora-palette.js';
 import { createWind, windShader } from './wind.js';
@@ -3351,11 +3352,11 @@ function turnSky(t) {
 // Tarn's star crosses the sky about the same pole the stars turn on. Seen from this valley it never climbs past 33
 // degrees: a long low afternoon, a sunset in the south-west, a night a little longer than the day, a sunrise in the
 // north-east. The hand-set afternoon is where the clock stands until it is let run.
-const DAY_RATE = 0.02, SHADOW_STEP = 0.012, EXTINCTION = [0.06, 0.12, 0.27];
+const SHADOW_STEP = 0.012, TIMELAPSE_SHADOW_STEP = 0.094, EXTINCTION = [0.06, 0.12, 0.27];
 // relative air mass toward a star `y` (the sine of its elevation) above the horizon (Kasten and Young, 1989)
 const airMass = (y) => 1 / (Math.max(y, 0) + 0.50572 * Math.pow(96.07995 - Math.asin(Math.max(-1, Math.min(1, y))) * 180 / Math.PI, -1.6364));
 const SET_AIR = airMass(SUN[1]);
-let day = 'still', dayAngle = 0, skyOffset = 0;
+let day = 'still', dayAngle = 0, skyOffset = 0, timelapseElapsed = null, weatherLead = 0;
 let starDirection = SUN, starColor = SUNCOL, starTint = [1, 1, 1], cloudTint = starTint;
 // the two star layers in use (fading from, fading to), the clock angles they were baked for, and whether they must be
 // baked afresh (the clock jumped) or the hand-set star restored to layer 0
@@ -3382,20 +3383,21 @@ function placeStar() {
   night = nightTarget = sm(0.035, -0.15, y);
   if (y < -0.04) return; // under the horizon its last shadow fades out with its light
   const [from, to] = shadowKeys.angles;
-  if (shadowKeys.stale || dayAngle < from || dayAngle >= to + SHADOW_STEP) {
+  const step = timelapseElapsed === null ? SHADOW_STEP : TIMELAPSE_SHADOW_STEP;
+  if (shadowKeys.stale || dayAngle < from || dayAngle >= to + step) {
     if (shadowKeys.moved || dayAngle !== 0) valleyShadows.rebake(shadowKeys.layers[0], starDirection);
-    shadowKeys.angles = [dayAngle, dayAngle + SHADOW_STEP];
-    shadowKeys.pending = valleyShadows.prepare(shadowKeys.layers[1], starAt(dayAngle + SHADOW_STEP));
+    shadowKeys.angles = [dayAngle, dayAngle + step];
+    shadowKeys.pending = valleyShadows.prepare(shadowKeys.layers[1], starAt(dayAngle + step));
     shadowKeys.stale = false;
   } else if (dayAngle >= to) {
     // A long frame can cross the boundary. Finish the target before making it current.
     if (shadowKeys.pending) valleyShadows.advance(shadowKeys.pending, valleyShadows.passes);
     shadowKeys.layers.reverse();
-    shadowKeys.angles = [to, to + SHADOW_STEP];
-    shadowKeys.pending = valleyShadows.prepare(shadowKeys.layers[1], starAt(to + SHADOW_STEP));
+    shadowKeys.angles = [to, to + step];
+    shadowKeys.pending = valleyShadows.prepare(shadowKeys.layers[1], starAt(to + step));
   }
   shadowKeys.moved = true;
-  const phase = Math.max(0, Math.min(1, (dayAngle - shadowKeys.angles[0]) / SHADOW_STEP));
+  const phase = Math.max(0, Math.min(1, (dayAngle - shadowKeys.angles[0]) / (shadowKeys.angles[1] - shadowKeys.angles[0])));
   // Build ahead during the first quarter of the interval. No extra depth
   // layers are needed, including on a phone or after pausing the clock.
   if (shadowKeys.pending && (day === 'running' || phase > 0)) {
@@ -3406,18 +3408,55 @@ function placeStar() {
   shadowKeys.blend = shadowKeys.pending ? 0 : sm(0.25, 1., phase);
 }
 function advanceDay(dt) {
-  if (day !== 'running') return;
-  dayAngle += DAY_RATE * dt;
-  if (dayAngle > Math.PI) { dayAngle -= 2 * Math.PI; shadowKeys.stale = true; }
-  // the stars turn with the star, the same way
-  skyOffset -= (DAY_RATE + 0.007) * dt;
+  if (day !== 'running') return dt;
+  let skyDt = dt;
+  if (timelapseElapsed !== null) {
+    const end = Math.min(TIMELAPSE_SECONDS, timelapseElapsed + dt);
+    skyDt = timelapseTravel(end) - timelapseTravel(timelapseElapsed);
+    weatherLead += skyDt - (end - timelapseElapsed);
+    if (end === TIMELAPSE_SECONDS) {
+      day = 'paused';
+      skyDt += dt - (end - timelapseElapsed);
+      timelapseElapsed = null;
+      refreshDayControls();
+    } else timelapseElapsed = end;
+  }
+  dayAngle += DAY_RATE * skyDt;
+  // Keep the angle continuous across midnight so the shadow queue stays valid.
+  skyOffset = (skyOffset - DAY_RATE * skyDt - 0.007 * dt) % (2 * Math.PI);
+  return skyDt;
 }
+
+function refreshDayControls() {
+  const lapse = timelapseElapsed !== null;
+  document.getElementById('bDay').setAttribute('aria-pressed', String(day === 'running' && !lapse));
+  const button = document.getElementById('bTimelapse');
+  button.setAttribute('aria-pressed', String(lapse));
+  button.textContent = lapse ? 'Stop lapse' : 'Timelapse';
+}
+
+function startDay() {
+  if (day === 'still') dayAngle = night > 0.5 ? -2.55 : 0;
+  day = 'running';
+}
+
 function toggleDay() {
-  if (day === 'still') {
-    // from the hand-set afternoon toward sunset; from the hand-set night to a little before dawn
-    dayAngle = night > 0.5 ? -2.55 : 0; day = 'running';
-  } else day = day === 'running' ? 'paused' : 'running';
-  document.getElementById('bDay').setAttribute('aria-pressed', String(day === 'running'));
+  if (timelapseElapsed !== null) {
+    timelapseElapsed = null;
+  } else if (day === 'running') day = 'paused';
+  else startDay();
+  refreshDayControls();
+}
+
+function toggleTimelapse() {
+  if (timelapseElapsed === null) {
+    startDay();
+    timelapseElapsed = 0;
+  } else {
+    timelapseElapsed = null;
+    day = 'paused';
+  }
+  refreshDayControls();
 }
 
 let frameNumber = 0, lightDirection = SUN, lightColor = SUNCOL, exposure = 0.95;
@@ -3576,7 +3615,7 @@ function render(t, camOverride, glowTexture = texGlow) {
   frameNumber++;
   lightDirection = norm(starDirection.map((v, i) => v * (1 - night) + PLANET[i] * night));
   lightColor = starColor.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
-  clouds.update(t, cam.eye, starDirection, sm(0, 0.41, starDirection[1]), storm, Boolean(camOverride));
+  clouds.update(t, cam.eye, starDirection, sm(0, 0.41, starDirection[1]), storm, Boolean(camOverride), t + weatherLead);
   const waterPlanes = prepareViewPlanes(VP, 1);
   const waterInView = waterBounds(wm.patches, VP, waterPlanes, outsideView, depthRange[0], w, h);
   if (waterInView) {
@@ -3689,7 +3728,7 @@ function frame(now) {
   if (capture?.viewing) return;
   if (elapsed < 0.25) adaptDensity(elapsed);
   const dt = Math.min(0.1, elapsed);
-  if (started) advanceDay(dt);
+  const skyDt = started ? advanceDay(dt) : dt;
   night += (nightTarget - night) * Math.min(1, dt * 0.7);
   // Finish the crossfade so day-only and night-only passes can go idle again.
   if (Math.abs(nightTarget - night) < 0.0001) night = nightTarget;
@@ -3702,7 +3741,8 @@ function frame(now) {
     acc.frames++;
   } else simT += dt;
   wind.update(dt, storm);
-  clouds.advance(dt, sm(0, 0.41, starDirection[1]), storm, simT, groundF.sheet);
+  const weatherSun = day === 'still' ? starDirection[1] : starAt(dayAngle)[1];
+  clouds.advance(skyDt, sm(0, 0.41, weatherSun), storm, simT + weatherLead, groundF.sheet);
   render(simT);
   capture?.frame(now);
   if (!started) return;
@@ -3769,6 +3809,7 @@ function bindInput() {
     if (e.code === 'KeyH') toggleHud();
     if (e.code === 'KeyN') toggleNight();
     if (e.code === 'KeyC') toggleDay();
+    if (e.code === 'KeyL') toggleTimelapse();
   });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
   addEventListener('blur', resetMovement);
@@ -3830,12 +3871,13 @@ function bindInput() {
   document.getElementById('bHud').onclick = toggleHud;
   document.getElementById('bNight').onclick = () => started && toggleNight();
   document.getElementById('bDay').onclick = () => started && toggleDay();
+  document.getElementById('bTimelapse').onclick = () => started && toggleTimelapse();
 }
 function look(dx, dy, s) { player.yaw += dx * s; player.pitch = Math.max(-1.35, Math.min(1.35, player.pitch - dy * s)); }
 function toggleRain() { rain = !rain; document.getElementById('bRain').setAttribute('aria-pressed', String(rain)); }
 function toggleNight() {
   // the hand-set day and night: stops the clock, and the star goes back to the afternoon
-  if (day !== 'still') { day = 'still'; document.getElementById('bDay').setAttribute('aria-pressed', 'false'); }
+  if (day !== 'still') { day = 'still'; timelapseElapsed = null; refreshDayControls(); }
   nightTarget = night > 0.5 ? 0 : 1; document.getElementById('bNight').setAttribute('aria-pressed', String(nightTarget > 0.5));
 }
 function toggleHud() { hudOn = !hudOn; document.getElementById('hud').hidden = !hudOn; document.getElementById('bHud').setAttribute('aria-pressed', String(hudOn)); }
@@ -3936,7 +3978,7 @@ function scripted(m, frames = 900, view = 'shore') {
   setMode(BOXEL);
   refreshModeUI();
   document.getElementById('status').textContent = `boxel ready: three surface fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
-  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, day cycle, switch engine, readout, record, gallery</span>'; }
+  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, day cycle, timelapse, switch engine, readout, record, gallery</span>'; }
   window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
     runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, look: (view, pitch, yaw) => { const c = typeof view === 'string' ? VIEWS[view] : view; Object.assign(player, { x: c.eye[0], y: c.eye[1] - 1.65, z: c.eye[2], yaw: c.yaw + (yaw ?? 0), pitch: pitch ?? c.pitch, bob: 0 }); }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
