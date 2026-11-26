@@ -56,5 +56,18 @@ void main(){
   vec3 history = clamp(texture(tHistory, uv).rgb, lo - pad, hi + pad);
   float delta = max(abs(history.r-current.r), max(abs(history.g-current.g), abs(history.b-current.b)));
   float weight = mix(0.90, 0.40, smoothstep(0.10, 1.6, motion)) * (1. - 0.50 * smoothstep(0.14, 0.34, delta));
+  // A capillary ring travels several of its own widths between frames. Its old
+  // colour belongs to open water by then. Use the water depth already drawn
+  // against the valley atlas, keeping full history on the bank and far shore.
+  if (uStorm > 0.005 && !sky && z < 22.) {
+    vec3 wp = uCam + ray*z;
+    vec2 waterUV = fieldUV(wp.xz);
+    vec2 bed = textureLod(uValleyGround, waterUV, 0.).gb;
+    float level = groundHeight(bed.y);
+    float stepHeight = uGroundRange.y / 255.;
+    float surface = (1. - smoothstep(0.07, 0.15+0.5*stepHeight, abs(wp.y-level)))
+                  * smoothstep(0.02, 0.12+stepHeight, level-groundHeight(bed.x)) * inField(waterUV);
+    weight *= 1. - 0.87*surface*smoothstep(0.005,0.26,uStorm)*(1.-smoothstep(14.,22.,z));
+  }
   o.rgb = mix(current, history, weight);
 }`;

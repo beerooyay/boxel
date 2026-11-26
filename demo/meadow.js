@@ -51,8 +51,9 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
   const detailLoc = gl.getAttribLocation(shader, 'aDetail'), rootLoc = gl.getAttribLocation(shader, 'aRoot');
   const scratch = new Uint16Array(details.length), orders = new Map(), tiles = [];
   const margin = Math.ceil(half/CLUMP) + 1, tuftSide = 2*margin + 1;
-  const centres = Uint32Array.from({length: tuftSide*tuftSide}, (_, i) =>
-    clumpHash(i % tuftSide - margin, Math.floor(i/tuftSide) - margin));
+  const centres = new Uint32Array(tuftSide*tuftSide);
+  for (let z = -margin, k = 0; z <= margin; z++)
+    for (let x = -margin; x <= margin; x++) centres[k++] = clumpHash(x,z);
   const hashAt = (x,z) => centres[(z+margin)*tuftSide + x+margin];
   const tuft = { neighbour: 4, distance: 0 };
   let count = 0;

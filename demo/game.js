@@ -1225,7 +1225,7 @@ void main(){
   gc *= mix(0.8, 1.2, pn);
   gc = mix(gc, tip, smoothstep(0.55, 0.95, pn) * 0.2 * y);
   float rootShade = mix(0.72, 1., smoothstep(0.,0.48,y));
-  gc *= (0.89 + 0.22*vGA.y) * rootShade * (1.-0.32*vWet);
+  gc *= (0.89 + 0.22*vGA.y) * rootShade * (1.-0.37*vWet);
   // The central fold stays visible up close and blends out across subpixel blades.
   float footprint = max(fwidth(vGA.z), 0.012);
   float rib = (1. - smoothstep(0.035, 0.12 + footprint, abs(vGA.z))) * (1. - smoothstep(0.17, 0.72, footprint));
@@ -1237,9 +1237,12 @@ void main(){
     vec3 V = normalize(uCam - vWP), Nw = normalize(vN);
     if (dot(Nw, V) < 0.) Nw = -Nw;
     float fres = 0.04 + 0.96 * pow(1. - max(dot(Nw, V), 0.), 5.);
-    float glint = pow(max(dot(Nw, normalize(uSunDir + V)), 0.), 48.);
-    lit += smoothstep(0.03, 0.6, vWet) * smoothstep(0.12, 0.5, y)
-         * (uSunCol * directLight(vWP) * glint * 0.85 + ambient(reflect(-V, Nw)) * (0.40 + 2.1 * fres));
+    float glint = pow(max(dot(Nw, normalize(uSunDir + V)), 0.), 80.);
+    vec3 reflected = reflect(-V, Nw);
+    float openSky = smoothstep(0.04,0.66,reflected.y);
+    float film = smoothstep(0.03,0.60,vWet)*smoothstep(0.12,0.55,y)*(0.58+0.42*vPatch);
+    lit += film * (uSunCol * directLight(vWP) * glint * 0.57
+         + ambient(reflected) * openSky * (0.045 + 0.53*fres));
   }
   // Sky reflection on the exposed blade faces follows the crest across the stand.
   lit += tip * ambient(normalize(vN)) * (0.72 * max(vGA.w, 0.) * y * (1. - uNight));
@@ -1688,15 +1691,9 @@ const ROCK_STYLES = {
   slab:  { power: 4.8, squash: 0.48, breaks: 5, bevel: 0.05, reach: 0.66 },
   tall:  { power: 3.3, squash: 1.02, breaks: 6, bevel: 0.09, reach: 0.68 },
 };
-function rockMesh(seed, sub, style) {
-  const kind = ROCK_STYLES[style], rr = rng(Math.floor(seed * 100003));
-  const lean = (rr() - 0.5) * 0.58, rake = (rr() - 0.5) * 0.47, bedTilt = (rr() - 0.5) * 0.44;
-  const planes = Array.from({ length: kind.breaks }, () => {
-    const a = rr() * Math.PI * 2, el = (rr() - 0.34) * 1.95;
-    return [Math.cos(a)*Math.cos(el), Math.sin(el), Math.sin(a)*Math.cos(el), kind.reach + 0.30*rr()];
-  });
+function rockTopology(sub) {
   const t = (1 + Math.sqrt(5)) / 2;
-  let v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map((p) => { const l = Math.hypot(...p); return p.map((c) => c / l); });
+  const v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map((p) => { const l = Math.hypot(...p); return p.map((c) => c / l); });
   let f = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
   const levels = [], edges = [];
   for (let q = 0; q < sub; q++) {
@@ -1716,9 +1713,26 @@ function rockMesh(seed, sub, style) {
     for (const [a, b, c] of f) { const ab = mid(a, b), bc = mid(b, c), ca = mid(c, a); nf.push([a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]); }
     f = nf;
   }
+  const around = v.map(() => new Set());
+  for (const [a, b, c] of f) {
+    around[a].add(b).add(c); around[b].add(a).add(c); around[c].add(a).add(b);
+  }
+  return {
+    vertices: v, faces: f, neighbours: around.map(set => Array.from(set)),
+    levels: [f, levels[sub-1], levels[sub-2]].map(level => new Uint16Array(level.flat())),
+    refinements: edges.slice(-2),
+  };
+}
+function rockMesh(seed, { vertices, faces, refinements, neighbours }, style) {
+  const kind = ROCK_STYLES[style], rr = rng(Math.floor(seed * 100003));
+  const lean = (rr() - 0.5) * 0.58, rake = (rr() - 0.5) * 0.47, bedTilt = (rr() - 0.5) * 0.44;
+  const planes = Array.from({ length: kind.breaks }, () => {
+    const a = rr() * Math.PI * 2, el = (rr() - 0.34) * 1.95;
+    return [Math.cos(a)*Math.cos(el), Math.sin(el), Math.sin(a)*Math.cos(el), kind.reach + 0.30*rr()];
+  });
   // Worn corners between a few old fracture planes. Both the inclined bedding
   // and the offset shoulders run through the volume, including its outline.
-  const pos = v.map(([x, y, z]) => {
+  const pos = vertices.map(([x, y, z]) => {
     const power = kind.power;
     let radius = (Math.abs(x)**power + Math.abs(y)**power + Math.abs(z)**power) ** (-1 / power);
     const relief = fbm(x*1.7 + seed, z*1.4 - y*1.6 + seed, 3) - 0.45;
@@ -1743,29 +1757,27 @@ function rockMesh(seed, sub, style) {
   });
   // Subdivision adds detail to the exposed faces. Keep the underside shared
   // by all three levels so changing distance cannot lift a rock off its bed.
-  for (const midpoints of edges.slice(-2)) for (const [a, b, m] of midpoints) {
-    if (v[m][1] < -0.10) pos[m] = pos[a].map((x, j) => 0.5 * (x + pos[b][j]));
+  for (const midpoints of refinements) for (const [a, b, m] of midpoints) {
+    if (vertices[m][1] < -0.10) pos[m] = pos[a].map((x, j) => 0.5 * (x + pos[b][j]));
   }
-  const nor = pos.map(() => [0, 0, 0]), around = pos.map(() => new Set());
-  for (const [a, b, c] of f) {
+  const nor = pos.map(() => [0, 0, 0]);
+  for (const [a, b, c] of faces) {
     const A = pos[a], B = pos[b], C = pos[c];
     const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], w = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
     const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
     for (const q of [a, b, c]) { nor[q][0] += n[0]; nor[q][1] += n[1]; nor[q][2] += n[2]; }
-    around[a].add(b).add(c); around[b].add(a).add(c); around[c].add(a).add(b);
   }
   // Curvature from each vertex to the middle of its neighbours, along the normal: hollows positive, edges negative.
   // It rides in the normal's length (1 + 0.45 c), so the shader gets worn edges and dark crevices for nothing.
   const unit = nor.map(n => { const length = Math.hypot(...n) || 1; return n.map(v => v / length); });
   const curvature = pos.map((p, i) => {
     let mx = 0, my = 0, mz = 0, reach = 0;
-    for (const j of around[i]) { mx += pos[j][0]; my += pos[j][1]; mz += pos[j][2]; reach += Math.hypot(pos[j][0] - p[0], pos[j][1] - p[1], pos[j][2] - p[2]); }
-    const n = around[i].size || 1, d = [mx / n - p[0], my / n - p[1], mz / n - p[2]];
+    for (const j of neighbours[i]) { mx += pos[j][0]; my += pos[j][1]; mz += pos[j][2]; reach += Math.hypot(pos[j][0] - p[0], pos[j][1] - p[1], pos[j][2] - p[2]); }
+    const n = neighbours[i].length, d = [mx / n - p[0], my / n - p[1], mz / n - p[2]];
     return Math.max(-1, Math.min(1, 6 * (d[0] * unit[i][0] + d[1] * unit[i][1] + d[2] * unit[i][2]) / (reach / n || 1)));
   });
-  const levelsDrawn = [f, levels[sub-1], levels[sub-2]];
   let cumulative = 0;
-  const errors = edges.slice(-2).reverse().map(midpoints => {
+  const errors = refinements.slice().reverse().map(midpoints => {
     let error = 0;
     for (const [a, b, m] of midpoints) {
       const delta = pos[m].map((c, i) => c - (pos[a][i] + pos[b][i]) / 2);
@@ -1775,11 +1787,11 @@ function rockMesh(seed, sub, style) {
     return cumulative;
   });
   return { pos: new Float32Array(pos.flat()), nor: new Float32Array(unit.map((n, i) => n.map(v => v * (1 + 0.45 * curvature[i]))).flat()),
-    levels: levelsDrawn.map(faces => new Uint16Array(faces.flat())), errors };
+    errors };
 }
-function rockSet(sub, shapes) {
-  const meshes = shapes.map(([seed, style]) => rockMesh(seed, sub, style));
-  return { pos: meshes.map(m => m.pos), nor: meshes.map(m => m.nor), levels: meshes[0].levels,
+function rockSet(topology, shapes) {
+  const meshes = shapes.map(([seed, style]) => rockMesh(seed, topology, style));
+  return { pos: meshes.map(m => m.pos), nor: meshes.map(m => m.nor), levels: topology.levels,
     errors: meshes[0].errors.map((_, i) => Math.max(...meshes.map(m => m.errors[i]))) };
 }
 // ---------------------------------------------------------------- scatter
@@ -2541,11 +2553,12 @@ function buildValley() {
   // Ground arrays are used to place vegetation and flight paths, then live only on the GPU.
   const near = terrainNear();
   const fixed = new Uint8Array((NEAR.S / 2) ** 2);
+  const boulder = rockTopology(4), shingle = rockTopology(3);
   const stoneMeshes = [
-    rockSet(4, [[1.3, 'round'], [5.9, 'block'], [3.3, 'slab']]),
-    rockSet(4, [[4.1, 'block'], [8.6, 'round'], [6.2, 'slab']]),
-    rockSet(4, [[7.7, 'tall'], [9.4, 'tall'], [2.8, 'block']]),
-    rockSet(3, [[2.2, 'round'], [5.1, 'slab'], [7.3, 'block']]),
+    rockSet(boulder, [[1.3, 'round'], [5.9, 'block'], [3.3, 'slab']]),
+    rockSet(boulder, [[4.1, 'block'], [8.6, 'round'], [6.2, 'slab']]),
+    rockSet(boulder, [[7.7, 'tall'], [9.4, 'tall'], [2.8, 'block']]),
+    rockSet(shingle, [[2.2, 'round'], [5.1, 'slab'], [7.3, 'block']]),
   ];
   const sc = scatter(near, fixed, stoneMeshes);
   const rocks = stoneMeshes.map((mesh, k) => rockBatches(mesh, sc.rv[k], sc.rs[k], sc.beds[k]));
