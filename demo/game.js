@@ -5,6 +5,7 @@ import { FieldTexture } from './field-texture.js';
 import { bakeMeadow, BLADE_HEIGHT_RANGE } from './meadow.js';
 import { BrushField } from './brush.js';
 import { waterBounds } from './water-view.js';
+import { seatStone, stoneSpacing } from './stone-bed.js';
 import { coarsePatch } from './terrain-lod.js';
 import { highCanopyMesh, highCanopySites } from './high-canopy.js';
 import { createSailwings } from './fauna.js';
@@ -86,11 +87,12 @@ function H(x, z, footprint = 0) {
   if (Math.abs(ix) < 12 && Math.abs(iz) < 10) {
     // A bedding shelf with a low landing to the east and a scalloped western scarp.
     const a = Math.atan2(iz, ix), lip = 1 + 0.14*Math.sin(3*a+0.7) + 0.085*Math.sin(5*a-1.1);
-    const r = Math.hypot((ix+iz*0.21)/7.0, iz/5.1) / lip;
+    const weathering = vnoise(x*0.60+3.8, z*0.48-9) - 0.5;
+    const r = Math.hypot((ix+iz*0.21)/7.0, iz/5.1) / (lip + 0.105*weathering);
     const apron = sm(-0.55,0.9,Math.cos(a-0.38));
     const crown = 2.05 - 0.035*ix + 0.13*(vnoise(x*0.65,z*0.65)-0.5);
-    const shelf = crown - (0.32+0.85*apron)*sm(0.48,0.86,r)
-      - (1.48-0.80*apron)*sm(0.72,1.05+0.16*apron,r);
+    const shelf = crown - (0.32+0.85*apron)*sm(0.48,0.86+0.09*weathering,r)
+      - (1.48-0.80*apron)*sm(0.72-0.14*weathering,1.05+0.16*apron,r);
     h += (shelf-h)*(1-sm(0.91,1.40,r));
   }
   // A continuous stone shoulder carries the trail. Fractured rock emerges on its flanks.
@@ -500,6 +502,10 @@ vec3 pigment(float h){
   h = clamp(h, 0., 1.) * 4.;
   return h < 1. ? mix(TEAL, CYAN, h) : h < 2. ? mix(CYAN, VIOLET, h - 1.) : h < 3. ? mix(VIOLET, MAGENTA, h - 2.) : mix(MAGENTA, CRIMSON, h - 3.);
 }
+// Common parent stone for loose shingle, buried flecks and wet gravel.
+vec3 shale(float tone) {
+  return mix(vec3(0.104,0.083,0.068),vec3(0.298,0.257,0.211),tone);
+}
 vec3 floraRamp(vec3 tip, float u){
   vec3 root = tip * 0.04 + vec3(0.008, 0.012, 0.02), body = tip * vec3(0.30, 0.31, 0.36);
   return u < 0.5 ? mix(root, body, u * 2.) : mix(body, tip * 0.9, (u - 0.5) * 2.);
@@ -563,48 +569,68 @@ void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)
 
 const OCEAN_ATLAS = program(FSQ,oceanAtlasFragment);
 const HIGH_CANOPY = program(WORLD_VS + `
-in vec3 aPos, aNor; in float aTissue; in vec4 aSite;
-in vec2 aPinna; out vec2 vPinna; out float vCrown;
-out vec3 vWP, vNormal; out float vTissue, vHue;
+in vec3 aPos, aNor; in float aTissue; in vec4 aSite; in vec2 aBlade;
+out vec2 vBlade; out vec3 vWP, vNormal, vRest; out float vTissue, vHue, vCrown;
 void main(){
   float seed = fract(dot(aSite.xz, vec2(0.75488, 0.56984)));
   float a = seed * 6.2832, c = cos(a), s = sin(a);
   mat2 rot = mat2(c, s, -s, c);
-  vec3 p = aPos;
+  vec3 p=aPos;
   p.xz = rot * p.xz;
-  float breeze = windWave(aSite.xz + 3.0 * p.xz) * uWind;
-  p.xz += WIND_DIR * 0.039 * breeze * p.y * p.y;
-  p.y += 0.20 * breeze * dot(p.xz - rot * vec2(0.13, 0.), WIND_DIR) * step(0., aTissue);
+  vRest = p * aSite.w;
+  float load = windWave(aSite.xz + vRest.xz * 0.72) * uWind;
+  float flex = p.y * p.y, leaf = step(0.,aTissue);
+  float tip = leaf * aBlade.x*aBlade.x;
+  p.xz += WIND_DIR * load * (0.052*flex + 0.024*tip);
+  p.y -= 0.074 * load * dot(vRest.xz/aSite.w,WIND_DIR) * flex + 0.025 * abs(load) * tip;
   vWP = aSite.xyz + p * aSite.w;
-  vNormal = aNor; vNormal.xz = rot * aNor.xz;
-  vHue = seed; vTissue = aTissue; vPinna=aPinna;
-  vCrown=clamp((aPos.y-0.66)*1.1+0.95*length(aPos.xz-vec2(0.13,0.)),0.,1.);
+  vNormal=aNor; vNormal.xz=rot*aNor.xz-WIND_DIR*load*(0.085*flex+0.28*tip);
+  vHue=seed; vTissue=aTissue; vBlade=aBlade;
+  vCrown=clamp((aPos.y-0.50)*1.36+0.66*length(aPos.xz),0.,1.);
   gl_Position = project(vWP);
 }`, `uniform float uClip;
-in vec2 vPinna; in float vCrown; in vec3 vWP, vNormal; in float vTissue, vHue; out vec4 o;
+in vec2 vBlade; in vec3 vWP, vNormal, vRest; in float vTissue, vHue, vCrown; out vec4 o;
+// Long, offset scales open into soft fissures. Their size, grain and edges
+// vary independently, and the material stays on the branch as it sways.
+vec2 barkPlate(vec2 plane, float seed) {
+  vec2 p=plane*vec2(6.8,1.33)+seed;
+  float drift=vnoise(plane*vec2(1.85,0.55)+seed);
+  p += vec2(1.27*drift+0.38*vnoise(plane*2.2-seed),0.72*vnoise(plane*0.84+seed));
+  vec3 cell=cobble(p);
+  float fissure=(1.-smoothstep(0.012,0.17+0.15*drift,cell.y))*(0.32+0.68*drift);
+  float grain=vnoise(vec2(p.x*4.5+drift,p.y*1.52));
+  float fibres=vnoise(vec2(9.*p.x+1.8*grain,1.8*p.y));
+  return vec2(fissure,0.34*cell.z+0.40*grain+0.26*fibres);
+}
 void main(){
   if (vWP.y < uClip) discard;
-  vec3 n = normalize(vNormal);
-  vec3 leaf = mix(vec3(0.036, 0.205, 0.124), vec3(0.068, 0.27, 0.245), vHue);
-  leaf = mix(leaf, vec3(0.18, 0.085, 0.21), smoothstep(0.68, 0.98, vHue));
-  vec3 pigment = leaf * (0.45 + vTissue);
-  float rib = (1.-smoothstep(0.04,0.18+fwidth(vPinna.y),abs(vPinna.y))) * (1.-smoothstep(0.15,0.68,fwidth(vPinna.y)));
-  if (vTissue >= 0.) {
-    pigment *= (0.64+0.52*vCrown)*(0.81+0.22*vPinna.x+0.12*vPinna.y);
-    pigment=mix(pigment,leaf*vec3(1.45,1.22,0.89),0.33*rib);
-  } else {
-    float height = -vTissue - 1.;
-    float bands = height * 21. + 0.29 * sin(height * 19. + vHue) + dot(n.xz, vec2(0.14, 0.11));
-    float scar = (1. - smoothstep(0.025, 0.12, abs(fract(bands) - 0.5))) * (1. - smoothstep(0.12, 0.48, fwidth(bands)));
-    float ribs = dot(n.xz, vec2(17., 29.)) + 1.8 * sin(9. * height + vHue);
-    float fibre = 0.05 * cos(ribs) * (1. - smoothstep(0.6, 2.2, fwidth(ribs)));
-    vec3 bark = vec3(0.088, 0.064, 0.064) * (1. + 0.34 * scar + fibre);
-    pigment = mix(bark, leaf * 0.65, smoothstep(0.78, 0.96, height));
+  vec3 n=normalize(vNormal), view=normalize(uCam-vWP), colour;
+  float sun=directLight(vWP);
+  if(vTissue>=0.){
+    vec3 tip=mix(vec3(0.14,0.54,0.32),vec3(0.21,0.52,0.53),smoothstep(0.04,0.69,vHue));
+    tip=mix(tip,vec3(0.47,0.22,0.49),smoothstep(0.67,0.96,vHue));
+    vec3 leaf=tip*(0.43+0.46*vTissue)*(0.43+0.55*vCrown)*(0.68+0.40*vBlade.x);
+    float veins=leafVeins(vBlade.x,vBlade.y,vHue);
+    leaf=mix(leaf,tip*vec3(1.09,1.02,0.80),veins*0.28);
+    float facing=dot(n,uSunDir), translucence=max(-facing,0.);
+    colour=leaf*(contactLight(vWP)*ambient(n)*(1.5+0.72*vCrown)
+                + uSunCol*sun*(0.10+0.80*max(facing,0.)+0.43*translucence));
+    colour+=uSunCol*sun*pow(max(0.,dot(n,normalize(uSunDir+view))),14.)*0.080*tip;
+    colour+=tip*veins*smoothstep(0.18,0.96,uNight)*0.14;
+  }else{
+    float resolve=1.-smoothstep(22.,55.,length(uCam-vWP));
+    vec2 plate=vec2(0.15,0.5);
+    if(resolve>0.){
+      vec2 w=pow(abs(n.xz),vec2(3.)); float weight=w.x/max(w.x+w.y,0.001);
+      vec2 f=barkPlate(vRest.xy,17.*vHue);
+      vec2 g=barkPlate(vRest.zy,23.*vHue+5.);
+      plate=mix(plate,mix(f,g,weight),resolve);
+    }
+    vec3 wood=mix(vec3(0.086,0.050,0.044),vec3(0.242,0.139,0.086),plate.y);
+    wood*=1.-0.51*plate.x;
+    colour=wood*(contactLight(vWP)*ambient(n)*1.8 + uSunCol*sun*(0.07+0.91*max(0.,dot(n,uSunDir))));
   }
-  float incidence = dot(n, uSunDir);
-  float backlight = step(0., vTissue) * max(-incidence, 0.);
-  vec3 light = contactLight(vWP) * ambient(n) * (1.48+0.68*vCrown) + uSunCol * (0.045 + 0.86 * max(incidence, 0.) + 0.20 * backlight) * directLight(vWP);
-  o = vec4(tonemap(fogged(pigment * light, vWP)), 0.);
+  o=vec4(tonemap(fogged(colour,vWP)),0.);
 }`);
 
 // Air and overhead shelter change slowly across the terrain mesh. Keep the
@@ -732,27 +758,37 @@ void main(){
   vec2 isle=p-vec2(${ISLET[0].toFixed(3)},${ISLET[1].toFixed(3)});
   float islandDist=length(vec2((isle.x+0.21*isle.y)/7.,isle.y/5.1));
   float islandStone=(1.-smoothstep(1.07,1.50,islandDist))*smoothstep(-0.35,0.28,y);
+  float mantleSoil = islandStone * smoothstep(0.42,0.93,vN.y);
   if (islandStone>0.) {
-    float shelf=smoothstep(-0.78,0.46,sin(y*9.4+dot(p,vec2(0.4,-0.27))+2.3*n2));
-    vec3 slate=mix(vec3(0.063,0.074,0.083),vec3(0.265,0.244,0.211),0.48*shelf+0.52*n2);
-    alb=mix(alb,slate,islandStone*(0.58+0.42*smoothstep(0.45,0.88,islandDist)));
+    // Short lenses of exposed shale interrupt the earth on eroded faces.
+    float drift = (n1-0.5)*1.35 + (n2-0.5)*0.21;
+    float lens = vnoise(vec2(dot(p,vec2(0.67,-0.41))+n1, y*2.3 + drift));
+    float shale = smoothstep(0.31,0.74,lens + 0.19*(n3-0.5));
+    vec3 face = mix(vec3(0.091,0.069,0.056),vec3(0.29,0.24,0.19),shale);
+    alb = mix(alb, face*(0.80+0.40*n3), islandStone*(1.-0.7*mantleSoil));
   }
-  // The verge shares its patch mask with the blade canopy. Fine chips fade
-  // through mip levels as the path recedes across the valley.
-  vec2 soilDx=dFdx(p)*0.28, soilDy=dFdy(p)*0.28;
+  // The smaller offset, rotated soil patch neither copies the chip pattern nor
+  // inherits its slope direction. Use explicit derivatives across the verge.
+  vec2 dx=dFdx(p), dy=dFdy(p);
   float pathMask=smoothstep(0.075,0.93,vGround.x+(n2-0.5)*0.43);
-  if (vGround.x>0.01) {
-    vec4 soil=textureGrad(uTrailMaterial,p*0.28,soilDx,soilDy);
-    float grains=soil.a, pebbles=smoothstep(0.08,0.66,soil.b);
-    vec3 clay=mix(vec3(0.105,0.066,0.047),vec3(0.36,0.213,0.115),0.23+0.64*n1+0.13*n3);
-    vec3 grit=mix(clay*0.62,vec3(0.34,0.30,0.25),soil.b);
-    vec3 tread=mix(clay*(0.39+1.44*grains),grit,pebbles);
+  float soilCover = max(pathMask, mantleSoil);
+  if (vGround.x>0.01 || mantleSoil>0.) {
+    mat2 rot = mat2(0.80,0.60,-0.60,0.80);
+    vec2 soilUV = p*0.30+vec2(0.34*n1,0.17*n2);
+    vec4 coarse = textureGrad(uTrailMaterial,soilUV,0.30*dx,0.30*dy);
+    vec4 detail = textureGrad(uTrailMaterial,1.21*(rot*p)+vec2(0.19,0.61),1.21*(rot*dx),1.21*(rot*dy));
+    float grains = 0.56*coarse.a + 0.44*detail.a;
+    float grit = max(coarse.b, 0.57*detail.b);
+    vec3 clay=mix(vec3(0.102,0.069,0.051),vec3(0.38,0.239,0.151),0.19+0.48*n1+0.33*n2);
+    float crumb = smoothstep(0.33,0.71,grains);
+    vec3 tread = mix(clay*(0.52+0.97*crumb),shale(0.15+0.67*detail.a),grit);
     vec3 verge=mix(vec3(0.054,0.086,0.040),vec3(0.159,0.186,0.055),n2);
     alb=mix(alb,verge*(0.55+0.8*grains),4.*pathMask*(1.-pathMask)*0.65);
-    alb=mix(alb,tread,pathMask);
-    vec2 relief=soil.rg*2.-1.;
-    N=normalize(N+vec3(relief.x,0.,relief.y)*pathMask*0.81);
-    rough=mix(rough,0.86-0.23*pebbles,pathMask);
+    vec3 loam=mix(tread*vec3(0.78,0.80,0.77),moss,0.47*hummocks*smoothstep(0.73,0.99,vN.y));
+    alb=mix(alb,mix(loam,tread,pathMask),soilCover);
+    vec2 relief=(2.*coarse.rg-1.)*0.65 + transpose(rot)*(2.*detail.rg-1.)*0.53;
+    N=normalize(N+vec3(relief.x,0.,relief.y)*soilCover*0.85);
+    rough=mix(rough,0.89-0.12*grit,soilCover);
   }
   float vein = rk * smoothstep(0.74, 0.8, n3) * (1. - smoothstep(12., 28., dist));
   // Pale seams are silica in the bedrock, so they keep a broad dielectric highlight.
@@ -764,7 +800,7 @@ void main(){
   alb = mix(alb, vec3(0.045, 0.075, 0.085) * (0.75 + 0.5 * vnoise(p * 0.7)), treeline * 0.7);
   // Broad, tilted beds cut across the relief. Narrow benches weather to a lighter colour.
   float bedding = y * 0.45 + dot(p, vec2(0.048, -0.033)) + 3.4 * n1;
-  float bench = smoothstep(0.55, 0.95, sin(bedding + 0.65 * sin(bedding * 0.37)));
+  float bench = smoothstep(0.43, 0.78, vnoise(vec2(dot(p,vec2(0.021,0.032)), bedding*0.45 + seam*0.83)));
   alb = mix(alb, mix(alb * vec3(0.74, 0.78, 0.90), alb * vec3(1.24, 1.14, 0.96), bench), rk * far);
   float alpine = smoothstep(31., 52., y + (0.5 - crag) * 13.);
   // Wind scours rock ribs bare. The lee and the shallow gullies hold snow
@@ -791,9 +827,9 @@ void main(){
     vec3 cb = cobble(gravel), pb = cobble(p * vec2(7.2, 9.3) + 3.7);
     float stone = (1. - smoothstep(0.20, 0.33, cb.x)) * smoothstep(0.02, 0.17, cb.y);
     float peb = (1. - smoothstep(0.15, 0.31, pb.x)) * smoothstep(0.02, 0.13, pb.y);
-    vec3 sc = mix(mix(vec3(0.09, 0.105, 0.11), vec3(0.38, 0.34, 0.28), cb.z), vec3(0.10, 0.18, 0.16), step(0.76, cb.z));
+    vec3 sc = shale(cb.z) * vec3(0.86, 0.92, 0.95);
     sc *= 0.75 + 0.4 * (1. - cb.x * 1.3);
-    vec3 pc2 = mix(vec3(0.14, 0.12, 0.17), vec3(0.28, 0.25, 0.3), pb.z) * mix(0.55, 1., peb);
+    vec3 pc2 = shale(pb.z) * mix(0.55, 1., peb);
     vec3 cobA = mix(mix(alb, pc2, peb), sc, stone * smoothstep(0.35, 0.6, vnoise(p * 0.7) + 0.3));
     float wcob = cobZ * (0.6 + 0.4 * vnoise(p * 0.45));
     alb = mix(alb, cobA, wcob); rough = mix(rough, 0.55, wcob);
@@ -833,19 +869,25 @@ void main(){
 }`);
 
 const ROCK = program(WORLD_VS + `
-in vec3 aPos; in vec3 aNor; in vec4 aI; in vec4 aS; in float aLevel;
-flat out float vLevel;
-out vec3 vWP; out vec3 vN; out float vH; out vec3 vLoc; out vec3 vNl;
+in vec3 aPos; in vec3 aNor; in vec4 aI, aS, aBed;
+flat out vec3 vBed;
+out vec3 vWP, vN, vLoc, vNl; out float vH, vToe;
 void main(){
   float c = cos(aI.w), s = sin(aI.w);
-  vec3 p = aPos * aS.xyz; p = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
-  vec3 n = aNor / aS.xyz; n = normalize(vec3(c * n.x - s * n.z, n.y, s * n.x + c * n.z));
-  vWP = p + aI.xyz; vLevel = aLevel; vN = n; vH = aS.w; vLoc = aPos * aS.xyz; vNl = aNor; gl_Position = project(vWP);
+  vec3 up = normalize(vec3(-aBed.x, 1., -aBed.y));
+  vec3 along = normalize(vec3(c, dot(aBed.xy, vec2(c,s)), s));
+  mat3 frame = mat3(along, up, cross(along,up));
+  vLoc = aPos * aS.xyz; vNl = aNor; vH = aS.w;
+  vWP = aI.xyz + frame * vLoc; vN = normalize(frame * (aNor / aS.xyz));
+  vBed = vec3(aBed.zw, max(aS.x,aS.z)); vToe = aPos.y;
+  gl_Position = project(vWP);
 }`,
-`uniform float uClip; flat in float vLevel; in vec3 vWP; in vec3 vN; in float vH; in vec3 vLoc; in vec3 vNl; out vec4 o;
+`uniform float uClip; flat in vec3 vBed; in vec3 vWP, vN, vLoc, vNl; in float vH, vToe; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 N = normalize(vN); vec3 V = normalize(uCam - vWP);
+  vec3 facet = normalize(cross(dFdx(vWP),dFdy(vWP)));
+  N = normalize(mix(N, facet*sign(dot(N,facet)), mix(0.40,0.15,smoothstep(0.21,0.78,vBed.z))));
   vec2 uv = fieldUV(vWP.xz); float inf = inField(uv); float glow = texture(uGlow, uv).r * inf;
   float dist = length(uCam - vWP);
   vec3 col;
@@ -862,27 +904,25 @@ void main(){
       N = normalize(N - near * vec3(grainSlope.x, 0., grainSlope.y) * 0.07);
     }
     float n1 = vnoise(lp.xz * 0.9 + lp.y), n2 = vnoise(lp.xy * 6. + lp.z * 3.), speck = vnoise(lp.zx * 22. + lp.y * 9.);
-    vec3 alb = mix(vec3(0.077, 0.09, 0.11), vec3(0.29, 0.27, 0.24), n1);
-    alb = mix(alb, vec3(0.31, 0.28, 0.27), smoothstep(0.55, 0.8, n2) * 0.5);
-    float grain = sin(dot(vLoc, vec3(1.9, 8.5, -1.1)) + n1 * 5.3 + n2 * 1.8);
-    float beds=sin(2.7*lp.y+dot(lp.xz,vec2(0.32,-0.18))+2.5*n1);
-    alb=mix(alb,alb*vec3(1.28,1.14,0.97),smoothstep(0.15,0.87,beds));
-    alb*=0.78+0.24*smoothstep(-0.86,-0.36,beds);
-    alb *= (0.84 + 0.28 * speck) * (0.86 + 0.14 * grain);
-    alb += vec3(0.073, 0.061, 0.048) * smoothstep(0.78, 0.98, grain) * n2 * near;
+    vec3 alb = shale(n1);
+    float grain = vnoise(vec2(dot(vLoc.xz,vec2(3.1,-1.8)) + n2, vLoc.y*9.2 + n1*2.1));
+    alb *= (0.82 + 0.30*speck) * (0.77 + 0.40*grain);
+    alb = mix(alb,vec3(0.37,0.32,0.26),near * n2 * smoothstep(0.68,0.90,grain)*0.42);
     alb *= mix(0.72, 1.12, smoothstep(-0.4, 0.8, N.y));      // weathered tops pale, overhangs shadowed
     alb *= 1. - 0.62 * crack;
-    float lich = smoothstep(0.7, 0.76, vnoise(lp.xz * 7. + lp.y * 5.)) * smoothstep(0.35, 0.6, vnoise(lp.zx * 1.1)) * (1. - crack);
-    vec3 lichC = mix(vec3(0.38, 0.32, 0.16), vec3(0.16, 0.36, 0.34), step(0.5, fract(vH * 7.3)));
+    float colonised = (1.-smoothstep(0.03,0.55,vBed.x))*smoothstep(0.20,0.80,vBed.z);
+    float lich = colonised * smoothstep(0.7, 0.76, vnoise(lp.xz * 7. + lp.y * 5.)) * smoothstep(0.35, 0.6, vnoise(lp.zx * 1.1)) * (1. - crack);
+    vec3 lichC = mix(vec3(0.22,0.19,0.12),vec3(0.17,0.20,0.12),n1);
     alb = mix(alb, lichC * (0.7 + 0.3 * speck), lich * 0.5);
     float humus = vnoise(vWP.xz * 1.4 + vH * 5.);
-    float moss = smoothstep(0.28, 0.72, N.y + 0.38 * (humus - 0.5)) * smoothstep(0.29, 0.63, humus + 0.15 * speck);
+    float moss = colonised * smoothstep(0.28, 0.72, N.y + 0.38 * (humus - 0.5)) * smoothstep(0.29, 0.63, humus + 0.15 * speck);
     vec3 mossTint = mix(vec3(0.027, 0.08, 0.052), vec3(0.12, 0.215, 0.103), n2);
+    moss *= 0.28 + 0.52 * (1.-smoothstep(0.30,2.9,abs(vWP.y-vBed.y)));
     alb = mix(alb, mossTint * (0.68 + 0.6 * speck), moss);
     float shoreWet;
-    alb = waterline(alb, vWP, vLevel, shoreWet);
+    alb = waterline(alb, vWP, vBed.y, shoreWet);
     float wet = clamp(max(shoreWet, (texture(uGround, uv).r + uSheet) * inf), 0., 1.);
-    alb *= (1. - 0.3 * wet) * mix(0.5, 1., smoothstep(-0.3, 0.4, vLoc.y));
+    alb *= (1. - 0.3 * wet) * mix(0.61, 1., smoothstep(-0.23, 0.15, vToe));
     col = pbr(alb, mix(0.8 - 0.15 * lich, 0.14, wet * 0.9), 0., N, V, vWP);
     col += mossTint * moss * uNight * (0.28 + glowI(glow));
     col += lichC * lich * (0.075 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
@@ -898,8 +938,8 @@ in vec3 aPos; in vec3 aNor; in vec4 aW; in vec4 aB;
 out vec3 vWP; out vec3 vN; out vec4 vW; out float vStir; out float vHue;
 void main(){
   vec3 p = aPos; float flex = aW.x, g = windWave(aB.xy) * uWind;
-  p.xz += WIND_DIR * g * 0.085 * aB.z * flex * flex;
-  p.y -= abs(g) * 0.01 * aB.z * flex * flex;
+  p.xz += WIND_DIR * g * 0.107 * aB.z * flex * flex;
+  p.y -= abs(g) * 0.025 * aB.z * flex * flex;
   vWP = p; vN = aNor; vW = aW; vHue = aB.w;
   vStir = texture(uGlow, fieldUV(aB.xy)).r;
   gl_Position = project(p);
@@ -956,7 +996,8 @@ void main(){
   vec3 bend = brushBend(aR.xyz + L * (dir * 0.67 + up * (0.86 * lift - 0.45 * droop)));
   p += bend * (0.78 * L * u * u);
   float gust = windWave(aB.xy) * uWind, flex = aR.w + 0.2 * u;
-  p.xz += WIND_DIR * gust * 0.085 * aB.z * flex * flex;
+  p.xz += WIND_DIR * gust * 0.107 * aB.z * flex * flex;
+  p.y -= abs(gust) * 0.025 * aB.z * flex * flex;
   p += sd * sin(uTime * 2.6 + seed * 40. + u * 3.) * 0.018 * (0.35+abs(gust)) * u * L;
   vec3 tang = normalize(dir + up * (lift * 3.14159 * cos(u * 3.14159) - 2. * droop * u) + bend * (1.56 * u));
   vec3 upper = normalize(cross(tang, sd));
@@ -1052,7 +1093,7 @@ void main(){
 // the tips you stirred. Instances are shuffled, so drawing a prefix is an even thinning (adaptive density).
 const GRASS = program(WORLD_VS + BRUSH_VS + `
 in vec4 aRoot, aDetail; uniform vec2 uGrassHeight; uniform bool uSimpleBlade;
-centroid out vec3 vWP; centroid out vec3 vGA; centroid out float vGH; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
+centroid out vec3 vWP; centroid out vec4 vGA; centroid out float vGH; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
 void main(){
   vec4 aG = vec4((aRoot.xy - 0.5) * uExtent, uGrassHeight.x + aRoot.z * uGrassHeight.y, aDetail.w);
   vec4 aR = vec4(aDetail.xyz, aRoot.w * ${BLADE_HEIGHT_RANGE.toFixed(1)});
@@ -1068,22 +1109,25 @@ void main(){
   // Worn and sheltered blades along the tread stay slender as they get shorter.
   float W0 = (0.045 + 0.032 * aR.z) * mix(0.15, 1., smoothstep(0., 0.36, H)) * mix(1., 0.4, reed) * uLodW;
   float wd = W0 * pow(max(1. - by, 0.), 0.92);
-  float lean = (0.18 + 0.52 * aR.z) * H + trample * 0.8 * H + wet * 0.22 * H;
-  float sway = windWave(aG.xy) * uWind * 0.61 * H * (1. - 0.7 * trample);
-  // A blade twists along its length. The taper and wind bend share the same rooted strip.
-  float twist = (aG.w - 0.5) * by * (1. - 0.7 * reed);
+  float lean = (0.12 + 0.42 * aR.z + 0.8 * trample + 0.22 * wet) * H;
+  float load = windWave(aG.xy) * uWind * (1. - 0.74 * trample);
+  float angle = by * clamp(load * (0.98 + 0.24 * aR.z), -0.4, 1.31);
+  float bow = sin(angle), upright = cos(angle);
+  // The arc turns the blade face into the sky and lowers its tip. Its foot stays planted.
+  float twist = by * (aG.w - 0.5) * (1. - 0.7 * reed) + bow * dot(fd, WIND_DIR) * 0.32;
   vec2 across = ax + twist * fd;
-  vec3 p = vec3(aG.x, aG.z, aG.y)
-         + vec3(across.x, 0., across.y) * side * wd
-         + vec3(0., by * H * (1. - 0.18 * by * by) * (1. - 0.7 * trample), 0.)
-         + by * by * (vec3(fd.x + twist * ax.x, 0., fd.y + twist * ax.y) * lean + vec3(WIND_DIR.x, 0., WIND_DIR.y) * sway);
+  vec3 p = vec3(aG.x, aG.z, aG.y);
+  p.xz += across * side * wd + by * by * (fd + twist * ax) * lean;
+  p.xz += WIND_DIR * H * by * bow;
+  p.y += by * H * (1. - 0.14 * by * by) * (1. - 0.7 * trample) * mix(upright,1.,0.20);
   vec3 bend = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
   p += bend * (0.88 * H * by * by);
-  vN = normalize(vec3(-WIND_DIR.x*sway/max(H,0.01)*by, 1., -WIND_DIR.y*sway/max(H,0.01)*by) + vec3(across.x, 0., across.y) * side * 0.9 + vec3(fd.x, 0., fd.y) * (0.15 + 0.35 * by) + bend * (0.62 * by));
-  vGA = vec3(by, aR.z, 2. * side); vGH = H; vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
+  vN = normalize(vec3(fd.x, 0.52, fd.y) + vec3(across.x, 0., across.y) * side * 0.88
+       + vec3(-WIND_DIR.x, 0.56, -WIND_DIR.y) * bow * 1.65 + bend * (0.62 * by));
+  vGA = vec4(by, aR.z, 2. * side, bow); vGH = H; vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
   gl_Position = project(p);
 }`,
-`uniform float uClip; centroid in vec3 vWP; centroid in vec3 vGA; centroid in float vGH; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch; out vec4 o;
+`uniform float uClip; centroid in vec3 vWP; centroid in vec4 vGA; centroid in float vGH; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   float y = clamp(vGA.x, 0., 1.);
@@ -1106,6 +1150,8 @@ void main(){
   float rib = (1. - smoothstep(0.035, 0.12 + footprint, abs(vGA.z))) * (1. - smoothstep(0.17, 0.72, footprint));
   gc *= 1. + 0.24 * rib * smoothstep(0.1, 0.45, y) * (1. - smoothstep(0.75, 1., y));
   vec3 lit = floraLight(gc, vWP, normalize(vN), normalize(uCam - vWP), y, 0.12, glowI(vGlow));
+  // Sky reflection on the exposed blade faces follows the crest across the stand.
+  lit += tip * ambient(normalize(vN)) * (0.72 * max(vGA.w, 0.) * y * (1. - uNight));
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
@@ -1147,7 +1193,7 @@ void main(){
     vec3 p = along*L*(0.11*u+aS2.x*blade) + up*L*(aS2.y*u+aS2.z*sin(u*3.14159)-0.56*blade*blade)
       + across*width*side + up*fold*width*side*side;
     float gust = windWave(aP.xz+along.xz*blade*L)*uWind;
-    p.xz += WIND_DIR * gust * L * 0.24*u*u;
+    p.xz += WIND_DIR * gust * L * 0.30*u*u;
     p += brushBend(aP.xyz+up*L*0.48)*L*0.57*u*u;
     vN = normalize(up*(0.35+0.8*blade) - along*(aS2.y-1.25*blade) - across*side*fold);
     vWP=p+aP.xyz; vU=u; vSide=side; vType=type; vSeed=seed; vHue=aS2.w;
@@ -1160,7 +1206,7 @@ void main(){
   vec3 bend = brushBend(aP.xyz + L * (up * 0.40 + dir * (type < 1.5 ? 0.48 : 0.))) * flex;
   p += bend * (0.62 * L * u * u);
   float flutter = type > 4.5 ? 0.12 : 1.;
-  p.xz += WIND_DIR * windWave(aP.xz + dir.xz * c.x * flutter) * uWind * 0.18 * u * u * L * flex;
+  p.xz += WIND_DIR * windWave(aP.xz + dir.xz * c.x * flutter) * uWind * 0.24 * u * u * L * flex;
   p += sd * sin(uTime * 2.3 + seed * 30. + u * 3.) * 0.02 * u * L * flex * flutter;
   float w;
   if (type < 0.5) w = W * sin(min(1., u * 2.4) * 1.5708) * (1. - 0.6 * u * u);
@@ -1265,7 +1311,7 @@ vec2 waveGrad(vec2 p){
   g += vec2(-0.9, -0.3) * cos(dot(p, vec2(-0.9, -0.3)) * 6.3 + uTime * 3.1) * 0.004;
   // wind gust patches ("cat's paws"): the same rolling waves that move the grass roughen the water as they pass
   float gw = max(0., windWave(p)) * uWind;
-  g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. + uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.012 * gw;
+  g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. - uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.023 * gw;
   g += vec2(-WIND_DIR.y, WIND_DIR.x) * cos(dot(p, vec2(-WIND_DIR.y, WIND_DIR.x)) * 13. + uTime * 6.1) * 0.006 * gw;
   if (uStorm > 0.) g += uStorm * rainRings(p);
   return g + impactWave(p).yz;
@@ -1400,11 +1446,13 @@ function terrainCoord(m) {
   return NEAR.S / 2 + Math.sign(m) * (Math.min(a, INNER_RADIUS) / INNER_STEP + Math.max(0, a - INNER_RADIUS) / OUTER_STEP);
 }
 // Keep each patch's indices adjacent so a row of visible patches takes one draw.
-function terrainPatches(pos, cols, rows, radial) {
+function terrainPatches(pos, cols, rows, radial, pinned) {
   const fullCount = cols * rows * 6, stride = cols + 1, patches = [];
   // Each split border edge adds at most three triangles over a regular coarse quad.
   const borderEdges = cols * Math.ceil(rows / 32) + rows * Math.ceil(cols / 32);
-  const idx = new Uint32Array(fullCount + (radial ? 0 : fullCount / 4 + 9 * borderEdges));
+  const pinnedCount = pinned ? pinned.reduce((sum, cell) => sum + cell, 0) : 0;
+  const coarseCapacity = Math.min(fullCount, fullCount / 4 + 9 * borderEdges + 54 * pinnedCount);
+  const idx = new Uint32Array(fullCount + (radial ? 0 : coarseCapacity));
   let coarseCursor = fullCount;
   const corners = radial ? [0, 1, stride, 1, stride + 1, stride] : [0, stride, 1, 1, stride, stride + 1];
   let cursor = 0;
@@ -1420,7 +1468,7 @@ function terrainPatches(pos, cols, rows, radial) {
     }
     const patch = { first, end: cursor, x0, y0, z0, y1, width: x1 - x0, depth: z1 - z0, pad: 0 };
     if (!radial) {
-      const level = coarsePatch(idx, coarseCursor, pos, stride, i0, j0, i1, j1);
+      const level = coarsePatch(idx, coarseCursor, pos, stride, i0, j0, i1, j1, pinned);
       patch.coarseFirst = coarseCursor; patch.coarseEnd = level.cursor; patch.error = level.error;
       coarseCursor = level.cursor;
     }
@@ -1451,7 +1499,7 @@ function terrainNear() {
     const l = Math.hypot(hx, 1, hz);
     nor[vertex] = -hx / l; nor[vertex + 1] = 1 / l; nor[vertex + 2] = -hz / l;
   }
-  return { ground, pos, nor, heightRange: [low - 0.05, high - low + 0.1], ...terrainPatches(pos, S, S, false) };
+  return { ground, pos, nor, heightRange: [low - 0.05, high - low + 0.1] };
 }
 function terrainFar() {
   const rings = touch ? 150 : 190, sectors = touch ? 320 : 512, stride = sectors + 1, edge = NEAR.half - 0.5;
@@ -1534,7 +1582,7 @@ function rockMesh(seed, sub, tall) {
   // big lumps, a ridge or two, ledged strata, a flat seat on the ground
   const pos = v.map(([x, y, z]) => {
     let k = 1 + 0.3 * (fbm(x * 1.3 + seed * 7, z * 1.3 + y * 1.7 - seed, 3) - 0.5) + 0.14 * (ridged(x * 0.9 + seed, z * 0.9 + y) - 0.45) + 0.06 * (vnoise(x * 6 + seed, z * 6 + y * 5) - 0.5);
-    k *= 1 + 0.045 * Math.round(Math.sin(y * 9 + seed * 3) * 1.6) / 1.6;
+    k *= 0.97 + 0.07 * vnoise(x * 1.6 + seed, y * 6.3 + z * 1.7);
     let px = x * k, py = y * k * (tall ? 1 : 0.72), pz = z * k;
 
     for (const [n, d] of planes) { const dp = px * n[0] + py * n[1] + pz * n[2]; if (dp > d) { const f = (dp - d) * 0.9; px -= n[0] * f; py -= n[1] * f; pz -= n[2] * f; } }
@@ -1585,28 +1633,40 @@ function besideWalk(points, rand, inner = 1.8, width = 2.2) {
   return [x + dx * along - dz * offset, z + dz * along + dx * offset];
 }
 
-function scatter(near) {
+function scatter(near, fixed) {
   // rocks: clusters with one big stone each, a broken field on the outcrop, monoliths on the rim, stones
   // in the shallows, pebbles on the shore
   // Keep the established shoreline across grass densities and quality settings.
   let r = rng(1306441690);
-  const rv = [[], [], [], []], rs = [[], [], [], []];
-  const add = (v, x, z, sx, sy, sz, sink, rand = r) => {
-    const yaw = rand() * 6.28, tint = rand();
-    const footprint = Math.max(sx, sz);
-    if (v !== 3 && (trailDistance(x,z) < 0.85+1.2*footprint || inRestArea(x,z,footprint))) return;
-    // small stones only rest where the ground could hold them; a steep bank would leave them stuck to the wall
-    const ny = Math.max(sx, sz) < 0.6 ? nearNy(near, x, z) : 1;
-    if (ny < (v === 3 ? 0.84 : 0.62)) return;
-    const base = v === 3 ? nearH(near, x, z) : H(x, z);
-    rv[v].push(x, base - sink, z, yaw); rs[v].push(sx, sy, sz, tint);
+  const rv = [[], [], [], []], rs = [[], [], [], []], beds = [[], [], [], []];
+  const groundAt = (x, z) => nearH(near, x, z), reserve = stoneSpacing();
+  const boulders = [], gravel = [];
+  const fixedWidth = NEAR.S / 2;
+  const macro = m => Math.max(0, Math.min(fixedWidth - 1, Math.floor(terrainCoord(m) / 2)));
+  const add = (v, x, z, sx, sy, sz, rand = r) => {
+    const yaw = rand() * 2 * Math.PI, tint = rand();
+    (v === 3 ? gravel : boulders).push([v,x,z,sx,sy,sz,yaw,tint]);
+  };
+  const place = ([v,x,z,sx,sy,sz,yaw,tint]) => {
+    const reach = Math.max(sx, sz);
+    if (v !== 3 && (trailDistance(x,z) < 0.85+1.2*reach || inRestArea(x,z,reach))) return;
+    const iz = z - ISLET[1], ix = x - ISLET[0] + 0.21*iz;
+    if (Math.hypot(ix/7, iz/5.1) < 1.28 + reach/5.1) return;
+    const seat = seatStone(groundAt, x, z, sx, sy, sz, yaw, v);
+    if (!seat || !reserve(x, z, sx, sz, yaw)) return;
+    rv[v].push(x, seat.y, z, yaw); rs[v].push(sx, sy, sz, tint);
+    beds[v].push(seat.gx, seat.gz, trailCover(x, z), waterLevel(x, z));
+    // Coarsen the rest of the terrain, but keep the actual contact triangles at all distances.
+    const radius = reach * 1.12 + sy * 0.4;
+    const x0 = macro(x-radius), x1 = macro(x+radius), z1 = macro(z+radius);
+    for (let j = macro(z-radius); j <= z1; j++) fixed.fill(1, j*fixedWidth+x0, j*fixedWidth+x1+1);
   };
   const cluster = (cx, cz, big, m) => {
     for (let q = 0; q < m; q++) {
       const s0 = q === 0 ? big : big * (0.18 + 0.42 * r()), a = r() * 6.28, d = q === 0 ? 0 : big * (0.7 + r() * 0.9);
       const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
       if (!clearOf(x, z) || !inMap(x, z)) continue;
-      add(q % 2, x, z, s0 * (0.8 + 0.5 * r()), s0 * (0.7 + 0.5 * r()), s0 * (0.8 + 0.5 * r()), 0.12 * s0);
+      add(q % 2, x, z, s0 * (0.8 + 0.5 * r()), s0 * (0.7 + 0.5 * r()), s0 * (0.8 + 0.5 * r()));
     }
   };
   for (let c = 0; c < 56; c++) {
@@ -1622,19 +1682,19 @@ function scatter(near) {
     let x, z, e, k = 0;
     do { const a = r() * 6.28; e = 46 + r() * 14; x = Math.cos(a) * e; z = Math.sin(a) * e / 1.05; k++; } while ((H(x, z) > 13 || !inMap(x, z)) && k < 20);
     const w = 0.6 + r() * 0.4;
-    add(2, x, z, w, 2.4 + r() * 2.8, w * (0.8 + 0.3 * r()), 0.3);
+    add(2, x, z, w, 2.4 + r() * 2.8, w * (0.8 + 0.3 * r()));
   }
 
   for (let q = 0; q < 26; q++) {
     let x, z, k = 0;
     do { x = LAKE[0] + (r() * 2 - 1) * 30; z = LAKE[1] + (r() * 2 - 1) * 24; k++; } while ((lakeD(x, z) < 8.6 || lakeD(x, z) > 10.6) && k < 60);
-    const s0 = 0.4 + r() * 0.9; add(q % 2, x, z, s0, s0 * 0.8, s0 * 1.1, 0.1);
+    const s0 = 0.4 + r() * 0.9; add(q % 2, x, z, s0, s0 * 0.8, s0 * 1.1);
   }
   for (let q = 0; q < (touch ? 900 : 1600); q++) {
     let x, z, k = 0;
     if (q < 1000) do { x = LAKE[0] + (r() * 2 - 1) * 34; z = LAKE[1] + (r() * 2 - 1) * 28; k++; } while ((lakeD(x, z) < 9.6 || lakeD(x, z) > 12.4) && k < 60);
     else { x = (r() * 2 - 1) * (VALLEY_HALF - 2); z = (r() * 2 - 1) * (VALLEY_HALF - 2); }
-    const s0 = 0.04 + Math.pow(r(), 2) * 0.18; add(3, x, z, s0, s0 * 0.7, s0 * (0.8 + 0.4 * r()), 0.01);
+    const s0 = 0.04 + Math.pow(r(), 2) * 0.18; add(3, x, z, s0, s0 * 0.7, s0 * (0.8 + 0.4 * r()));
   }
 
   // Exposed ribs on the lookout have a cap of blocky stone and a fan of smaller
@@ -1652,7 +1712,7 @@ function scatter(near) {
       const x = cx + dx * fall - dz * spread, z = cz + dz * fall + dx * spread;
       const reach = scale * 1.15;
       if (Math.hypot(x - summit[0], z - summit[1]) < 3.5 + reach) continue;
-      add(group % 2, x, z, scale * 1.10, scale * (0.57 + 0.17 * cliffRand()), scale * 0.83, scale * 0.30, cliffRand);
+      add(group % 2, x, z, scale * 1.10, scale * (0.57 + 0.17 * cliffRand()), scale * 0.83, cliffRand);
     }
   }
 
@@ -1661,11 +1721,11 @@ function scatter(near) {
   for (const walk of [trail, ...Object.values(valleyWalks), ...Object.values(rangeWalks)]) {
     for (let i = 1; i < walk.length; i++) {
       const [x,z] = walk[i-1], dx=walk[i][0]-x, dz=walk[i][1]-z, length=Math.hypot(dx,dz);
-      for (let j=0; j<length*1.55; j++) {
+      for (let j=0; j<length*2.05; j++) {
         const u=shingle(), side=(shingle()<0.5?-1:1)*(0.14+1.32*shingle());
         const cx=x+u*dx-side*dz/length, cz=z+u*dz+side*dx/length;
         const size=0.036+0.19*shingle()**2*(0.4+Math.abs(side));
-        if (nearH(near,cx,cz)>waterLevel(cx,cz)) add(3,cx,cz,size,0.48*size,0.74*size,0.11*size,shingle);
+        if (nearH(near,cx,cz)>waterLevel(cx,cz)) add(3,cx,cz,size,0.48*size,0.74*size,shingle);
       }
     }
   }
@@ -1673,7 +1733,7 @@ function scatter(near) {
     // A few knee-high stones on the uphill rim leave a clear view and room to stand.
     for (let i=0;i<7;i++) {
       const a=2.5+2.5*shingle(), size=0.30+0.71*shingle();
-      add(i%2,cx+(rx+0.7)*Math.cos(a),cz+(rz+0.7)*Math.sin(a),size,size*0.68,size*0.77,size*0.19,shingle);
+      add(i%2,cx+(rx+0.7)*Math.cos(a),cz+(rz+0.7)*Math.sin(a),size,size*0.68,size*0.77,shingle);
     }
   }
   // Low shingle bars follow the outside bends. Each has a few exposed slate slabs among the gravel.
@@ -1684,7 +1744,7 @@ function scatter(near) {
       const gravel = stone < 9 ? gravelRand : extraGravel;
       const z = cz + (gravel() - 0.5) * 4.6, x = riverX(z) + side * (1.55 + 1.72 * gravel());
       const radius = stone === 0 ? 0.43 + gravel() * 0.42 : 0.07 + gravel() ** 2 * 0.27;
-      add(stone === 0 ? group % 2 : 3, x, z, radius, radius * (0.47 + 0.26 * gravel()), radius * 1.24, radius * 0.12, gravel);
+      add(stone === 0 ? group % 2 : 3, x, z, radius, radius * (0.47 + 0.26 * gravel()), radius * 1.24, gravel);
     }
   }
 
@@ -1723,13 +1783,13 @@ function scatter(near) {
       if (y < waterLevel(x, z) + 0.2 || nearNy(near, x, z) < 0.76) continue;
       if (habitat === 'east' && i % 3 === 0 && trailDistance(x, z) > 3.7) {
         const size = 0.42 + 0.5 * upland();
-        add(0, x, z, 1.35 * size, 0.44 * size, size, 0.14 * size, upland);
+        add(0, x, z, 1.35 * size, 0.44 * size, size, upland);
       } else if (habitat === 'east' || i % 3 === 0) {
         const radius = 0.6 + upland() * 1.45;
-        add(i % 2, x, z, radius * 1.1, radius * (habitat === 'east' ? 1.65 : 0.71), radius, radius * 0.22, upland);
+        add(i % 2, x, z, radius * 1.1, radius * (habitat === 'east' ? 1.65 : 0.71), radius, upland);
         for (let j = 0; j < 3; j++) {
           const scale = 0.25 + upland() * 0.45;
-          add(1, x + (upland() - 0.5) * 5, z + (upland() - 0.5) * 5, scale, scale * 0.7, scale, 0.08, upland);
+          add(1, x + (upland() - 0.5) * 5, z + (upland() - 0.5) * 5, scale, scale * 0.7, scale, upland);
         }
       } else if (room(x, z, 4.5)) {
         const broadleaf = habitat === 'west' || (habitat === 'headwaters' && i % 2);
@@ -1749,9 +1809,23 @@ function scatter(near) {
     const angle = upland() * Math.PI * 2, radius = 0.68 + 0.52 * upland();
     const x = spring.x + Math.cos(angle) * 17.5 * radius, z = spring.z + Math.sin(angle) * 12 * radius;
     const scale = i % 19 === 0 ? 0.65 + 0.52 * upland() : 0.07 + 0.19 * upland();
-    add(i % 19 === 0 ? 0 : 3, x, z, scale * 1.3, scale * 0.55, scale, 0.12 * scale, upland);
+    add(i % 19 === 0 ? 0 : 3, x, z, scale * 1.3, scale * 0.55, scale, upland);
   }
-  return { rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), trees: new Float32Array(trees) };
+  // Roots keep their space. Reserve the larger stone landmarks before scattering
+  // extra desktop gravel, so quality settings agree on where the boulders sit.
+  for (let i = 0; i < trees.length; i += 5) {
+    const radius = 0.10*trees[i+4];
+    reserve(trees[i], trees[i+2], radius, radius, 0);
+  }
+  const tall = highSites.instances;
+  for (let i = 0; i < tall.length; i += 4) {
+    const radius = 0.073*tall[i+3];
+    reserve(tall[i], tall[i+2], radius, radius, 0);
+  }
+  boulders.sort((a,b) => Math.max(b[3],b[5])-Math.max(a[3],a[5]));
+  boulders.forEach(place);
+  gravel.forEach(place);
+  return { rv: rv.map((a) => new Float32Array(a)), rs: rs.map((a) => new Float32Array(a)), beds: beds.map(a => new Float32Array(a)), trees: new Float32Array(trees) };
 }
 
 // ---------------------------------------------------------------- junipers
@@ -2283,7 +2357,9 @@ function uploadWater(mesh) {
 function buildValley() {
   // Ground arrays are used to place vegetation and flight paths, then live only on the GPU.
   const near = terrainNear();
-  const sc = scatter(near);
+  const fixed = new Uint8Array((NEAR.S / 2) ** 2);
+  const sc = scatter(near, fixed);
+  Object.assign(near, terrainPatches(near.pos, NEAR.S, NEAR.S, false, fixed));
   const grass = bakeMeadow({ gl, shader: GRASS, half: WORLD_HALF, density: GRASS_DENSITY, heightRange: near.heightRange,
     heightAt: (x, z) => nearH(near, x, z), outsideView, rng, touch,
     habitatAt(x, z, data, i) {
@@ -2330,45 +2406,49 @@ function buildValley() {
       drawCounts: new Int32Array(forest.patches.length), byteOffsets: new Int32Array(forest.patches.length) },
     leaves, grass, plants, coilView: plantView(pl, 3), lanternView: plantView(pl, 4) };
 }
-const highTrees = uploadHighCanopy(highCanopyMesh(rng(9942)), highSites);
-function uploadHighCanopy(mesh, sites) {
-  const attrs = [
-    { loc: loc(HIGH_CANOPY, 'aPos'), size: 3, data: mesh.position },
-    { loc: loc(HIGH_CANOPY, 'aNor'), size: 3, data: mesh.normal },
-    { loc: loc(HIGH_CANOPY, 'aPinna'), size: 2, data: mesh.pinna },
-    { loc: loc(HIGH_CANOPY, 'aTissue'), size: 1, data: mesh.tissue },
-    { loc: loc(HIGH_CANOPY, 'aSite'), size: 4, data: sites.instances, div: 1 },
-  ];
-  gl.bindVertexArray(null);
-  const indices = uploadBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.index);
-  for (const tile of sites.tiles) tile.vao = vao(attrs, indices, tile.start);
-  return { nearCount: mesh.nearCount, farCount: mesh.farCount };
+const highTrees = uploadHighCanopy(highSites);
+function uploadHighCanopy(sites) {
+  const siteAttr = { loc: loc(HIGH_CANOPY,'aSite'), size:4, data:sites.instances, div:1 };
+  return [9942, 2113, 8605].map((seed, variant) => {
+    const mesh = highCanopyMesh(rng(seed));
+    const attrs = [
+      { loc:loc(HIGH_CANOPY,'aPos'), size:3, data:mesh.position },
+      { loc:loc(HIGH_CANOPY,'aNor'), size:3, data:mesh.normal },
+      { loc:loc(HIGH_CANOPY,'aBlade'), size:2, data:mesh.blade },
+      { loc:loc(HIGH_CANOPY,'aTissue'), size:1, data:mesh.tissue }, siteAttr,
+    ];
+    gl.bindVertexArray(null);
+    const indices = uploadBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.index);
+    const tiles = sites.tiles.filter(tile => tile.variant===variant);
+    for (const tile of tiles) tile.vao = vao(attrs, indices, tile.start);
+    return { tiles, count:tiles.reduce((sum,tile)=>sum+tile.count,0), near:mesh.nearCount, far:mesh.farCount };
+  });
 }
 function drawHighCanopy(planes, mirror = 1, eye) {
-  // The first tile starts at instance zero, so the bake can draw the whole grove.
-  if (!highSites.tiles.length) return;
-  if (!planes) {
-    gl.bindVertexArray(highSites.tiles[0].vao);
-    gl.drawElementsInstanced(gl.TRIANGLES, highTrees.farCount, gl.UNSIGNED_SHORT,
-      highTrees.nearCount * Uint16Array.BYTES_PER_ELEMENT, highSites.instances.length / 4);
-    return;
-  }
   const width = highSites.width, distance = mirror < 0 ? 32 : 72;
-  const farOffset = highTrees.nearCount * Uint16Array.BYTES_PER_ELEMENT;
-  for (const tile of highSites.tiles) {
-    if (outsideView(planes, tile, width)) continue;
-    const dx = Math.max(tile.x0 - eye[0], 0, eye[0] - tile.x0 - width);
-    const dz = Math.max(tile.z0 - eye[2], 0, eye[2] - tile.z0 - width);
-    const folds = dx * dx + dz * dz < distance * distance;
-    gl.bindVertexArray(tile.vao);
-    gl.drawElementsInstanced(gl.TRIANGLES, folds ? highTrees.nearCount : highTrees.farCount,
-      gl.UNSIGNED_SHORT, folds ? 0 : farOffset, tile.count);
+  for (const group of highTrees) {
+    if (!group.count) continue;
+    const farOffset = group.near * Uint16Array.BYTES_PER_ELEMENT;
+    if (!planes) {
+      gl.bindVertexArray(group.tiles[0].vao);
+      gl.drawElementsInstanced(gl.TRIANGLES, group.far, gl.UNSIGNED_SHORT, farOffset, group.count);
+      continue;
+    }
+    for (const tile of group.tiles) {
+      if (outsideView(planes, tile, width)) continue;
+      const dx = Math.max(tile.x0-eye[0], 0, eye[0]-tile.x0-width);
+      const dz = Math.max(tile.z0-eye[2], 0, eye[2]-tile.z0-width);
+      const close = dx*dx+dz*dz < distance*distance;
+      gl.bindVertexArray(tile.vao);
+      gl.drawElementsInstanced(gl.TRIANGLES, close ? group.near : group.far, gl.UNSIGNED_SHORT,
+        close ? 0 : farOffset, tile.count);
+    }
   }
 }
 const rocks = [rockMesh(1.3, 3, false), rockMesh(4.1, 3, false), rockMesh(7.7, 3, true), rockMesh(2.2, 1, false)]
-  .map((mesh, k) => rockBatches(mesh, sc.rv[k], sc.rs[k]));
+  .map((mesh, k) => rockBatches(mesh, sc.rv[k], sc.rs[k], sc.beds[k]));
 
-function rockBatches(mesh, sites, sizes) {
+function rockBatches(mesh, sites, sizes, beds) {
   const width = 16, cells = new Map();
   let footprint = 0, bottom = Infinity, top = -Infinity;
   for (let k = 0; k < mesh.pos.length; k += 3) {
@@ -2380,16 +2460,17 @@ function rockBatches(mesh, sites, sizes) {
     if (!cells.has(key)) cells.set(key, { x0: x * width, z0: z * width, y0: Infinity, y1: -Infinity, pad: 0, detailError: 0, members: [] });
     const cell = cells.get(key);
     cell.detailError = Math.max(cell.detailError, mesh.detailError * Math.max(sizes[k], sizes[k + 1], sizes[k + 2]));
-    cell.pad = Math.max(cell.pad, footprint * Math.max(sizes[k], sizes[k + 2]));
-    cell.y0 = Math.min(cell.y0, sites[k + 1] + bottom * sizes[k + 1]);
-    cell.y1 = Math.max(cell.y1, sites[k + 1] + top * sizes[k + 1]);
+    const tilt = Math.hypot(beds[k], beds[k+1]), spread = footprint * Math.max(sizes[k], sizes[k+2]);
+    cell.pad = Math.max(cell.pad, spread + tilt * sizes[k+1]);
+    cell.y0 = Math.min(cell.y0, sites[k + 1] + bottom * sizes[k + 1] - tilt * spread);
+    cell.y1 = Math.max(cell.y1, sites[k + 1] + top * sizes[k + 1] + tilt * spread);
     cell.members.push(k);
   }
-  const poses = new Float32Array(sites.length), scales = new Float32Array(sizes.length), levels = new Float32Array(sites.length / 4);
+  const poses = new Float32Array(sites.length), scales = new Float32Array(sizes.length), contacts = new Float32Array(beds.length);
   const attrs = [
     { loc: loc(ROCK, 'aPos'), size: 3, data: mesh.pos }, { loc: loc(ROCK, 'aNor'), size: 3, data: mesh.nor },
     { loc: loc(ROCK, 'aI'), size: 4, data: poses, div: 1 }, { loc: loc(ROCK, 'aS'), size: 4, data: scales, div: 1 },
-    { loc: loc(ROCK, 'aLevel'), size: 1, data: levels, div: 1 },
+    { loc: loc(ROCK, 'aBed'), size: 4, data: contacts, div: 1 },
   ];
   const tiles = [];
   let count = 0;
@@ -2397,7 +2478,7 @@ function rockBatches(mesh, sites, sizes) {
     tiles.push({ ...bounds, first: count, count: members.length });
     for (const k of members) {
       poses.set(sites.subarray(k, k + 4), count * 4); scales.set(sizes.subarray(k, k + 4), count * 4);
-      levels[count++] = waterLevel(sites[k], sites[k + 2]);
+      contacts.set(beds.subarray(k, k+4), count++ * 4);
     }
   }
   gl.bindVertexArray(null);
@@ -3101,7 +3182,7 @@ function toggleDay() {
 }
 
 let frameNumber = 0, lightDirection = SUN, lightColor = SUNCOL, exposure = 0.95;
-function windStrength() { return (rain && !TEST ? 1.15 : 0.7) + 0.9 * storm; }
+function windStrength() { return (rain && !TEST ? 1.18 : 1.0) + 0.7 * storm; }
 function common(p, eye, VP, mirror, t) {
   gl.useProgram(p);
   if (p.worldFrame === undefined) {

@@ -26,13 +26,14 @@ export function bakeTrailMaterial(gl, random) {
     for (let x = 0; x < size; x++) {
       const i = index(x, y);
       const grit = 0.33 * grain(x, y, 16) + 0.29 * grain(x, y, 8) + 0.23 * grain(x, y, 4) + 0.15 * noise[i];
-      height[i] = 1.9 * grit;
-      tone[i] = 0.12 + 0.72 * grit + 0.12 * noise[i];
+      const compressed = grain(x + Math.floor(grain(x,y,64)*9), y, 32);
+      height[i] = 2.45 * grit + 0.9 * compressed;
+      tone[i] = 0.06 + 0.61 * grit + 0.23 * compressed + 0.12 * noise[i];
     }
-  for (let k = 0; k < 720; k++) {
+  for (let k = 0; k < 1650; k++) {
     const x = random() * size,
       y = random() * size,
-      radius = 0.9 + 5.3 * random() ** 3;
+      radius = 0.65 + 3.35 * random() ** 4;
     const aspect = 0.45 + 0.48 * random(),
       a = random() * Math.PI,
       c = Math.cos(a),
@@ -46,7 +47,7 @@ export function bakeTrailMaterial(gl, random) {
           dy = Math.floor(y) + j - y;
         const u = (dx * c + dy * s) / radius,
           v = (dy * c - dx * s) / (radius * aspect);
-        const d = Math.sqrt(u * u + v * v) + 0.15 * Math.abs(u + v);
+        const d = Math.max(Math.abs(u * 0.93 + v * 0.16), Math.abs(v - u * 0.24), 0.70*Math.abs(u+v), 0.63*Math.abs(u-v));
         if (d >= 1.3) continue;
         const at = index(Math.floor(x) + i, Math.floor(y) + j);
         const dome = Math.max(0, 1 - d * d),
@@ -71,5 +72,8 @@ export function bakeTrailMaterial(gl, random) {
   gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
   gl.generateMipmap(gl.TEXTURE_2D);
+  const anisotropy = gl.getExtension('EXT_texture_filter_anisotropic');
+  if (anisotropy) gl.texParameterf(gl.TEXTURE_2D, anisotropy.TEXTURE_MAX_ANISOTROPY_EXT,
+    Math.min(4, gl.getParameter(anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
 }

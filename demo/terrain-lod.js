@@ -1,6 +1,6 @@
 // The near terrain has two grid intervals per coarse quad. Keep every fine
 // vertex on a patch edge so neighbouring patches can choose their levels independently.
-export function coarsePatch(indices, cursor, positions, stride, x0, z0, x1, z1) {
+export function coarsePatch(indices, cursor, positions, stride, x0, z0, x1, z1, pinned) {
   let error = 0;
   const height = vertex => positions[3 * vertex + 1];
   const triangle = (a, b, c) => {
@@ -8,7 +8,19 @@ export function coarsePatch(indices, cursor, positions, stride, x0, z0, x1, z1) 
   };
   for (let z = z0; z < z1; z += 2) for (let x = x0; x < x1; x += 2) {
     const a = z * stride + x, b = a + 2, c = a + 2 * stride, e = c + 2, mid = a + stride + 1;
-    const left = x === x0, right = x + 2 === x1, top = z === z0, bottom = z + 2 === z1;
+    const width = (stride - 1) / 2, cell = (z / 2) * width + x / 2;
+    if (pinned && pinned[cell]) {
+      for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) {
+        const v = a + j * stride + i;
+        triangle(v, v + stride, v + 1);
+        triangle(v + 1, v + stride, v + stride + 1);
+      }
+      continue;
+    }
+    const left = x === x0 || (pinned && pinned[cell - 1]);
+    const right = x + 2 === x1 || (pinned && pinned[cell + 1]);
+    const top = z === z0 || (pinned && pinned[cell - width]);
+    const bottom = z + 2 === z1 || (pinned && pinned[cell + width]);
     const ha = height(a), hb = height(b), hc = height(c), he = height(e);
     if (!left) error = Math.max(error, Math.abs(height(a + stride) - (ha + hc) / 2));
     if (!right) error = Math.max(error, Math.abs(height(b + stride) - (hb + he) / 2));

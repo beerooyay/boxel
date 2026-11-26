@@ -11,7 +11,7 @@ export function groundAtlas(size, extent, groundAt, waterAt, addOccluders) {
     min = Math.min(min, y, surface); max = Math.max(max, y, surface);
   }
   const top = ground.slice();
-  addOccluders((cx, base, cz, rx, height, rz, angle) => {
+  addOccluders((cx, base, cz, rx, height, rz, angle, gx = 0, gz = 0) => {
     const radius = Math.max(rx, rz);
     const x0 = Math.max(0, Math.floor((cx - radius + extent / 2) / step));
     const x1 = Math.min(size - 1, Math.floor((cx + radius + extent / 2) / step));
@@ -21,7 +21,7 @@ export function groundAtlas(size, extent, groundAt, waterAt, addOccluders) {
     for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
       const dx = (x + 0.5) * step - extent / 2 - cx, dz = (z + 0.5) * step - extent / 2 - cz;
       const d2 = ((c * dx + s * dz) / rx) ** 2 + ((c * dz - s * dx) / rz) ** 2;
-      if (d2 < 1) top[z * size + x] = Math.max(top[z * size + x], base + height * Math.sqrt(1 - d2));
+      if (d2 < 1) top[z * size + x] = Math.max(top[z * size + x], base + gx*dx + gz*dz + height * Math.sqrt(1 - d2));
     }
   });
   const data = new Uint8Array(3 * ground.length), span = Math.max(max - min, 0.01);
@@ -56,7 +56,7 @@ export function bakeGroundLight(gl, extent, groundAt, waterAt, sc, highTrunks, p
       if (g === 3) continue; // Individual shingle is smaller than one texel.
       const sites = sc.rv[g], dims = sc.rs[g];
       for (let i = 0; i < sites.length; i += 4)
-        stamp(sites[i], sites[i + 1], sites[i + 2], 0.85 * dims[i], (g < 2 ? 0.66 : 0.86) * dims[i + 1], 0.85 * dims[i + 2], sites[i + 3]);
+        stamp(sites[i], sites[i + 1], sites[i + 2], 0.85 * dims[i], (g < 2 ? 0.66 : 0.86) * dims[i + 1], 0.85 * dims[i + 2], sites[i + 3], sc.beds[g][i], sc.beds[g][i+1]);
     }
     for (const [sites, stride, radius] of [[sc.trees, 5, 0.11], [highTrunks, 4, 0.061]]) {
       for (let i = 0; i < sites.length; i += stride) {
