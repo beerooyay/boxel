@@ -28,6 +28,8 @@ uniform sampler2D tMap, tHistory;
 uniform mat4 uPreviousVP;
 uniform bool uReuse;
 in vec2 vUv; out vec4 o;
+vec3 toYCoCg(vec3 c){ return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }
+vec3 fromYCoCg(vec3 c){ return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
 float depthCode(float distance){ return log2(max(1., distance / uDepthRange.x)) / log2(uDepthRange.y / uDepthRange.x); }
 void main(){
   vec3 current = packLight(texture(tMap, vUv).rgb);
@@ -48,12 +50,22 @@ void main(){
   // the same output pixel. Only moving silhouettes need disocclusion rejection.
   if (motion > 0.65 && (abs(lastDepth - expected) > 0.009 || sky != (lastDepth == 1.))) return;
 
+  // History is only kept where it could be this frame's colour. Reprojection follows the camera, not the wind, so a
+  // leaf or blade that moved leaves its old colour behind: compare it with the 3 x 3 neighbourhood's spread (mean and
+  // deviation, in luma and chroma) and pull anything outside it straight back toward the mean. A plain min/max box
+  // would span leaf and sky alike and let the old leaf through.
   vec2 pixel = 1. / vec2(sz);
-  vec3 a = texture(tMap, vUv + vec2(pixel.x, 0.)).rgb, b = texture(tMap, vUv - vec2(pixel.x, 0.)).rgb;
-  vec3 c = texture(tMap, vUv + vec2(0., pixel.y)).rgb, d = texture(tMap, vUv - vec2(0., pixel.y)).rgb;
-  vec3 lo = min(current, packLight(min(min(a,b), min(c,d)))), hi = max(current, packLight(max(max(a,b), max(c,d))));
-  vec3 pad = (hi - lo) * 0.08 + 0.004;
-  vec3 history = clamp(texture(tHistory, uv).rgb, lo - pad, hi + pad);
+  vec3 m1 = vec3(0.), m2 = vec3(0.), lo = vec3(1e9), hi = vec3(-1e9);
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    vec3 n = toYCoCg(i == 0 && j == 0 ? current : packLight(texture(tMap, vUv + vec2(float(i), float(j)) * pixel).rgb));
+    m1 += n; m2 += n * n; lo = min(lo, n); hi = max(hi, n);
+  }
+  vec3 mean = m1 / 9., sigma = sqrt(max(m2 / 9. - mean * mean, 0.)) * 1.15 + 0.002;
+  vec3 boxLo = max(lo, mean - sigma), boxHi = min(hi, mean + sigma);
+  vec3 old = toYCoCg(texture(tHistory, uv).rgb), centre = 0.5 * (boxLo + boxHi), extent = max(0.5 * (boxHi - boxLo), vec3(1e-4));
+  vec3 off = old - centre, unit = abs(off / extent);
+  float reach = max(unit.x, max(unit.y, unit.z));
+  vec3 history = fromYCoCg(reach > 1. ? centre + off / reach : old);
   float delta = max(abs(history.r-current.r), max(abs(history.g-current.g), abs(history.b-current.b)));
   float weight = mix(0.90, 0.40, smoothstep(0.10, 1.6, motion)) * (1. - 0.50 * smoothstep(0.14, 0.34, delta));
   // A capillary ring travels several of its own widths between frames. Its old

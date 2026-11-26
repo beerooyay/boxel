@@ -577,12 +577,13 @@ void main(){
   vec3 p=aPos;
   p.xz = rot * p.xz;
   vRest = p * aSite.w;
-  float load = windWave(aSite.xz + vRest.xz * 0.72) * uWind;
+  // the tree sways as one body; a leaf's tip bends a little further in the air where it is
+  float raw = crownLoad(aSite.xz) * uWind, load = 1.8 * raw / (1. + 0.45 * raw);
   float flex = smoothstep(0.38,0.94,p.y)*min(1.,length(p.xz)*3.4), leaf = step(0.,aTissue);
-  float tip = leaf * aBlade.x*aBlade.x;
-  p.xz += WIND_DIR * load * (0.012*flex + 0.045*tip);
-  p.xz += vec2(-WIND_DIR.y,WIND_DIR.x) * tip * 0.010 * load * tipFlutter(aSite.xz+vRest.xz,uWindFrame.x,seed);
-  p.y -= 0.020 * load * dot(vRest.xz/aSite.w,WIND_DIR) * flex + 0.025 * abs(load) * tip;
+  float tip = leaf * aBlade.x*aBlade.x, tipLoad = leafBend(windWave(aSite.xz + vRest.xz) * uWind);
+  p.xz += WIND_DIR * (load * 0.012 * flex + tipLoad * 0.022 * tip);
+  p.xz += vec2(-WIND_DIR.y,WIND_DIR.x) * tip * 0.008 * tipLoad * tipFlutter(aSite.xz+vRest.xz,uWindFrame.x,seed);
+  p.y -= 0.020 * load * dot(vRest.xz/aSite.w,WIND_DIR) * flex + 0.014 * tipLoad * tip;
   vWP = aSite.xyz + p * aSite.w;
   vNormal=aNor; vNormal.xz=rot*aNor.xz-WIND_DIR*load*(0.085*flex+0.28*tip);
   vHue=seed; vTissue=aTissue; vBlade=aBlade;
@@ -978,7 +979,7 @@ const WOOD = program(WORLD_VS + `
 in vec3 aPos; in vec3 aNor; in vec4 aW; in vec4 aB;
 out vec3 vWP; out vec3 vN; out vec4 vW; out float vStir; out float vHue;
 void main(){
-  vec3 p = aPos; float g = windWave(p.xz) * uWind;
+  vec3 p = aPos; float g = crownLoad(aB.xy) * uWind;
   p += boughOffset(g,aW.x,aB.z);
   vWP = p; vN = aNor; vW = aW; vHue = aB.w;
   vStir = texture(uGlow, fieldUV(aB.xy)).r;
@@ -1022,6 +1023,7 @@ const JLEAF = program(WORLD_VS + BRUSH_VS + `
 uniform bool uSimpleLeaf; in vec4 aR; in vec4 aD; in vec4 aM; in vec4 aB;
 centroid out vec3 vWP, vN;
 centroid out vec2 vBlade; flat out vec4 vLeaf; flat out vec3 vAcross;
+vec3 turnAbout(vec3 v, vec3 k, float t){ float c = cos(t), s = sin(t); return v * c + cross(k, v) * s + k * dot(k, v) * (1. - c); }
 void main(){
   // Nearby leaves share a raised spine between two curved faces. The distant
   // strip and shadow caster use the same silhouette with three lengthwise spans.
@@ -1035,15 +1037,19 @@ void main(){
   vec3 p = aR.xyz + L * (dir * u + up * (lift * curve - droop * u * u));
   vec3 bend = brushBend(aR.xyz + L * (dir * 0.67 + up * (0.86 * lift - 0.45 * droop)));
   p += bend * (0.78 * L * u * u);
+  // the twig the leaf grows on moves with its whole tree; the leaf itself answers the air at its stalk
+  vec3 carried = boughOffset(crownLoad(aB.xy) * uWind, aR.w, aB.z);
   float gust = windWave(aR.xz) * uWind;
-  p += boughOffset(gust,aR.w,aB.z);
   float ripple = tipFlutter(aR.xz,uWindFrame.x,seed);
-  float bendAngle = gust * (0.48+0.27*seed);
-  float curl = u*u;
-  vec3 deflection = vec3(WIND_DIR.x,-0.32*abs(bendAngle),WIND_DIR.y)*sin(bendAngle)
-                  + sd*(0.098*ripple*gust);
-  p += deflection * (L*curl);
-  vec3 tang = normalize(dir + up * (lift * 3.14159 * cos(u * 3.14159) - 2. * droop * u) + bend * (1.56 * u) + deflection*(2.*u));
+  // Bend about the stalk toward the wind, progressively along the blade, as a rotation so the leaf keeps its length.
+  // The flutter is a small twist about the same stalk, not a stretch.
+  vec3 hinge = normalize(cross(up, vec3(WIND_DIR.x, 0., WIND_DIR.y)));
+  float a = leafBend(gust * (0.48 + 0.27 * seed)) + 0.09 * ripple * min(gust, 1.5);
+  vec3 o = p - aR.xyz;
+  vec3 ahead = L * 0.01 * (dir + up * (lift * 3.14159 * cos(u * 3.14159) - 2. * droop * u)) + bend * (0.0156 * L * u);
+  vec3 r1 = turnAbout(o, hinge, a * u), r2 = turnAbout(o + ahead, hinge, a * (u + 0.01));
+  p = aR.xyz + r1 + carried;
+  vec3 tang = normalize(r2 - r1);
   vec3 upper = normalize(cross(tang, sd));
   vec3 across = normalize(sd + upper * ((seed - 0.5) * (0.40 + 1.65 * u)));
   upper = normalize(cross(tang, across));
@@ -1168,9 +1174,11 @@ void main(){
           * mix(0.8, 1.2, tuft) * (1. - 0.28 * smoothstep(0.22, 0.68, tuftDist)) * (1. - 0.1 * edge);
   float sisters = 1. - smoothstep(5.5, 8.8, length(aG.xy-uCam.xz));
   if (sister) H *= (0.63 + 0.24*shape)*sisters;
-  float W0 = (0.030 + 0.022*aR.z)*mix(0.20, 1., smoothstep(0., 0.34, H))*mix(1.,0.48,reed)*uLodW
-           * mix(1.,0.58,slender)*mix(1.,1.19,broad)*mix(1.32,1.,sisters);
-  float wd = W0 * (0.48 + 0.52*smoothstep(0.,0.25,by)) * pow(1.-by,0.84);
+  // Corey's proportions (ceeboozwah/grass): a short blade is a broad one, and a blade holds its width most of the way
+  // up, narrowing a little into its sheath at the foot.
+  float W0 = (0.05 + 0.03*aR.z)*mix(1.6, 1., clamp(H / 0.2, 0., 1.))*mix(1.,0.48,reed)*uLodW
+           * mix(1.,0.68,slender)*mix(1.,1.19,broad)*mix(1.22,1.,sisters);
+  float wd = W0 * (0.7 + 0.3*smoothstep(0.,0.2,by)) * pow(1.-by,0.75);
   if (sister) wd *= 0.79*sisters;
   // Rain weighs the blades: water held along a blade bends it from the foot and lays its tip over, and the stand
   // rises again as the moisture field dries.
@@ -3551,6 +3559,7 @@ function render(t, camOverride, glowTexture = texGlow) {
   if (uploadedWind !== wind.version) {
     gl.activeTexture(gl.TEXTURE0+16);
     gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,wind.size,wind.size,gl.RGBA,gl.UNSIGNED_BYTE,wind.bytes);
+    gl.generateMipmap(gl.TEXTURE_2D);
     uploadedWind = wind.version;
   }
   if (brush.dirty) {
@@ -3911,8 +3920,10 @@ function scripted(m, frames = 900, view = 'shore') {
   uploadRockSurface(gl, rockSurface, 19);
   wind = createWind(engine.boxel, H);
   gl.activeTexture(gl.TEXTURE0+16); gl.bindTexture(gl.TEXTURE_2D,gustTexture);
-  gl.texStorage2D(gl.TEXTURE_2D,1,gl.RGBA8,wind.size,wind.size);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texStorage2D(gl.TEXTURE_2D,1+Math.log2(wind.size),gl.RGBA8,wind.size,wind.size);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+  gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,wind.size,wind.size,gl.RGBA,gl.UNSIGNED_BYTE,wind.bytes);
+  gl.generateMipmap(gl.TEXTURE_2D);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   clouds = createClouds(gl, program, FSQ, engine.boxel, { mobile: touch, test: TEST,
     sources: [[...LAKE, 1], [spring.x, spring.z, 0.55]] });
@@ -3926,7 +3937,7 @@ function scripted(m, frames = 900, view = 'shore') {
   document.getElementById('status').textContent = `boxel ready: three surface fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
   if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, day cycle, switch engine, readout, record, gallery</span>'; }
   window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
-    runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
+    runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, look: (view, pitch, yaw) => { const c = typeof view === 'string' ? VIEWS[view] : view; Object.assign(player, { x: c.eye[0], y: c.eye[1] - 1.65, z: c.eye[2], yaw: c.yaw + (yaw ?? 0), pitch: pitch ?? c.pitch, bob: 0 }); }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
     const darkField = gl.createTexture();
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, darkField);

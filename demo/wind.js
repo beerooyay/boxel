@@ -145,18 +145,29 @@ export const windShader = `
 uniform sampler2D uGusts;
 uniform vec2 uWindFrame;
 const vec2 WIND_DIR = vec2(${windDirection[0].toFixed(8)},${windDirection[1].toFixed(8)});
-float windWave(vec2 p){
+// The air at p, averaged over 2^lod cells: a blade feels the air at its root, a crown the air across its width.
+float windAir(vec2 p, float lod){
   vec2 cell=vec2(dot(p,WIND_DIR)-uWindFrame.x, dot(p,vec2(-WIND_DIR.y,WIND_DIR.x))) / vec2(${metres[0]},${metres[1]});
-  vec4 air = textureLod(uGusts, (cell + 0.5) / ${SIZE}., 0.);
+  vec4 air = textureLod(uGusts, (cell + 0.5) / ${SIZE}., lod);
   vec2 uv=clamp(p/${2 * WORLD_HALF}.+0.5,vec2(0.5/${SIZE}.),vec2(1.-0.5/${SIZE}.));
   float crest = smoothstep(0.035, 0.665, mix(air.r, air.g, uWindFrame.y));
   float gust = 0.43 + 0.98 * crest + (2. * air.a - 1.) * (0.48 + 0.38 * crest);
-  return textureLod(uGusts, uv, 0.).b * gust;
+  return textureLod(uGusts, uv, lod).b * gust;
 }
-// Twig flex is measured along a branch. The woody base has zero compliance.
+float windWave(vec2 p){ return windAir(p, 0.); }
+// One wind, three responses. A blade or a leaf answers the air where it is, at once. A tree answers as one body: its
+// wood is heavy, so it feels the air averaged across its crown and a moment late (the air mass travels downwind, so
+// the air a little downwind of the trunk is the air the trunk felt a moment ago). Every part of one tree reads this
+// one value, so its twigs, the leaves on them and its trunk move together instead of shearing apart.
+float crownLoad(vec2 base){ return windAir(base + WIND_DIR * 2.2, 1.7); }
+// A leaf turns about its stalk toward the wind and no further than it can bend: the angle saturates, so a storm lays
+// leaves over instead of folding them back on themselves.
+float leafBend(float load){ return 1.15 * load / (1. + load); }
+// Twig flex is measured along a branch. The woody base has zero compliance. The load saturates: a bough bends further
+// in a stronger gust, but less for each step, as wood stiffens.
 vec3 boughOffset(float load, float flex, float height){
   float tip = max(0., (flex-0.36)/0.64);
-  return vec3(WIND_DIR.x, -0.16, WIND_DIR.y) * (0.026 * height * tip*tip * load);
+  return vec3(WIND_DIR.x, -0.16, WIND_DIR.y) * (0.026 * height * tip*tip * 1.8 * load / (1. + 0.45 * load));
 }
 // A shorter wave rides in the same translating air mass. Integer harmonics
 // join exactly as the 64-cell wind texture wraps.
