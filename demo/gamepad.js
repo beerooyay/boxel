@@ -22,6 +22,7 @@ export function foxController() {
       || pads.find(p => p.index === active);
     if (!pad) { previous = []; active = -1; return; }
     if (pad.index !== active) previous = [];
+    if (pad.index !== active) document.body.classList.add('using-controller');
     active = pad.index;
     const buttons = pad.buttons.map(b => b.pressed);
     const hit = i => buttons[i] && !previous[i];

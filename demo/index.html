@@ -126,7 +126,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 #fieldMenu button[aria-pressed=true] { color:var(--glow); border-color:#5ff2e054; }
 #fieldMenu button:focus-visible { outline:2px solid var(--glow); }
 #fieldMenu p { font:13px/1.6 var(--body); color:#bcc4ce; margin:14px 0 0; }
-body:not(.touch) #bThrow { display:none; }
+body:not(.touch) #bThrow, body:not(.touch) .touch-guide, body.touch .desktop-guide, body.touch:not(.using-controller) .controller-guide { display:none; }
 </style>
 
 <script>document.documentElement.classList.add("intro")</script>
@@ -177,8 +177,9 @@ body:not(.touch) #bThrow { display:none; }
   <button id="capture-record" type="button" aria-pressed="false" title="Start or stop recording (backtick)">Record</button>
   <button id="capture-gallery" type="button" title="Open clip gallery (G)">Gallery</button>
 </fieldset>
-  <p>Walk with WASD · Shift to run · Click to throw<br>Drag or scroll with two fingers to look · Q for menu<br>Right-click for free look · Esc to release</p>
-  <p>Controller · Left stick to move · Right stick to look<br>Right trigger to run · A to throw · Y for camera · Menu to open<br>D-pad to browse · A to select · B to return</p>
+  <p class="desktop-guide">Walk with WASD · Shift to run · Click to throw<br>Drag or scroll with two fingers to look · Q for menu<br>Right-click for free look · Esc to release</p>
+  <p class="touch-guide">Left thumb to walk · Push farther to run<br>Drag the right side to look · Tap Throw for a glowstone</p>
+  <p class="controller-guide">Controller · Left stick to move · Right stick to look<br>Right trigger to run · A to throw · Y for camera · Menu to open<br>D-pad to browse · A to select · B to return</p>
 </dialog>
 
 <div id="capture-status" role="status"></div>
