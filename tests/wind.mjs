@@ -29,3 +29,30 @@ test('a gust travels downwind, shelters behind a ridge and evolves in storms', a
     ridge.free();
   }
 });
+
+test('a passing front keeps open meadow patches moving smoothly between field updates', async () => {
+  const boxel = await load(await readFile(new URL('../demo/boxel.wasm', import.meta.url)));
+  const wind = createWind(boxel, () => 0);
+  try {
+    const patches = [];
+    for (const x of [-32, 0, 32]) {
+      for (const z of [-32, 0, 32]) {
+        const initial = wind.sample(x, z);
+        patches.push({ x, z, low: initial, high: initial, previous: initial });
+      }
+    }
+    for (let frame = 0; frame < 240; frame++) {
+      wind.update(1 / 60, 0);
+      for (const p of patches) {
+        const value = wind.sample(p.x, p.z);
+        assert.ok(Math.abs(value - p.previous) < 0.12, 'discontinuous change in wind load');
+        p.previous = value;
+        p.low = Math.min(p.low, value);
+        p.high = Math.max(p.high, value);
+      }
+    }
+    assert.ok(patches.every(p => p.high - p.low > 0.3), 'a meadow patch held still through the front');
+  } finally {
+    wind.free();
+  }
+});

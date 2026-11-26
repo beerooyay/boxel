@@ -40,7 +40,8 @@ export function createWind(boxel, heightAt) {
       // see the same crest and both derivatives match at the wrap.
       const u = (2 * Math.PI * i) / SIZE, v = (2 * Math.PI * j) / SIZE;
       const meander = 1.24 * Math.sin(v + 0.55 * Math.sin(2 * u + v)) + 0.65 * Math.sin(2 * v - u);
-      const ripple = 0.67 * Math.sin(5 * u + v + meander) + 0.33 * Math.sin(9 * u - 2 * v + 1.4 * meander);
+      const ripple = 0.59 * Math.sin(5*u + v + meander) + 0.29 * Math.sin(9*u - 2*v + 1.4*meander)
+        + 0.12 * Math.sin(14*u + 3*v - meander);
       bytes[4 * (j * SIZE + i) + 3] = Math.round(127.5 * (1 + ripple));
     }
   const draw = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
@@ -83,7 +84,8 @@ export function createWind(boxel, heightAt) {
       j = Math.floor(v),
       fx = u - i,
       fz = v - j,
-      t = elapsed / STEP;
+      f = elapsed / STEP,
+      t = f*f*(3-2*f);
     function at(a, b, channel) {
       const k = 4 * ((b & 63) * SIZE + (a & 63));
       return channel === 3 ? bytes[k + 3] / 255 : (bytes[k] * (1 - t) + bytes[k + 1] * t) / 255;
@@ -106,7 +108,7 @@ export function createWind(boxel, heightAt) {
     const local =
       (1 - fzg) * ((1 - fxg) * exposure(ax, az) + fxg * exposure(bx, az)) +
       fzg * ((1 - fxg) * exposure(ax, bz) + fxg * exposure(bx, bz));
-    return local * (0.13 + 1.25 * crest + (2 * air(3) - 1) * (0.34 + 0.34 * crest));
+    return local * (0.43 + 0.98 * crest + (2 * air(3) - 1) * (0.48 + 0.38 * crest));
   }
   return {
     size: SIZE,
@@ -119,10 +121,11 @@ export function createWind(boxel, heightAt) {
       return travel;
     },
     get mix() {
-      return elapsed / STEP;
+      const f = elapsed / STEP;
+      return f*f*(3-2*f);
     },
     update(dt, storm) {
-      travel = (travel + dt * speed * (1.48 + 0.62 * storm)) % (SIZE * metres[0]);
+      travel = (travel + dt * speed * (2.04 + 0.72 * storm)) % (SIZE * metres[0]);
       elapsed += dt;
       while (elapsed >= STEP) {
         elapsed -= STEP;
@@ -147,6 +150,17 @@ float windWave(vec2 p){
   vec4 air = textureLod(uGusts, (cell + 0.5) / ${SIZE}., 0.);
   vec2 uv=clamp(p/${2 * WORLD_HALF}.+0.5,vec2(0.5/${SIZE}.),vec2(1.-0.5/${SIZE}.));
   float crest = smoothstep(0.035, 0.665, mix(air.r, air.g, uWindFrame.y));
-  float gust = 0.13 + 1.25 * crest + (2. * air.a - 1.) * (0.34 + 0.34 * crest);
+  float gust = 0.43 + 0.98 * crest + (2. * air.a - 1.) * (0.48 + 0.38 * crest);
   return textureLod(uGusts, uv, 0.).b * gust;
+}
+// Twig flex is measured along a branch. The woody base has zero compliance.
+vec3 boughOffset(float load, float flex, float height){
+  float tip = max(0., (flex-0.36)/0.64);
+  return vec3(WIND_DIR.x, -0.16, WIND_DIR.y) * (0.026 * height * tip*tip * load);
+}
+// A shorter wave rides in the same translating air mass. Integer harmonics
+// join exactly as the 64-cell wind texture wraps.
+float tipFlutter(vec2 root, float travel, float seed){
+  float along = (dot(root,WIND_DIR)-travel) * ${(2*Math.PI/(SIZE*metres[0])).toFixed(9)};
+  return sin(17.*along + 0.61*dot(root,vec2(-WIND_DIR.y,WIND_DIR.x)) + seed*4.);
 }`;

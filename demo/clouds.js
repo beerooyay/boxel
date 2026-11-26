@@ -27,16 +27,16 @@ vec4 cloudColumn(vec3 origin, vec3 ray) {
 }
 vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
   float dusk = 1. - smoothstep(0.025, 0.39, uStarDir.y);
-  vec3 ambientLight = mix(vec3(0.080, 0.125, 0.205), vec3(0.044, 0.061, 0.120), dusk);
-  vec3 topLight = mix(vec3(0.15, 0.19, 0.25), vec3(0.21, 0.14, 0.15), dusk);
+  vec3 ambientLight = mix(vec3(0.049, 0.084, 0.161), vec3(0.044, 0.061, 0.120), dusk);
+  vec3 topLight = mix(vec3(0.13, 0.15, 0.215), vec3(0.21, 0.14, 0.15), dusk);
   float forward = pow(max(dot(ray, uStarDir), 0.), 12.);
-  vec3 direct = vec3(1.49, 1.29, 1.06) * uCloudTint * (1. + 0.8 * forward);
+  vec3 direct = vec3(1.72, 1.265, 0.97) * uCloudTint * (1. + 0.8 * forward);
   // Preserve the warm sun on individual lobes and the cool skylight inside
   // their folds. Work in the cloud's own opacity before compositing it.
   float visibleSun = col.r / max(col.a, 0.0039);
-  float relief = mix(visibleSun, smoothstep(0.08, 0.74, visibleSun), 0.6);
+  float relief = mix(visibleSun, smoothstep(0.13, 0.72, visibleSun), 0.72);
   float rim = col.a * (1. - col.a) * forward;
-  vec3 lit = ambientLight * col.a + topLight * col.g + direct * (col.a * relief + 0.32 * rim);
+  vec3 lit = ambientLight * col.a + topLight * col.g + direct * (col.a * relief + 0.46 * rim);
   lit = mix(lit, col.a * vec3(0.050, 0.067, 0.098) + col.g * vec3(0.16, 0.175, 0.20)
     + direct * col.r * 0.42, uStorm);
   vec3 moon = vec3(0.0035, 0.0062, 0.015) * col.a + vec3(0.009, 0.015, 0.034) * col.g

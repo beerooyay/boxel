@@ -5,8 +5,8 @@ uniform float uNight, uStorm, uFlash;
 const vec3 STAR_COL = vec3(2.7, 1.9, 1.35);
 vec3 skyBase(vec3 d){
   float h = d.y;
-  vec3 c = mix(vec3(0.52, 0.60, 0.66), vec3(0.16, 0.35, 0.58), smoothstep(-0.03, 0.32, h));
-  c = mix(c, vec3(0.054, 0.16, 0.36), smoothstep(0.23, 0.94, h));
+  vec3 c = mix(vec3(0.34, 0.415, 0.54), vec3(0.025, 0.112, 0.276), smoothstep(-0.055, 0.31, h));
+  c = mix(c, vec3(0.009, 0.046, 0.148), smoothstep(0.16, 0.86, h));
   // As the star sinks the day sky dims and cools, a band of fire lies along the horizon under it, and a rose belt
   // rises opposite. None of it shows while the star stands at its hand-set afternoon height or above.
   float low = 1. - smoothstep(0.03, 0.36, uStarDir.y);
@@ -22,7 +22,7 @@ vec3 skyBase(vec3 d){
   c = mix(c, n, uNight);
   float s = max(dot(d, uStarDir), 0.);
   c += STAR_COL * uStarTint * (1. - uNight) * (0.05 * pow(s, 5.) + 0.25 * pow(s, 60.));
-  c += vec3(0.10, 0.08, 0.20) * pow(max(dot(d, uPlanetDir), 0.), 4.) * 0.5;
+  c += vec3(0.10, 0.08, 0.20) * pow(max(dot(d, uPlanetDir), 0.), 4.) * mix(0.07,0.5,uNight);
   // A storm closes the sky over in grey. Lightning lights the whole of it at once.
   vec3 overcast = mix(vec3(0.17, 0.19, 0.22), vec3(0.27, 0.29, 0.33), smoothstep(-0.05, 0.45, h)) * (1. - 0.9 * uNight);
   c = mix(c, overcast, uStorm * 0.88) + vec3(0.2, 0.23, 0.36) * uFlash * (0.35 + 0.65 * smoothstep(-0.1, 0.4, h));
@@ -34,14 +34,14 @@ float clearAfternoon(){ return (1. - uNight) * (1. - uStorm) * smoothstep(0.055,
 vec4 airAt(vec3 wp){
   vec3 d = wp - uCam; float dist = length(d);
   float clear = clearAfternoon();
-  float f = (1. - exp(-dist * mix(0.00215, 0.0017, uNight) * (1. - 0.26 * clear))) * (1. - 0.49 * smoothstep(0., 135., wp.y));
+  float f = (1. - exp(-dist * mix(0.00215, 0.0017, uNight) * (1. - 0.41 * clear))) * (1. - 0.49 * smoothstep(0., 135., wp.y));
   // rain thickens the air: the far ridges go first
   if (uStorm > 0.) f = 1. - (1. - f) * exp(-dist * 0.0055 * uStorm);
   // Integrate exponential density between the eye and the surface. Looking
   // down from the summit and looking up from the river cross the same air.
   float eyeY = max(uCam.y, 0.), endY = max(wp.y, 0.), dy = (endY - eyeY) * 0.12;
   float column = abs(dy) < 0.01 ? exp(-0.06 * (eyeY + endY)) : (exp(-0.12 * eyeY) - exp(-0.12 * endY)) / dy;
-  float mist = (1. - exp(-dist * column * 0.017)) * mix(0.145, 0.30, uNight) * (1. + 1.3 * uStorm - 0.57 * clear);
+  float mist = (1. - exp(-dist * column * 0.017)) * mix(0.145, 0.30, uNight) * (1. + 1.3 * uStorm - 0.71 * clear);
   vec3 vd = normalize(vec3(d.x, max(d.y, 0.02 * dist), d.z));
   vec3 fc = skyBase(vd) * 0.75;
   // the haze glows where it lies between you and the star

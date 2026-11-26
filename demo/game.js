@@ -1,3 +1,4 @@
+import { floraPalette, understoryPigment } from './flora-palette.js';
 import { createWind, windShader } from './wind.js';
 import { bakeTrailMaterial } from './trail-material.js';
 import { loadRockSurface, uploadRockSurface } from './rock-material.js';
@@ -310,7 +311,8 @@ vec3 cobble(vec2 p){
   return vec3(sqrt(d1), sqrt(d2) - sqrt(d1), hash12(id1));
 }
 float fbm3(vec2 p){ float s = 0., a = .5; for (int i = 0; i < 3; i++) { s += a * vnoise(p); p = p * 2.03 + 17.; a *= .5; } return s; }
-vec3 glowCol(vec2 p){ return mix(vec3(0.12, 0.95, 0.85), vec3(0.62, 0.38, 1.0), smoothstep(0.25, 0.75, vnoise(p * 0.11))); }
+${floraPalette}
+vec3 glowCol(vec2 p){ return meadowTip(p, 0., 0.) * 1.38; }
 // Ease in across the lowest R8 levels so a one-level field change stays subtle in the dark.
 float glowI(float g){ return (1. - exp(-g * 5.)) * smoothstep(0., 0.045, g); }
 vec2 fieldUV(vec2 xz){ return xz / uExtent + 0.5; }
@@ -355,12 +357,15 @@ vec3 skyColor(vec3 d){
       vec2 dv = (rq - vec2(0.05, -0.045)) * vec2(0.62, 1.); float rs = length(dv), sw = exp(-rs * rs / 0.0011);
       float ang = sw * 5.5; vec2 dvr = vec2(dv.x * cos(ang) - dv.y * sin(ang), dv.x * sin(ang) + dv.y * cos(ang));
       lat += (dvr.y - dv.y) * 2.2 * sw;
-      float bands = sin(lat * 19. + sin(lat * 6. + q.x * 8.) * 1.6 + vnoise(q * 30. + dvr * 40. * sw) * 0.8);
+      vec2 weatherUV = vec2(lat*37.,dot(nw,T)*5.+dot(nw,P)*3.);
+      float filaments = fbm3(weatherUV + 2.8*vnoise(weatherUV*0.47));
+      float bands = sin(2.9*(filaments-0.45) + lat * 19. + sin(lat * 6. + q.x * 8.) * 1.6 + vnoise(q * 30. + dvr * 40. * sw) * 0.8);
       // an amber giant: cream and ochre bands, rust belts, a red storm; nothing like the world under it
       vec3 pc = mix(vec3(0.74, 0.47, 0.26), vec3(0.95, 0.84, 0.66), 0.5 + 0.5 * bands);
       pc = mix(pc, vec3(0.50, 0.22, 0.14), smoothstep(0.75, 0.95, abs(sin(lat * 7. + 1.3))) * 0.45);
       pc = mix(pc, vec3(0.92, 0.42, 0.28), (1. - smoothstep(0.012, 0.03, rs)) * 0.6);
       pc = mix(pc, vec3(0.34, 0.1, 0.06), (1. - smoothstep(0., 0.009, rs)) * 0.6);
+      pc *= 0.79+0.34*filaments+0.11*sin(lat*112.+filaments*8.);
       float viewCos = max(0., -dot(nw, P));
       starTransmission = 0.;
       // Intersect the surface-to-sun ray with the same tilted ring plane.
@@ -414,7 +419,7 @@ vec3 skyColor(vec3 d){
 }
 ${canopyShelter}
 vec3 ambient(vec3 n){
-  vec3 day = mix(vec3(0.028, 0.030, 0.035), vec3(0.095, 0.143, 0.177), n.y * 0.5 + 0.5);
+  vec3 day = mix(vec3(0.026, 0.026, 0.029), vec3(0.075, 0.117, 0.164), n.y * 0.5 + 0.5);
   // the open sky gives less as the star sinks
   float low = 1. - smoothstep(0.03, 0.36, uStarDir.y);
   day *= mix(vec3(1.), vec3(0.66, 0.64, 0.8), low * low);
@@ -495,15 +500,6 @@ vec3 fogged(vec3 col, vec3 wp){
 }
 vec3 tonemap(vec3 c){ c *= uExposure; if (uHDR > 0.5) return min(c, vec3(48.)); c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14); return pow(clamp(c, 0., 1.), vec3(1. / 2.2)); }
 
-// ---- Tarn's flora follows one set of rules ----
-// Five pigments, from the cool shallows to the warm undergrowth. Every plant is near-black at the root, saturated
-// through its body and pale at the tip; every plant takes the same sky, sun and backlight, glows from within at night,
-// and answers the glow field where you stirred the ground beside it.
-const vec3 TEAL = vec3(0.28, 0.88, 0.80), CYAN = vec3(0.42, 0.78, 1.0), VIOLET = vec3(0.72, 0.42, 0.98), MAGENTA = vec3(0.88, 0.30, 0.70), CRIMSON = vec3(0.84, 0.16, 0.34);
-vec3 pigment(float h){
-  h = clamp(h, 0., 1.) * 4.;
-  return h < 1. ? mix(TEAL, CYAN, h) : h < 2. ? mix(CYAN, VIOLET, h - 1.) : h < 3. ? mix(VIOLET, MAGENTA, h - 2.) : mix(MAGENTA, CRIMSON, h - 3.);
-}
 // Common parent stone for loose shingle, buried flecks and wet gravel.
 vec3 shale(float tone) {
   return mix(vec3(0.104,0.083,0.068),vec3(0.298,0.257,0.211),tone);
@@ -511,15 +507,6 @@ vec3 shale(float tone) {
 vec3 floraRamp(vec3 tip, float u){
   vec3 root = tip * 0.04 + vec3(0.008, 0.012, 0.02), body = tip * vec3(0.30, 0.31, 0.36);
   return u < 0.5 ? mix(root, body, u * 2.) : mix(body, tip * 0.9, (u - 0.5) * 2.);
-}
-// The meadow's colour at a place: broad jade swaths and scattered plum heath. The blades take their tips from it and
-// the litter under them, last season's blades, takes it too, so the ground between stems is the stand's own colour.
-vec3 meadowTip(vec2 p, float jitter){
-  float heath = vnoise(p * 0.03 + 3.) * 0.8 + vnoise(p * 0.09 - 5.) * 0.2;
-  float variation = vnoise(p * 0.052 + 12.);
-  vec3 jade = mix(vec3(0.042, 0.32, 0.13), vec3(0.10, 0.54, 0.37), variation);
-  vec3 plum = mix(vec3(0.21, 0.13, 0.34), vec3(0.43, 0.22, 0.51), variation);
-  return mix(jade, plum, smoothstep(0.49, 0.68, heath + jitter));
 }
 // The midrib forks outward toward the tip. Fade the finest veins as a leaf becomes subpixel.
 float leafVeins(float u, float side, float seed){
@@ -590,10 +577,11 @@ void main(){
   p.xz = rot * p.xz;
   vRest = p * aSite.w;
   float load = windWave(aSite.xz + vRest.xz * 0.72) * uWind;
-  float flex = p.y * p.y, leaf = step(0.,aTissue);
+  float flex = smoothstep(0.38,0.94,p.y)*min(1.,length(p.xz)*3.4), leaf = step(0.,aTissue);
   float tip = leaf * aBlade.x*aBlade.x;
-  p.xz += WIND_DIR * load * (0.052*flex + 0.024*tip);
-  p.y -= 0.074 * load * dot(vRest.xz/aSite.w,WIND_DIR) * flex + 0.025 * abs(load) * tip;
+  p.xz += WIND_DIR * load * (0.012*flex + 0.045*tip);
+  p.xz += vec2(-WIND_DIR.y,WIND_DIR.x) * tip * 0.010 * load * tipFlutter(aSite.xz+vRest.xz,uWindFrame.x,seed);
+  p.y -= 0.020 * load * dot(vRest.xz/aSite.w,WIND_DIR) * flex + 0.025 * abs(load) * tip;
   vWP = aSite.xyz + p * aSite.w;
   vNormal=aNor; vNormal.xz=rot*aNor.xz-WIND_DIR*load*(0.085*flex+0.28*tip);
   vHue=seed; vTissue=aTissue; vBlade=aBlade;
@@ -618,8 +606,7 @@ void main(){
   vec3 n=normalize(vNormal), view=normalize(uCam-vWP), colour;
   float sun=directLight(vWP);
   if(vTissue>=0.){
-    vec3 tip=mix(vec3(0.14,0.54,0.32),vec3(0.21,0.52,0.53),smoothstep(0.04,0.69,vHue));
-    tip=mix(tip,vec3(0.47,0.22,0.49),smoothstep(0.67,0.96,vHue));
+    vec3 tip=crownPigment(vHue);
     vec3 leaf=tip*(0.43+0.46*vTissue)*(0.43+0.55*vCrown)*(0.68+0.40*vBlade.x);
     float veins=leafVeins(vBlade.x,vBlade.y,vHue);
     leaf=mix(leaf,tip*vec3(1.09,1.02,0.80),veins*0.28);
@@ -732,8 +719,8 @@ void main(){
   }
   float hummocks = smoothstep(0.24, 0.68, n1 + (n2 - 0.5) * 0.36);
   // Under the meadow lies its own litter: last season's blades flat in fine strokes over dark soil, the colour of the
-  // stand above it, so purple heath has purple ground and the jade swaths jade.
-  vec3 stand = meadowTip(p, 0.);
+  // stand above it, so distant grass cover carries the same pigment as nearby blades.
+  vec3 stand = meadowTip(p, vWP.y, 0.);
   float thatch = 0.5, clump = vnoise(p * 2.3 + 4.1);
   if (fine > 0.) {
     // strokes of fallen blades lying every which way in tufts, and specks of bare soil between them
@@ -984,15 +971,14 @@ void main(){
 }`);
 
 // alien junipers. The skeleton (a leaning, twisting trunk, limbs, twigs, foliage pads) is grown per tree on the CPU from
-// a seed, so every tree is its own; the wood is one baked mesh and the foliage is Corey's blade again, packed into pads.
-// Wood and leaves share the same sway, so the pads move with their branches.
+// a seed, so every tree is its own; the wood is one baked mesh and each shoot carries a spray of instanced leaves.
+// Leaves follow the wood at their attachment and flutter independently at their tips.
 const WOOD = program(WORLD_VS + `
 in vec3 aPos; in vec3 aNor; in vec4 aW; in vec4 aB;
 out vec3 vWP; out vec3 vN; out vec4 vW; out float vStir; out float vHue;
 void main(){
-  vec3 p = aPos; float flex = aW.x, g = windWave(aB.xy) * uWind;
-  p.xz += WIND_DIR * g * 0.107 * aB.z * flex * flex;
-  p.y -= abs(g) * 0.025 * aB.z * flex * flex;
+  vec3 p = aPos; float g = windWave(p.xz) * uWind;
+  p += boughOffset(g,aW.x,aB.z);
   vWP = p; vN = aNor; vW = aW; vHue = aB.w;
   vStir = texture(uGlow, fieldUV(aB.xy)).r;
   gl_Position = project(p);
@@ -1006,11 +992,11 @@ void main(){
   float grain = 2. * fbm3(fiber + 0.7 * vnoise(around * 3. + vW.y * 0.65)) - 0.85;
   float fine = vnoise(around * 27. + vec2(vW.y * 2., vW.w));
   float dead = smoothstep(0.48, 0.78, fbm3(around * 2. + vec2(vW.y * 0.7, vW.w * 5.)));
-  vec3 bark = mix(vec3(0.07, 0.045, 0.06), vec3(0.15, 0.10, 0.12), smoothstep(-0.3, 0.7, grain)) * (0.8 + 0.4 * fine);
-  bark = mix(bark, vec3(0.29, 0.24, 0.28) * (0.8 + 0.3 * fine), dead);
+  vec3 bark = mix(vec3(0.089, 0.052, 0.039), vec3(0.20, 0.117, 0.078), smoothstep(-0.3, 0.7, grain)) * (0.8 + 0.4 * fine);
+  bark = mix(bark, vec3(0.27, 0.217, 0.176) * (0.8 + 0.3 * fine), dead);
   N = normalize(N + vec3(0., 0.15 * grain, 0.) * (1. - dead));
   vec3 col = pbr(bark, mix(0.75, 0.5, dead), 0., N, V, vWP);
-  vec3 tint = pigment(vHue * 0.55);
+  vec3 tint = crownPigment(vHue);
   float groove = smoothstep(0.23, 0.48, -grain) * (1. - dead);
   col += tint * groove * (uNight * (0.045 + 0.08 * glowI(vStir))) * (0.6 + 0.4 * sin(uTime * 0.7 + vW.y * 4. - vW.w * 9.));
   o = vec4(tonemap(fogged(col, vWP)), 0.);
@@ -1048,11 +1034,15 @@ void main(){
   vec3 p = aR.xyz + L * (dir * u + up * (lift * curve - droop * u * u));
   vec3 bend = brushBend(aR.xyz + L * (dir * 0.67 + up * (0.86 * lift - 0.45 * droop)));
   p += bend * (0.78 * L * u * u);
-  float gust = windWave(aB.xy) * uWind, flex = aR.w + 0.2 * u;
-  p.xz += WIND_DIR * gust * 0.107 * aB.z * flex * flex;
-  p.y -= abs(gust) * 0.025 * aB.z * flex * flex;
-  p += sd * sin(uTime * 2.6 + seed * 40. + u * 3.) * 0.018 * (0.35+abs(gust)) * u * L;
-  vec3 tang = normalize(dir + up * (lift * 3.14159 * cos(u * 3.14159) - 2. * droop * u) + bend * (1.56 * u));
+  float gust = windWave(aR.xz) * uWind;
+  p += boughOffset(gust,aR.w,aB.z);
+  float ripple = tipFlutter(aR.xz,uWindFrame.x,seed);
+  float bendAngle = gust * (0.48+0.27*seed);
+  float curl = u*u;
+  vec3 deflection = vec3(WIND_DIR.x,-0.32*abs(bendAngle),WIND_DIR.y)*sin(bendAngle)
+                  + sd*(0.098*ripple*gust);
+  p += deflection * (L*curl);
+  vec3 tang = normalize(dir + up * (lift * 3.14159 * cos(u * 3.14159) - 2. * droop * u) + bend * (1.56 * u) + deflection*(2.*u));
   vec3 upper = normalize(cross(tang, sd));
   vec3 across = normalize(sd + upper * ((seed - 0.5) * (0.40 + 1.65 * u)));
   upper = normalize(cross(tang, across));
@@ -1074,12 +1064,9 @@ void main(){
   if (vWP.y < uClip) discard;
   float u = clamp(vBlade.x, 0., 1.), side = clamp(vBlade.y, -1., 1.);
   float kind = floor(vLeaf.y), seed = fract(vLeaf.y), wet = vLeaf.w;
-  vec3 tint = pigment(vLeaf.x * 0.55);
-  tint *= mix(vec3(1.), tint, 0.45);
-  if (kind > 1.5) {
-    tint = mix(vec3(0.11, 0.30, 0.079), vec3(0.028, 0.33, 0.245), smoothstep(0.17, 0.76, seed));
-    tint = mix(tint, vec3(0.35, 0.054, 0.22), smoothstep(0.57, 0.93, vLeaf.x));
-  }
+  vec3 tint = crownPigment(vLeaf.x) * mix(vec3(0.83,0.92,0.87),vec3(1.12,1.02,0.92),seed);
+  // Moist leaves deepen within the same pigment family as the dry tissue.
+  tint *= mix(vec3(1.),vec3(0.91,0.95,0.94),wet);
   vec3 N = normalize(vN), V = normalize(uCam - vWP);
   float thin = mix(0.75, 0.36, min(kind, 1.)), edge = abs(side);
   // Taper the midrib towards the point. Cross veins join it in staggered
@@ -1119,8 +1106,8 @@ void main(){
   float direct = dot(face, uSunDir);
   vec3 light = albedo * (2.55 * sky + floraSpill(vWP) + sun * (0.06 + 0.55 * max(direct, 0.)));
   // Green laminae transmit more amber and green light at their thin edges.
-  float teal = smoothstep(0.01, 0.21, tint.g - tint.r);
-  vec3 transmitted = albedo * mix(vec3(1.), vec3(1.58, 1.23, 0.58), teal * (0.38 + 0.62 * edge));
+  float green = smoothstep(0.01, 0.21, tint.g - tint.r);
+  vec3 transmitted = albedo * mix(vec3(1.), vec3(1.58, 1.23, 0.58), green * (0.38 + 0.62 * edge));
   light += sun * transmitted * max(-direct, 0.) * (thin + 0.19 * edge) * (0.60 + 0.4 * u);
   float sheen = max(dot(face, normalize(V + uSunDir)), 0.);
   float broad = sheen * sheen; broad *= broad; broad *= broad;
@@ -1147,7 +1134,7 @@ void main(){
 const GRASS = program(WORLD_VS + BRUSH_VS + clumpGLSL + `
 in vec4 aRoot, aDetail; uniform vec3 uCam; uniform vec2 uGrassHeight; uniform int uBladeRows;
 centroid out vec3 vWP; centroid out vec4 vGA; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
-centroid out float vDry; centroid out float vClump;
+flat out vec4 vGrassSite; centroid out float vDry;
 void main(){
   vec4 aG = vec4((aRoot.xy - 0.5) * uExtent, uGrassHeight.x + aRoot.z * uGrassHeight.y, aDetail.w);
   int packed = int(aRoot.w*65535. + 0.5), cell = packed & 15;
@@ -1173,9 +1160,9 @@ void main(){
   vec2 uv = fieldUV(aG.xy); vec2 gr = vec2(texture(uGround, uv).r, texture(uWear, uv).r); float glow = texture(uGlow, uv).r;
   float wet = min(1., gr.r + uSheet), trample = smoothstep(0.04, 0.45, gr.g);
   float reed = step(1.6, aR.w);
-  // Three blades: most are ordinary, a quarter slender and tall, a sixth broad and short. The tuft sets the height
+  // Three blades: most are ordinary, many slender and tall, a few broad and short. The tuft sets the height
   // around them, highest in its middle; by the tread they splay and stand a little lower.
-  float slender = step(shape, 0.25), broad = step(0.83, shape);
+  float slender = step(shape, 0.43), broad = step(0.91, shape);
   float H = 0.52 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample) * mix(1., 1.14, slender) * mix(1., 0.78, broad)
           * mix(0.8, 1.2, tuft) * (1. - 0.28 * smoothstep(0.22, 0.68, tuftDist)) * (1. - 0.1 * edge);
   float sisters = 1. - smoothstep(5.5, 8.8, length(aG.xy-uCam.xz));
@@ -1191,7 +1178,11 @@ void main(){
   vec2 away = tuftDist > 0.02 ? -toTuft / tuftDist : vec2(0.);
   float load = windWave(aG.xy) * uWind * (1. - 0.74 * trample);
   float flexibility = mix(0.56, 1.18, shape) * (sister ? 0.84 : 1.);
-  float angle = by * clamp(load * flexibility, -0.4, 1.31);
+  // A stronger front keeps travelling through the stand. A soft limit
+  // preserves local differences even where an entire patch is laid over.
+  float force = load * flexibility;
+  float angle = by * 1.55 * force / sqrt(0.70 + force*force);
+  float recoil = tipFlutter(aG.xy,uWindFrame.x,tuft) * (0.035 + 0.075*abs(load));
   float bow = sin(angle), upright = cos(angle);
   // The arc turns the blade face into the sky and lowers its tip. Its foot stays planted.
   float twist = by * (aG.w - 0.5) * (1. - 0.7 * reed) + bow * dot(fd, WIND_DIR) * 0.32;
@@ -1200,7 +1191,7 @@ void main(){
   vec3 p = vec3(aG.x, aG.z, aG.y);
   vec2 leanDir = normalize(fd + twist * ax + away * 1.6 * smoothstep(0.08, 0.4, tuftDist));
   p.xz += across * (side*wd + curl*H*by*by*by) + by*by*leanDir*lean;
-  p.xz += WIND_DIR * H * by * bow;
+  p.xz += H * by * (WIND_DIR * bow + vec2(-WIND_DIR.y,WIND_DIR.x) * by*by * recoil);
   p.y += by * H * (1. - 0.14 * by * by) * (1. - 0.7 * trample) * mix(upright,1.,0.20) * (1. - 0.55 * soak * by * by);
   vec3 bend = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
   p += bend * (0.88 * H * by * by);
@@ -1208,20 +1199,27 @@ void main(){
        + vec3(-WIND_DIR.x, 0.56, -WIND_DIR.y) * bow * 1.65 + bend * (0.62 * by));
   vGA = vec4(by, aR.z, 2. * side, bow); vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
   // last season's blades still standing: a few everywhere, more in some tufts, many along the tread
-  vDry = step(deadRoll, 0.05 + 0.3 * tuft * tuft * tuft + 0.24 * edge); vClump = tuft;
+  vDry = step(deadRoll, 0.05 + 0.3 * tuft * tuft * tuft + 0.24 * edge); vGrassSite = vec4(aG.xy, tuft, aG.z);
   gl_Position = project(p);
 }`,
 `uniform float uClip; centroid in vec3 vWP; centroid in vec4 vGA; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch;
-centroid in float vDry; centroid in float vClump; out vec4 o;
+centroid in float vDry; flat in vec4 vGrassSite; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   float y = clamp(vGA.x, 0., 1.);
-  vec3 tip = meadowTip(vWP.xz, (vPatch - 0.5) * 0.06 + (vClump - 0.5) * 0.05) * mix(0.9, 1.12, vClump);
-  // a dead blade keeps a ghost of its colour in the straw
-  tip = mix(tip, mix(vec3(0.46, 0.38, 0.22), tip * 0.5 + vec3(0.2, 0.16, 0.11), 0.38), vDry);
-  vec3 sheath = mix(vec3(0.091, 0.083, 0.051), tip*0.47, 0.54);
+  vec3 tip = meadowTip(vGrassSite.xy, vGrassSite.w, (vPatch - 0.5)*0.06 + (vGrassSite.z - 0.5)*0.05) * mix(0.9,1.12,vGrassSite.z);
+  // Even the densest rose stand has fresh green volunteers. They cluster at
+  // tuft scale, with the same variation from either side of the blade.
+  float young = smoothstep(0.83,0.98,vGrassSite.z)*smoothstep(0.05,0.50,tip.r-tip.g);
+  tip = mix(tip,mix(LEAF,NEW_GROWTH,0.63),young);
+  // A dead blade keeps a trace of its original colour in the straw.
+  tip = mix(tip, mix(NEW_GROWTH * vec3(0.98,0.78,0.67), tip * 0.5 + vec3(0.2, 0.16, 0.11), 0.38), vDry);
+  float rose = smoothstep(0.04,0.40,tip.r-tip.g);
+  vec3 sheath = mix(vec3(0.061,0.057,0.031),tip*0.33,0.55);
+  sheath = mix(sheath,vec3(0.060,0.020,0.049),rose);
+  tip += vec3(0.060,0.042,0.030)*rose*y*y;
   vec3 gc = mix(sheath, tip * (0.63 + 0.31*y), smoothstep(0.,0.76,y));
-  float pn = vnoise(vWP.xz * 0.28) * 0.6 + vnoise(vWP.xz * 1.1) * 0.4;
+  float pn = vnoise(vGrassSite.xy * 0.28) * 0.6 + vnoise(vGrassSite.xy * 1.1) * 0.4;
   gc *= mix(0.8, 1.2, pn);
   gc = mix(gc, tip, smoothstep(0.55, 0.95, pn) * 0.2 * y);
   float rootShade = mix(0.72, 1., smoothstep(0.,0.48,y));
@@ -1300,8 +1298,10 @@ void main(){
   vec3 bend = brushBend(aP.xyz + L * (up * 0.40 + dir * (type < 1.5 ? 0.48 : 0.))) * flex;
   p += bend * (0.62 * L * u * u);
   float flutter = type > 4.5 ? 0.12 : 1.;
-  p.xz += WIND_DIR * windWave(aP.xz + dir.xz * c.x * flutter) * uWind * 0.24 * u * u * L * flex;
-  p += sd * sin(uTime * 2.3 + seed * 30. + u * 3.) * 0.02 * u * L * flex * flutter;
+  float load = windWave(aP.xz + dir.xz*c.x*flutter)*uWind;
+  vec3 windBend = vec3(WIND_DIR.x,-0.16*abs(load),WIND_DIR.y) * (0.34*load)
+                + sd * (0.046*load*flutter*tipFlutter(aP.xz,uWindFrame.x,seed));
+  p += windBend * (u*u*L*flex);
   float w;
   if (type < 0.5) w = W * sin(min(1., u * 2.4) * 1.5708) * (1. - 0.6 * u * u);
   else if (type < 1.5) w = W * (1. - 0.72 * u) * sin(min(1., u * 4.) * 1.5708);
@@ -1317,7 +1317,7 @@ void main(){
   float tw = (seed - 0.5) * 1.6 * u * step(type, 1.5);
   vec3 wdir = normalize(sd * cos(tw) + up * sin(tw));
   p += wdir * side * w * 0.5;
-  vec3 tang = normalize(dir * t2.x + up * t2.y + 1.24 * bend * u);
+  vec3 tang = normalize(dir * t2.x + up * t2.y + (1.24*bend + 2.*flex*windBend) * u);
   vN = normalize(normalize(cross(wdir, tang)) + wdir * side * (type > 1.5 ? 1.6 : 0.7));
   vStir = texture(uGlow, fieldUV(aP.xz)).r;
   vWP = p + aP.xyz; vU = u; vSide = side; vType = type; vSeed = seed; vHue = type > 4.5 ? aS2.w : fract(aP.x * 0.21 + aP.z * 0.17);
@@ -1329,14 +1329,7 @@ void main(){
   float u = clamp(vU, 0., 1.), s = clamp(vSide, -1., 1.);
   if (vType > 0.5 && vType < 1.5 && abs(s) > 0.16 + 0.84 * smoothstep(0.1, 0.65, abs(sin(u * 3.1416 * 15.)))) discard;
   // each species is a pigment and a vein; the ramp and the light are everyone's
-  vec3 tip;
-  if (vType < 0.5) tip = mix(CRIMSON, MAGENTA, vHue * 0.6);
-  else if (vType < 1.5) tip = TEAL * 0.68;
-  else if (vType < 2.5) tip = CYAN;
-  else if (vType < 3.5) tip = mix(VIOLET, CYAN, vHue * 0.4);
-  else if (vType < 4.5) tip = mix(MAGENTA, VIOLET, vHue * 0.5);
-  else if (vType > 5.5) tip = mix(vec3(0.085, 0.47, 0.32), vec3(0.39, 0.17, 0.39), smoothstep(0.37, 0.70, vHue));
-  else tip = mix(vec3(0.085, 0.72, 0.62), vec3(0.94, 0.22, 0.34), smoothstep(0.40, 0.57, vHue));
+  vec3 tip = understoryPigment(vType, vHue);
   vec3 gc = floraRamp(tip, pow(u, 1.1));
   float veins = leafVeins(u, s, vSeed);
   float tissue = veins * 0.52;
@@ -1491,7 +1484,7 @@ void main(){
   float foam = (swash + 0.38 * stream * smoothstep(0.7, 1., sin(flow))) * shoreFroth(p);
   float light = uNight * uNight * glowI(glow);
   col = mix(col, tonemap(vec3(0.68, 0.78, 0.81) * (ambient(N) * 2.4 + uSunCol * sun * 0.16)), foam * 0.48);
-  col += tonemap(glowCol(p * 1.3 + 7.) * light * (0.5 + 1.3 * uNight));
+  if (light > 0.) col += tonemap(glowCol(p) * light * (0.5 + 1.3 * uNight));
   alpha = min(1., alpha + foam * 0.2 + light * 0.40);
   // the bed and whatever stands in the water, seen through the surface: bent by the same waves, more as it deepens,
   // and tinted by the water it passes through. At the very edge the true bed shows, unbent.
@@ -2046,6 +2039,58 @@ function tube(W, pts, rad, sides, f0, f1, base, seed) {
   }
   for (let k = 0; k < n - 1; k++) for (let q = 0; q < sides; q++) { const a = v0 + k * (sides + 1) + q, b2 = a + sides + 1; W.idx.push(a, b2, a + 1, a + 1, b2, b2 + 1); }
 }
+// Twigs taper to a single point. Three faces keep a silhouette from any
+// direction and use the same wood batch and flex weights as the parent bough.
+function twig(wood, root, tip, radius, base, flex, seed) {
+  const start = wood.pos.length / 3;
+  const delta = tip.map((v,i) => v-root[i]);
+  const axis = norm(delta);
+  const side = norm(cross(axis,[0,1,0])), up = cross(side,axis);
+  for (let j = 0; j < 3; j++) {
+    const ang = j * Math.PI * 2/3;
+    const n = side.map((v,i) => v*Math.cos(ang) + up[i]*Math.sin(ang));
+    wood.pos.push(...root.map((v,i) => v + radius*n[i]));
+    wood.nor.push(...n); wood.w.push(flex,0,ang,seed); wood.b.push(...base);
+  }
+  wood.pos.push(...tip); wood.nor.push(...axis); wood.b.push(...base);
+  wood.w.push(flex+0.10,Math.hypot(...delta),0,seed);
+  wood.idx.push(start,start+1,start+3,start+1,start+2,start+3,start+2,start,start+3);
+}
+
+// Spend each crown's existing leaf budget along real shoots. Lower shoots
+// spread out, younger shoots rise, and alternate leaves open on opposite sides.
+function leafSprays(wood, leaves, center, parent, radius, flex, parentFlex, base, random, count, broad, yaw) {
+  const groups = Math.max(3, Math.round(count/(broad ? 8 : 11)));
+  const phase = yaw + 6.2832*random();
+  for (let j = 0; j < groups; j++) {
+    const tier = (j+random())/groups;
+    const a = phase + j*2.39996 + (random()-0.5)*0.59;
+    const dx = Math.cos(a), dz = Math.sin(a);
+    const reach = radius*(0.78 + 0.47*random())*(1-0.4*tier*tier);
+    const rise = radius*((broad ? 1.32 : 0.83)*tier-0.37+0.21*random());
+    const inset = j === 0 ? 0 : (0.10+0.60*random())*(1-0.45*tier);
+    const root = center.map((v,i) => v+(parent[i]-v)*inset);
+    const forkFlex = flex+(parentFlex-flex)*inset;
+    const tip = [center[0]+dx*reach,center[1]+rise,center[2]+dz*reach];
+    twig(wood,root,tip,radius*(broad ? 0.016 : 0.010),base,forkFlex,tier);
+    const shootX = tip[0]-root[0], shootY = tip[1]-root[1], shootZ = tip[2]-root[2];
+    const n = Math.floor((j+1)*count/groups)-Math.floor(j*count/groups);
+    const bud = random();
+    for (let i = 0; i < n; i++) {
+      const t = 0.16+0.84*(i+random()*0.58)/n;
+      const side = i%2 ? 1 : -1;
+      const ph = a + side*(0.50+0.82*(1-t)+0.35*random());
+      const len = radius*(broad ? 0.66 : 0.72)*(0.76+0.67*random())*(1.19-0.38*t);
+      const slope = 0.14+0.55*random()+0.31*tier, horizontal = 1/Math.sqrt(1+slope*slope);
+      leaves.R.push(root[0]+shootX*t, root[1]+shootY*t, root[2]+shootZ*t, forkFlex+0.10*t);
+      leaves.D.push(Math.cos(ph)*horizontal, slope*horizontal, Math.sin(ph)*horizontal, len);
+      const width = broad ? len*(0.34+0.16*random()) : Math.min(0.19,len*(0.14+0.10*random()));
+      leaves.M.push(0.12+0.15*random(),0.17+0.23*random(),width,
+        Number(broad)+0.04+0.41*bud+0.31*tier+0.21*random());
+      leaves.B.push(...base);
+    }
+  }
+}
 // one alien juniper from a seed: a leaning S-curved trunk with a flared root, 2-4 limbs that rise and reach, twigs, and
 // cloud-like foliage pads on every tip, each pad a flattened dome of short blades. Every number is drawn from a range,
 // so any seed gives a different tree that is still recognisably the same species.
@@ -2061,29 +2106,25 @@ function growJuniper(x, y, z, h, seed, W, Lf, leanTo) {
   const tp = [], tr = [];
   for (let k = 0; k <= 12; k++) { tp.push(at(k / 12)); tr.push(rad(k / 12)); }
   tube(W, tp, tr, 9, 0, 0.55, base, seed);
-  const pads = [{ c: at(1), R: h * (0.2 + 0.1 * r()), f: 0.6 }];
+  const pads = [{ c: at(1), parent: tp[11], pf: 0.55*11/12, R: h * (0.2 + 0.1 * r()), f: 0.55 }];
   const young = h < 2.6, nl = young ? 2 + Math.floor(r() * 2) : h > 7 ? 5 + Math.floor(r() * 3) : 3 + Math.floor(r() * 3);
   for (let i = 0; i < nl; i++) {
     const t0 = 0.38 + 0.55 * (i + r() * 0.7) / nl, P0 = at(t0), az = lean + (r() - 0.5) * 4.2, len = h * (0.26 + 0.3 * r()), rise = 0.12 + 0.45 * r(), dr = 0.2 + 0.3 * r();
     const dh = [Math.cos(az), Math.sin(az)], pts = [], rr = [], fA = 0.55 * t0, fB = fA + 0.45;
-    for (let k = 0; k <= 6; k++) { const q = k / 6; pts.push([P0[0] + dh[0] * len * q + lp[0] * 0.05 * h * Math.sin(q * 4 + i), P0[1] + len * (rise * q - dr * q * q * 0.5), P0[2] + dh[1] * len * q + lp[1] * 0.05 * h * Math.sin(q * 4 + i)]); rr.push(rad(t0) * 0.62 * (1 - 0.62 * q)); }
+    for (let k = 0; k <= 6; k++) { const q = k / 6; pts.push([P0[0] + dh[0] * len * q + lp[0] * 0.05 * h * (Math.sin(q * 4 + i)-Math.sin(i)), P0[1] + len * (rise * q - dr * q * q * 0.5), P0[2] + dh[1] * len * q + lp[1] * 0.05 * h * (Math.sin(q * 4 + i)-Math.sin(i))]); rr.push(rad(t0) * 0.62 * (1 - 0.62 * q)); }
     tube(W, pts, rr, 7, fA, fB, base, seed + i);
-    pads.push({ c: [pts[6][0], pts[6][1] + 0.05 * h, pts[6][2]], R: h * (0.17 + 0.09 * r()), f: fB });
+    pads.push({ c: pts[6], parent: pts[5], pf: fA+(fB-fA)*5/6, R: h * (0.17 + 0.09 * r()), f: fB });
     for (let j = 0, nt = young ? Math.floor(r() * 2) : 2 + Math.floor(r() * 2); j < nt; j++) {
       const q0 = 0.45 + 0.35 * r(), Q = pts[Math.round(q0 * 6)], az2 = az + (r() < 0.5 ? -1 : 1) * (0.6 + 0.6 * r()), l2 = len * (0.3 + 0.25 * r()), tw = [], trr = [];
       for (let k = 0; k <= 4; k++) { const q = k / 4; tw.push([Q[0] + Math.cos(az2) * l2 * q, Q[1] + l2 * (0.35 * q), Q[2] + Math.sin(az2) * l2 * q]); trr.push(rad(t0) * 0.32 * (1 - 0.6 * q)); }
-      tube(W, tw, trr, 5, fA + 0.3, fB + 0.1, base, seed + i + j * 7);
-      pads.push({ c: [tw[4][0], tw[4][1] + 0.04 * h, tw[4][2]], R: h * (0.13 + 0.07 * r()), f: fB + 0.1 });
+      const jointFlex = fA + (fB-fA)*Math.round(q0*6)/6;
+      tube(W, tw, trr, 5, jointFlex, fB + 0.1, base, seed + i + j * 7);
+      pads.push({ c: tw[4], parent: tw[3], pf: jointFlex+(fB+0.1-jointFlex)*0.75, R: h * (0.13 + 0.07 * r()), f: fB + 0.1 });
     }
   }
   for (const pd of pads) {
     const nb = Math.round(Math.min(120, Math.max(young ? 14 : 30, 260 * pd.R * pd.R)) * LEAF_MULT);
-    for (let b = 0; b < nb; b++) {
-      const a = r() * 6.2832, rf = Math.sqrt(r()), rd = rf * pd.R * 0.75;
-      const root = [pd.c[0] + Math.cos(a) * rd, pd.c[1] - pd.R * 0.18 + r() * pd.R * 0.22, pd.c[2] + Math.sin(a) * rd];
-      const dir = norm([Math.cos(a) * (0.35 + rf) + (r() - 0.5) * 0.5, 0.25 + 0.55 * r(), Math.sin(a) * (0.35 + rf) + (r() - 0.5) * 0.5]);
-      Lf.R.push(...root, pd.f); Lf.D.push(...dir, 2 * pd.R * (0.55 + 0.5 * r()) * (1.15 - rf * 0.4)); Lf.M.push(0.08 + 0.1 * r(), 0.12 + 0.25 * r(), 0.103 + 0.087 * r(), r()); Lf.B.push(...base);
-    }
+    leafSprays(W, Lf, pd.c, pd.parent, pd.R, pd.f, pd.pf, base, r, nb, false, lean);
   }
 }
 // Broadleaf groves have low, spreading forks and a windward slope to the whole crown.
@@ -2091,8 +2132,7 @@ function growBroadleaf(x, y, z, h, seed, wood, leaves) {
   const rand = rng(Math.floor(seed * 1e9) ^ 0x72ac);
   const angle = (rand() - 0.5) * 1.6 + 0.5;
   const dx = Math.cos(angle), dz = Math.sin(angle);
-  // A teal or orchid grove, with variation inside each family.
-  const hue = rand() < 0.5 ? 0.12 * rand() : 0.86 + 0.14 * rand();
+  const hue = rand();
   const base = [x, z, h, hue];
   const trunk = [[x, y, z], [x - dx * h * 0.025, y + h * 0.12, z - dz * h * 0.025],
     [x + dx * h * 0.05, y + h * 0.32, z + dz * h * 0.05],
@@ -2109,23 +2149,12 @@ function growBroadleaf(x, y, z, h, seed, wood, leaves) {
     tube(wood, [[x, y + h * 0.25, z], knee, toe], [h * 0.058, h * 0.062, h * 0.016], 6, 0, 0, base, seed + i);
   }
 
-  function crown(center, radius, flex) {
-    // Stagger the leaves through the volume. Upper leaves catch more light, and the
-    // lower tier hangs below the bough so each crown reads as a mass at a distance.
+  function crown(center, parent, radius, flex, parentFlex) {
     const count = Math.ceil((touch ? 66 : 88) * (0.65 + Math.min(radius, 2) * 0.32));
-    for (let i = 0; i < count; i++) {
-      const az = i * 2.39996 + rand() * 0.35, cy = 2 * (i + rand()) / count - 1;
-      const side = Math.sqrt(1 - cy * cy), cx = Math.cos(az) * side, cz = Math.sin(az) * side;
-      const r = radius * (0.58 + 0.42 * rand()), len = radius * (0.52 + 0.34 * rand());
-      leaves.R.push(center[0] + r * (cx + 0.35 * dx * cy), center[1] + r * (0.74 * cy + 0.22 * (cx * dx + cz * dz)), center[2] + r * (cz + 0.35 * dz * cy), flex);
-      const heading = norm([cx + dx * 0.46, 0.28 + cy * 0.66, cz + dz * 0.46]);
-      leaves.D.push(...heading, len);
-      leaves.M.push(0.09 + 0.08 * rand(), 0.1 + 0.16 * rand(), len * (0.49 + 0.27 * rand()), 1 + 0.37 * rand() + 0.31 * (cy + 1));
-      leaves.B.push(...base);
-    }
+    leafSprays(wood, leaves, center, parent, radius, flex, parentFlex, base, rand, count, true, angle);
   }
 
-  crown(trunk[4], h * 0.30, 0.76);
+  crown(trunk[4], trunk[3], h * 0.34, 0.76, 0.57);
   const branches = h > 7 ? 8 : 6;
   for (let i = 0; i < branches; i++) {
     const joint = 1 + i % 3, start = trunk[joint], flex = joint * 0.19;
@@ -2136,10 +2165,10 @@ function growBroadleaf(x, y, z, h, seed, wood, leaves) {
     const elbow = [start[0] + bx * 0.58, start[1] + lift * 0.27, start[2] + bz * 0.58];
     const end = [start[0] + bx, start[1] + lift, start[2] + bz];
     tube(wood, [start, elbow, end], [0.048 * h, 0.032 * h, 0.009 * h], 7, flex, flex + 0.26, base, seed + i);
-    crown(end, h * (0.21 + rand() * 0.07), flex + 0.26);
+    crown(end, elbow, h * (0.23 + rand() * 0.07), flex + 0.26, flex + 0.13);
     const fork = [elbow[0] + bx * 0.24 - bz * 0.32, elbow[1] + lift * 0.64, elbow[2] + bz * 0.24 + bx * 0.32];
     tube(wood, [elbow, fork], [0.025 * h, 0.007 * h], 6, flex + 0.13, flex + 0.24, base, seed + i + 9);
-    crown(fork, h * 0.18, flex + 0.24);
+    crown(fork, elbow, h * 0.20, flex + 0.24, flex + 0.13);
     // Pendant epiphytes hang below the old crowns. Paired blades grow on the lower runner.
     if (h > 5 && joint > 1 && i % 2 === 0) {
       const root = end, drop = Math.min(h * (0.26 + 0.10 * rand()), root[1] - H(root[0], root[2]) - 0.35);
@@ -2188,7 +2217,7 @@ function growRosettes(sc, near, leaves) {
           trailCover(x,z) > 0.12 || trailDistance(x, z) < 1.15 + h || Math.hypot(x - START[0], z - START[1]) < 1.9) continue;
       // Leave room around boulders and tree trunks for every crown to open.
       if (nearby.some(([bx, bz, radius]) => (x - bx) ** 2 + (z - bz) ** 2 < (radius + 0.32 * h) ** 2)) continue;
-      const hue = warm ? 0.81 + 0.16 * r() : r() * 0.42, spin = r() * 6.2832;
+      const hue = warm ? 0.78 + 0.13 * r() : r() * 0.55, spin = r() * 6.2832;
       for (let j = 0; j < 21; j++) {
         const young = j / 20, az = spin + 2.39996 * j + 0.18 * r();
         const dx = Math.cos(az), dz = Math.sin(az), stalk = 0.12 * h * (1 - young);
@@ -2848,7 +2877,10 @@ void main(){
   vec4 fog = valleyMist();
   if (uHDR > 0.5) c = pow(acesF((c + b * uBloom + r * uRays) * fog.a + fog.rgb), vec3(1. / 2.2));
   else c = pow(clamp(pow(clamp(c + b * uBloom * 0.7 + r * uRays * 0.6, 0., 1.), vec3(2.2)) * fog.a + fog.rgb, 0., 1.), vec3(1./2.2));
-  float l = dot(c, vec3(0.2126, 0.7152, 0.0722)); c = mix(vec3(l), c, 1.15);
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float clear = (1.-uNight)*(1.-uStorm);
+  c *= 1. + 0.30*clear*(l-0.46)*(1.-l);
+  c = mix(vec3(dot(c,vec3(0.2126,0.7152,0.0722))),c,1.12);
   vec2 q = vUv - 0.5; c *= 1. - dot(q, q) * 0.55;
   c += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.;
   o = vec4(c, 1.); }`);
@@ -2978,6 +3010,7 @@ function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
   gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, history.t); gl.uniform1i(P_FINAL.u('tScene'), 4);
   gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, post.mips[0].t); gl.uniform1i(P_FINAL.u('tBloom'), 5);
   gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, post.rays.t); gl.uniform1i(P_FINAL.u('tRays'), 6);
+  gl.uniform1f(P_FINAL.u('uNight'),night); gl.uniform1f(P_FINAL.u('uStorm'),storm);
   gl.uniform1f(P_FINAL.u('uBloom'), 0.085); gl.uniform1f(P_FINAL.u('uRays'), rayStrength); gl.uniform1f(P_FINAL.u('uHDR'), HDR ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
@@ -3246,7 +3279,7 @@ function stepStones(dt) {
 }
 
 // ---------------------------------------------------------------- render
-const SUN = norm([-0.86, 0.40, -0.33]), SUNCOL = [3.65, 2.98, 2.13], PLANET = skyBodies.amber, MOONCOL = [0.19, 0.29, 0.55];
+const SUN = norm([-0.86, 0.40, -0.33]), SUNCOL = [3.95, 3.03, 2.02], PLANET = skyBodies.amber, MOONCOL = [0.19, 0.29, 0.55];
 let night = 0, nightTarget = 0, sheet = 0, grassDrawn = 0;
 function norm(v) { const l = Math.hypot(...v); return v.map((x) => x / l); }
 function bakeFloraSpill(plants) {
@@ -3259,11 +3292,9 @@ function bakeFloraSpill(plants) {
     // One source per cup or bell, irrespective of how many strips form its petals.
     if (i && x === plants.P[i - 4] && z === plants.P[i - 2]) continue;
     const extent = plants.F[i + 1] * plants.P[i + 3], radius = extent * (type === 4 ? 0.90 : 1.65);
-    const hue = plants.S2[i + 3], warm = type === 6 ? sm(0.37, 0.70, hue) : sm(0.40, 0.57, hue);
-    const bell = x * 0.21 + z * 0.17, bellHue = 0.5 * (bell - Math.floor(bell));
-    const pigment = type === 6 ? [0.085 + 0.305 * warm, 0.47 - 0.30 * warm, 0.32 + 0.07 * warm]
-      : type === 4 ? [0.88 - 0.16 * bellHue, 0.30 + 0.12 * bellHue, 0.70 + 0.28 * bellHue]
-      : [0.085 + 0.855 * warm, 0.72 - 0.50 * warm, 0.62 - 0.28 * warm];
+    const siteHue = x * 0.21 + z * 0.17;
+    const hue = type > 4 ? plants.S2[i + 3] : siteHue - Math.floor(siteHue);
+    const pigment = understoryPigment(type, hue);
     const cx = (x + WORLD_HALF) * perMetre - 0.5, cz = (z + WORLD_HALF) * perMetre - 0.5, r = radius * perMetre;
     for (let j = Math.max(0, Math.ceil(cz - r)); j <= Math.min(size - 1, cz + r); j++) {
       for (let k = Math.max(0, Math.ceil(cx - r)); k <= Math.min(size - 1, cx + r); k++) {
