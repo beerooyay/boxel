@@ -38,3 +38,33 @@ test('a coarse patch has the same outline and winding as its full-resolution nei
   pos[3 * interior + 1] += 1.5;
   assert.equal(coarsePatch(indices, 0, pos, stride, x0, z0, x1, z1).error, 1.5);
 });
+
+test('a stone keeps all eight supporting triangles and the neighbouring edges meet', () => {
+  const stride = 9, pos = new Float32Array(3*stride*stride), indices = new Uint32Array(8*8*6);
+  const pinned = new Uint8Array(4*4);
+  pinned[5] = 1;
+  pos[3*(3*stride+3)+1] = 1;
+  const {cursor,error} = coarsePatch(indices,0,pos,stride,0,0,8,8,pinned);
+  assert.equal(error,0);
+  const interior = [], edges = new Map();
+  for (let k=0; k<cursor; k+=3) {
+    const vs=Array.from(indices.subarray(k,k+3));
+    if (vs.every(v=>v%stride>=2 && v%stride<=4 && (v/stride|0)>=2 && (v/stride|0)<=4)) interior.push(...vs);
+    for (let i=0; i<3; i++) {
+      const a=vs[i], b=vs[(i+1)%3], key=Math.min(a,b)*stride*stride+Math.max(a,b);
+      edges.set(key,(edges.get(key)||0)+1);
+    }
+  }
+  const exact = [];
+  for (let z=2; z<4; z++) for (let x=2; x<4; x++) {
+    const a=z*stride+x;
+    exact.push(a,a+stride,a+1,a+1,a+stride,a+stride+1);
+  }
+  assert.deepEqual(interior,exact);
+  for (const [key,count] of edges) {
+    const a=Math.floor(key/(stride*stride)), b=key%(stride*stride);
+    const onBorder=(a%stride===b%stride && [0,8].includes(a%stride)) ||
+      ((a/stride|0)===(b/stride|0) && [0,8].includes(a/stride|0));
+    assert.equal(count,onBorder ? 1 : 2);
+  }
+});

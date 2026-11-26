@@ -35,6 +35,13 @@ export function createWind(boxel, heightAt) {
         slope = Math.max(slope, (heights[z * SIZE + x] - heights[j * SIZE + i]) / (step * reach));
       }
       bytes[4 * (j * SIZE + i) + 2] = Math.round(255 * Math.max(0.34, Math.min(1, 0.9 - 0.86 * slope)));
+      // A shorter ripple rides on each broad Boxel front. Bake its two
+      // crossing wavelengths in air coordinates so the banks and the grass
+      // see the same crest and both derivatives match at the wrap.
+      const u = (2 * Math.PI * i) / SIZE, v = (2 * Math.PI * j) / SIZE;
+      const meander = 1.24 * Math.sin(v + 0.55 * Math.sin(2 * u + v)) + 0.65 * Math.sin(2 * v - u);
+      const ripple = 0.67 * Math.sin(5 * u + v + meander) + 0.33 * Math.sin(9 * u - 2 * v + 1.4 * meander);
+      bytes[4 * (j * SIZE + i) + 3] = Math.round(127.5 * (1 + ripple));
     }
   const draw = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
   function advance(storm) {
@@ -77,12 +84,16 @@ export function createWind(boxel, heightAt) {
       fx = u - i,
       fz = v - j,
       t = elapsed / STEP;
-    function at(a, b) {
+    function at(a, b, channel) {
       const k = 4 * ((b & 63) * SIZE + (a & 63));
-      return (bytes[k] * (1 - t) + bytes[k + 1] * t) / 255;
+      return channel === 3 ? bytes[k + 3] / 255 : (bytes[k] * (1 - t) + bytes[k + 1] * t) / 255;
     }
-    const gust =
-      (1 - fz) * ((1 - fx) * at(i, j) + fx * at(i + 1, j)) + fz * ((1 - fx) * at(i, j + 1) + fx * at(i + 1, j + 1));
+    function air(channel) {
+      return (1 - fz) * ((1 - fx) * at(i, j, channel) + fx * at(i + 1, j, channel)) +
+        fz * ((1 - fx) * at(i, j + 1, channel) + fx * at(i + 1, j + 1, channel));
+    }
+    const front = Math.min(1, Math.max(0, (air(0) - 0.035) / 0.63));
+    const crest = front * front * (3 - 2 * front);
     const gx = Math.min(SIZE - 1, Math.max(0, (x + WORLD_HALF) / step - 0.5));
     const gz = Math.min(SIZE - 1, Math.max(0, (z + WORLD_HALF) / step - 0.5));
     const ax = Math.floor(gx),
@@ -95,7 +106,7 @@ export function createWind(boxel, heightAt) {
     const local =
       (1 - fzg) * ((1 - fxg) * exposure(ax, az) + fxg * exposure(bx, az)) +
       fzg * ((1 - fxg) * exposure(ax, bz) + fxg * exposure(bx, bz));
-    return local * (-0.1 + 1.65 * gust);
+    return local * (0.13 + 1.25 * crest + (2 * air(3) - 1) * (0.34 + 0.34 * crest));
   }
   return {
     size: SIZE,
@@ -111,7 +122,7 @@ export function createWind(boxel, heightAt) {
       return elapsed / STEP;
     },
     update(dt, storm) {
-      travel = (travel + dt * speed * (1.13 + 0.62 * storm)) % (SIZE * metres[0]);
+      travel = (travel + dt * speed * (1.48 + 0.62 * storm)) % (SIZE * metres[0]);
       elapsed += dt;
       while (elapsed >= STEP) {
         elapsed -= STEP;
@@ -133,7 +144,9 @@ uniform vec2 uWindFrame;
 const vec2 WIND_DIR = vec2(${windDirection[0].toFixed(8)},${windDirection[1].toFixed(8)});
 float windWave(vec2 p){
   vec2 cell=vec2(dot(p,WIND_DIR)-uWindFrame.x, dot(p,vec2(-WIND_DIR.y,WIND_DIR.x))) / vec2(${metres[0]},${metres[1]});
-  vec2 gust=textureLod(uGusts,(cell+0.5)/${SIZE}.,0.).rg;
+  vec4 air = textureLod(uGusts, (cell + 0.5) / ${SIZE}., 0.);
   vec2 uv=clamp(p/${2 * WORLD_HALF}.+0.5,vec2(0.5/${SIZE}.),vec2(1.-0.5/${SIZE}.));
-  return textureLod(uGusts,uv,0.).b*(-0.10+1.65*mix(gust.r,gust.g,uWindFrame.y));
+  float crest = smoothstep(0.035, 0.665, mix(air.r, air.g, uWindFrame.y));
+  float gust = 0.13 + 1.25 * crest + (2. * air.a - 1.) * (0.34 + 0.34 * crest);
+  return textureLod(uGusts, uv, 0.).b * gust;
 }`;
