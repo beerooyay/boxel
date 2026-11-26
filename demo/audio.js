@@ -72,7 +72,13 @@ export function createAudio() {
 
   let nextChirp = 0, muted = false;
   return {
-    resume() { if (ctx.state !== 'running') ctx.resume(); },
+    resume() { if (ctx.state !== 'running') ctx.resume().catch(() => {}); },
+    suspend() { if (ctx.state === 'running') ctx.suspend().catch(() => {}); },
+    capture() {
+      const output = ctx.createMediaStreamDestination();
+      limiter.connect(output);
+      return { track: output.stream.getAudioTracks()[0], disconnect: () => limiter.disconnect(output) };
+    },
     toggle() { muted = !muted; smooth(master.gain, muted ? 0 : 0.85, 0.08); return !muted; },
     /** Once a frame: the weather, the night, and how far the water is, with its bearing (radians, 0 ahead, + right). */
     update({ wind: strength, gust, height, night, storm, river: [riverDistance, riverBearing], lake: [lakeDistance, lakeBearing] }) {

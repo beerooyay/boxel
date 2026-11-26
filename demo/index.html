@@ -24,8 +24,8 @@
 }
 [hidden] { display: none !important; }
 html, body { height: 100%; }
-body { background: var(--void); color: var(--ink); font-family: var(--body); overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; }
-#gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; background: var(--void); }
+body { background: var(--void); color: var(--ink); font-family: var(--body); overflow: hidden; -webkit-user-select: none; user-select: none; }
+#gl { position: fixed; touch-action: none; inset: 0; width: 100%; height: 100%; display: block; background: var(--void); }
 
 #intro {
   position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
@@ -77,6 +77,33 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 #err { position: fixed; z-index: 30; inset: auto 16px 16px 16px; font-family: var(--mono); font-size: 12px; color: var(--warn); }
 @media (max-width: 560px) { #hud { font-size: 10.5px; } #hud .note { display: none; } #pad button { padding: 9px 12px; font-size: 11px; } }
 @media (prefers-reduced-motion: reduce) { #hud .bar i { transition: none; } }
+#pad #capture-record[aria-pressed="true"] { color: #ff9d9d; border-color: #ff8d8d; }
+#capture-status { position: fixed; z-index: 15; top: max(12px, env(safe-area-inset-top)); left: 50%;
+  translate: -50%; max-width: 86vw; padding: 9px 14px; border-radius: 12px;
+  background: #151727; color: var(--ink); font: 13px var(--body); pointer-events: none; }
+#capture-status:empty { padding: 0; }
+#capture-library { color: var(--ink); background: #171a2a; border: 1px solid var(--edge); border-radius: 18px;
+  padding: clamp(12px, 3vw, 24px); width: min(760px, 92vw); max-height: 90dvh; box-sizing: border-box;
+  font: 15px var(--body); touch-action: pan-y; overscroll-behavior: contain; }
+#capture-library::backdrop { background: #090a14bd; }
+#capture-library header, .capture-actions, .capture-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+#capture-library h2 { margin: 0; font: 700 clamp(19px, 4vw, 25px) var(--display); }
+.capture-hint { color: var(--dim); margin: 12px 0 18px; }
+.capture-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: 12px; }
+.capture-list[hidden], .capture-detail[hidden] { display: none; }
+.capture-card { min-width: 0; padding: 8px; background: #101320; border-radius: 12px; }
+#capture-library button, #capture-library a { font: inherit; color: var(--ink); background: #252a40;
+  border: 1px solid var(--edge); border-radius: 9px; padding: 8px 11px; text-decoration: none; cursor: pointer; }
+#capture-library :focus-visible { outline: 2px solid var(--glow); outline-offset: 2px; }
+#capture-library .capture-open { width: 100%; padding: 0; position: relative; overflow: hidden;
+  display: block; aspect-ratio: 16 / 9; background: #090c15; }
+.capture-open img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.capture-open time { position: absolute; right: 7px; bottom: 7px; background: #090a14e6;
+  padding: 3px 6px; border-radius: 4px; font: 12px var(--mono); }
+.capture-meta { align-items: start; margin-top: 8px; }
+.capture-date { font-size: 12px; color: var(--dim); }
+#capture-library .capture-delete { color: #ffb5b5; font-size: 12px; padding: 5px 7px; }
+.capture-detail video { display: block; width: 100%; max-height: 60dvh; background: #090c15; margin-bottom: 14px; }
 </style>
 
 <script>document.documentElement.classList.add("intro")</script>
@@ -105,7 +132,29 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
   <button id="bDay" type="button" aria-pressed="false">Day cycle</button>
   <button id="bMode" type="button" title="Switch the surface field engine">boxel</button>
   <button id="bHud" type="button" aria-pressed="true">Readout</button>
+  <button id="capture-record" type="button" aria-pressed="false" title="Start or stop recording (backtick)">Record</button>
+  <button id="capture-gallery" type="button" title="Open clip gallery (G)">Gallery</button>
 </div>
+
+<div id="capture-status" role="status"></div>
+<dialog id="capture-library" aria-labelledby="capture-title">
+  <header>
+    <h2 id="capture-title">Clip gallery</h2>
+    <form method="dialog"><button class="capture-close" autofocus>Close</button></form>
+  </header>
+  <p class="capture-hint" role="status"></p>
+  <div class="capture-list"></div>
+  <div class="capture-detail" hidden>
+    <video aria-label="Recorded gameplay" controls playsinline preload="metadata"></video>
+    <div class="capture-actions"><button type="button">Back to clips</button><a>Download clip</a></div>
+  </div>
+</dialog>
+<template id="capture-card">
+  <article class="capture-card">
+    <button class="capture-open" type="button"><img alt=""><time></time></button>
+    <div class="capture-meta"><span class="capture-date"></span><button class="capture-delete" type="button">Delete</button></div>
+  </article>
+</template>
 
 <div id="intro">
   <div class="card">
@@ -122,6 +171,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
       <b>M</b><span>surface fields · boxel or dense</span>
       <b>H</b><span>hide the readout</span>
       <b>V</b><span>sound on or off</span>
+      <b>` / G</b><span>record a clip / open gallery</span>
     </div>
     <button class="go" id="go" type="button">Step onto the shore</button>
     <div class="status" id="status">loading the field engine…</div>

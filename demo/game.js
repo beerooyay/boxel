@@ -1,3 +1,4 @@
+import { bindCapture } from './capture.js';
 import { floraPalette, understoryPigment } from './flora-palette.js';
 import { createWind, windShader } from './wind.js';
 import { bakeTrailMaterial } from './trail-material.js';
@@ -3673,10 +3674,12 @@ function adaptDensity(rawDt) {
     else if (grassDensity < 1) grassDensity = Math.min(1, grassDensity * 1.08);
   }
 }
+let capture;
 function frame(now) {
   requestAnimationFrame(frame);
   const elapsed = Math.max(0, (now - last) / 1000);
   last = now;
+  if (capture?.viewing) return;
   if (elapsed < 0.25) adaptDensity(elapsed);
   const dt = Math.min(0.1, elapsed);
   if (started) advanceDay(dt);
@@ -3694,6 +3697,7 @@ function frame(now) {
   wind.update(dt, storm);
   clouds.advance(dt, sm(0, 0.41, starDirection[1]) * (1 - night), storm, simT, groundF.sheet);
   render(simT);
+  capture?.frame(now);
   if (!started) return;
   if (audio) {
     // what the ears get: the gust where you stand, how far the river and the lake are and which side they are on
@@ -3743,6 +3747,11 @@ function cycleMode() { setMode(mode === BOXEL ? DENSE : BOXEL); refreshModeUI();
 // ---------------------------------------------------------------- input
 function bindInput() {
   addEventListener('keydown', (e) => {
+    if (capture.viewing) return;
+    if (started && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.code === 'Backquote') { e.preventDefault(); capture.toggle(); return; }
+      if (e.code === 'KeyG') { e.preventDefault(); capture.open(); return; }
+    }
     keys[e.code] = true;
     if (!started || e.repeat) return;
     if (e.code === 'KeyF') throwStone();
@@ -3755,13 +3764,14 @@ function bindInput() {
     if (e.code === 'KeyC') toggleDay();
   });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
-  addEventListener('blur', () => {
+  addEventListener('blur', resetMovement);
+  function resetMovement() {
     for (const k in keys) keys[k] = false;
     player.vx = player.vz = player.bob = 0;
     stick = { x: 0, y: 0, id: null };
     lookId = lookLast = null;
     document.getElementById('knob').style.transform = '';
-  });
+  }
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     last = performance.now();
@@ -3775,8 +3785,14 @@ function bindInput() {
   });
   addEventListener('mouseup', () => { lookLast = null; });
   addEventListener('mousemove', (e) => {
+    if (capture.viewing) return;
     if (document.pointerLockElement === canvas) look(e.movementX, e.movementY, 0.0022);
     else if (lookLast && e.buttons) { look(e.clientX - lookLast[0], e.clientY - lookLast[1], 0.004); lookLast = [e.clientX, e.clientY]; }
+  });
+  capture = bindCapture(canvas, {
+    audio: () => audio,
+    pause() { resetMovement(); audio?.suspend(); },
+    resume() { last = performance.now(); wall = 0; audio?.resume(); },
   });
   const stickEl = document.getElementById('stick'), knob = document.getElementById('knob');
   canvas.addEventListener('touchstart', (e) => {
@@ -3908,7 +3924,7 @@ function scripted(m, frames = 900, view = 'shore') {
   setMode(BOXEL);
   refreshModeUI();
   document.getElementById('status').textContent = `boxel ready: three surface fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
-  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, day cycle, switch engine, readout</span>'; }
+  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, day cycle, switch engine, readout, record, gallery</span>'; }
   window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
     runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
