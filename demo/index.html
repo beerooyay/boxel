@@ -77,7 +77,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 #err { position: fixed; z-index: 30; inset: auto 16px 16px 16px; font-family: var(--mono); font-size: 12px; color: var(--warn); }
 @media (max-width: 560px) { #hud { font-size: 10.5px; } #hud .note { display: none; } #pad button { padding: 9px 12px; font-size: 11px; } }
 @media (prefers-reduced-motion: reduce) { #hud .bar i { transition: none; } }
-#pad #capture-record[aria-pressed="true"] { color: #ff9d9d; border-color: #ff8d8d; }
+#fieldMenu #capture-record[aria-pressed="true"] { color: #ff9d9d; border-color: #ff8d8d; }
 #grassLab {
   position: fixed; z-index: 10; top: calc(env(safe-area-inset-top, 0px) + 12px); left: 12px;
   background: var(--glass); border: 1px solid var(--edge); border-radius: 10px;
@@ -116,13 +116,24 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 .capture-date { font-size: 12px; color: var(--dim); }
 #capture-library .capture-delete { color: #ffb5b5; font-size: 12px; padding: 5px 7px; }
 .capture-detail video { display: block; width: 100%; max-height: 60dvh; background: #090c15; margin-bottom: 14px; }
+#fieldMenu { box-sizing:border-box; width:min(25rem,calc(100vw - 28px)); max-height:85dvh; margin:auto max(14px,env(safe-area-inset-right)) auto auto; padding:22px; color:var(--ink); background:#161b27f7; border:1px solid var(--edge); border-radius:16px; box-shadow:0 14px 60px #0006; }
+#fieldMenu::backdrop { background:#070b142e; }
+#fieldMenu header { display:flex; align-items:center; justify-content:space-between; }
+#fieldMenu h2 { font:600 24px var(--display); margin:0; }
+#fieldMenu fieldset { border:0; border-top:1px solid #ffffff24; margin:20px 0 0; padding:8px 0 0; display:flex; flex-wrap:wrap; gap:6px; }
+#fieldMenu legend { color:#b8c5ca; font:500 13px var(--body); padding:0 8px 0 0; }
+#fieldMenu button { background:#282f3b; color:var(--ink); border:1px solid transparent; border-radius:7px; padding:9px 12px; cursor:pointer; font:500 14px var(--body); }
+#fieldMenu button[aria-pressed=true] { color:var(--glow); border-color:#5ff2e054; }
+#fieldMenu button:focus-visible { outline:2px solid var(--glow); }
+#fieldMenu p { font:13px/1.6 var(--body); color:#bcc4ce; margin:14px 0 0; }
+body:not(.touch) #bThrow { display:none; }
 </style>
 
 <script>document.documentElement.classList.add("intro")</script>
 <canvas id="gl" aria-label="Tarnished Promise: a lake shore on the planet Tarn"></canvas>
 <div id="cross" aria-hidden="true"></div>
 
-<div id="hud" aria-live="off">
+<div id="hud" hidden aria-live="off">
   <div class="mode" id="hMode"><span>boxel</span><span id="hFps">— fps</span></div>
   <div class="bar"><i id="hBar"></i></div>
   <div class="row"><span>surface cells stepped / frame</span><b id="hStep">—</b></div>
@@ -148,17 +159,27 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 <div id="stick" aria-hidden="true"><i id="knob"></i></div>
 <div id="pad">
   <button class="throw" id="bThrow" type="button">Throw</button>
+  <button id="menuOpen" type="button" aria-haspopup="dialog" title="Field menu (Q)">☰ &nbsp; Field menu</button>
+</div>
+<dialog id="fieldMenu" aria-labelledby="fieldTitle">
+  <header><h2 id="fieldTitle">Field menu</h2><button id="menuClose" autofocus>Resume</button></header>
+  <fieldset><legend>Sky & weather</legend>
   <button id="bRain" type="button" aria-pressed="false">Spore rain</button>
   <button id="bStorm" type="button" aria-pressed="false">Storm</button>
   <button id="bNight" type="button" aria-pressed="false">Night</button>
   <button id="bDay" type="button" aria-pressed="false">Day cycle</button>
   <button id="bTimelapse" type="button" aria-pressed="false" title="Watch a full Tarn day in 28 seconds (L)">Timelapse</button>
+</fieldset><fieldset><legend>Camera & engine</legend>
   <button id="bCamera" type="button" aria-pressed="true" title="Toggle third-person view (P)">Third person</button>
   <button id="bMode" type="button" title="Switch the surface field engine">boxel</button>
-  <button id="bHud" type="button" aria-pressed="true">Readout</button>
+  <button id="bHud" type="button" aria-pressed="false">Readout</button>
+</fieldset><fieldset><legend>Clips</legend>
   <button id="capture-record" type="button" aria-pressed="false" title="Start or stop recording (backtick)">Record</button>
   <button id="capture-gallery" type="button" title="Open clip gallery (G)">Gallery</button>
-</div>
+</fieldset>
+  <p>Walk with WASD · Shift to run · Click to throw<br>Drag or scroll with two fingers to look · Q for menu<br>Right-click for free look · Esc to release</p>
+  <p>Controller · Left stick to move · Right stick to look<br>Right trigger to run · A to throw · Y for camera · Menu to open<br>D-pad to browse · A to select · B to return</p>
+</dialog>
 
 <div id="capture-status" role="status"></div>
 <dialog id="capture-library" aria-labelledby="capture-title">
@@ -185,19 +206,9 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
     <h1>T<span>A</span>RNISHED<br>PROMISE</h1>
     <p>Explore as a fox. Follow the river upstream to the spring, or climb the eastern rock shelf for a view across the valley. After dark, throw a glowstone and watch the moss wake where it lands.</p>
     <div class="keys" id="keys">
-      <b>WASD</b><span>walk · Shift to run</span>
-      <b>mouse</b><span>look (click to capture)</span>
-      <b>click / F</b><span>throw a glowstone</span>
-      <b>P</b><span>switch camera</span>
-      <b>R</b><span>spore rain</span>
-      <b>T</b><span>storm: rain, lightning, thunder</span>
-      <b>N</b><span>night: the biome lights up</span>
-      <b>C</b><span>let the day run: sunset, night, sunrise</span>
-      <b>L</b><span>watch a full day in 28 seconds</span>
-      <b>M</b><span>surface fields · boxel or dense</span>
-      <b>H</b><span>hide the readout</span>
-      <b>V</b><span>sound on or off</span>
-      <b>` / G</b><span>record a clip / open gallery</span>
+      <b>keyboard</b><span>WASD to move · Shift to run</span>
+      <b>mouse / pad</b><span>drag or two-finger scroll to look · click to throw</span>
+      <b>controller</b><span>A to enter · sticks to move and look · RT to run</span>
     </div>
     <button class="go" id="go" type="button">Step onto the shore</button>
     <div class="status" id="status">loading the field engine…</div>

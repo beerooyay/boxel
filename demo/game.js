@@ -1,3 +1,4 @@
+import { foxController } from './gamepad.js';
 import { contactVolume, contactGLSL, CONTACT_SIZE } from './fox-contact.js';
 import { loadFox } from './fox.js';
 import { DAY_RATE, TIMELAPSE_SECONDS, timelapseTravel } from './sky-clock.js';
@@ -3476,7 +3477,9 @@ function toggleCamera() {
   post.previous = null;
 }
 const keys = {};
-let rain = false, hudOn = true, started = false;
+const controller = foxController();
+const menu = document.getElementById("fieldMenu"), gallery = document.getElementById("capture-library");
+let rain = false, hudOn = false, started = false;
 const stones = [];
 let stick = { x: 0, y: 0, id: null }, lookId = null, lookLast = null;
 
@@ -3541,15 +3544,16 @@ function crossSlope(dx, dz, ground) {
 }
 
 function stepPlayer(dt) {
-  let mx = 0, mz = 0;
+  let mx = controller.input.x, mz = controller.input.forward;
   if (keys.KeyW || keys.ArrowUp) mz += 1; if (keys.KeyS || keys.ArrowDown) mz -= 1;
   if (keys.KeyA || keys.ArrowLeft) mx -= 1; if (keys.KeyD || keys.ArrowRight) mx += 1;
   if (stick.id !== null) { mx += stick.x; mz += -stick.y; }
   const len = Math.hypot(mx, mz);
   const ground = H(player.x, player.z), level = waterLevel(player.x, player.z), inWater = ground < level - 0.05, depth = Math.max(0, level - ground);
-  const run = keys.ShiftLeft || keys.ShiftRight || (stick.id !== null && len > 0.92);
+  const run = controller.input.run || keys.ShiftLeft || keys.ShiftRight || (stick.id !== null && len > 0.92);
   const pace = len > 0.05 ? (run ? 4.2 : 1.9) * (1 - Math.min(0.62, depth * (fox ? 1.22 : 0.45))) / Math.max(1, len) : 0;
-  const sy = Math.sin(player.yaw), cy = Math.cos(player.yaw);
+  const moveYaw = GRASS_LAB && labView ? (labView === 2 ? 0 : -1.30) : player.yaw;
+  const sy = Math.sin(moveYaw), cy = Math.cos(moveYaw);
   const vx = (sy * mz + cy * mx) * pace, vz = (-cy * mz + sy * mx) * pace;
   // Integrate the eased velocity over the frame, including the last fraction of a step on release.
   const rate = pace ? 10 : 17, blend = -Math.expm1(-rate * dt);
@@ -4093,6 +4097,7 @@ function frame(now) {
   requestAnimationFrame(frame);
   const elapsed = Math.max(0, (now - last) / 1000);
   last = now;
+  controller.poll(Math.min(0.1, elapsed), { started, menu, gallery, toggleMenu, look, throwStone, toggleCamera });
   if (capture?.viewing) return;
   if (elapsed < 0.25) adaptDensity(elapsed);
   const dt = Math.min(0.1, elapsed);
@@ -4159,7 +4164,7 @@ function frame(now) {
 function refreshModeUI() {
   hud.mode.firstElementChild.textContent = MODE_NAME[mode];
   hud.mode.className = 'mode' + (mode === DENSE ? ' dense' : '');
-  document.getElementById('bMode').textContent = MODE_NAME[mode];
+  document.getElementById('bMode').textContent = 'Engine · ' + MODE_NAME[mode];
   hud.note.textContent = mode === BOXEL
     ? 'The bound tracks how far the sparse field can differ from the full calculation. The target is 1/255. Each retiring block is checked against its budget.'
     : 'Dense mode updates every cell on the map. Switch engines to restart the three fields and compare their cost.';
@@ -4167,9 +4172,26 @@ function refreshModeUI() {
 function cycleMode() { setMode(mode === BOXEL ? DENSE : BOXEL); refreshModeUI(); }
 
 // ---------------------------------------------------------------- input
+function toggleMenu() {
+  if (menu.open) menu.close();
+  else {
+    if (document.pointerLockElement) document.exitPointerLock();
+    menu.showModal();
+  }
+}
 function bindInput() {
+  document.getElementById('menuOpen').onclick = toggleMenu;
+  document.getElementById('menuClose').onclick = toggleMenu;
+  menu.addEventListener('close', resetMovement);
+  menu.addEventListener('focusin', resetMovement);
   addEventListener('keydown', (e) => {
-    if (capture.viewing) return;
+    if (capture.viewing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (started && e.code === 'KeyQ') {
+      e.preventDefault();
+      if (!e.repeat) toggleMenu();
+      return;
+    }
+    if (menu.open) return;
     if (started && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (e.code === 'Backquote') { e.preventDefault(); capture.toggle(); return; }
       if (e.code === 'KeyG') { e.preventDefault(); capture.open(); return; }
@@ -4205,17 +4227,41 @@ function bindInput() {
     perfT.length = 0;
     wall = 0;
   });
-  canvas.addEventListener('mousedown', (e) => {
+  let dragStart = null, dragged = false;
+  canvas.addEventListener('contextmenu', e => {
     if (!started || touch) return;
-    if (document.pointerLockElement !== canvas) { canvas.requestPointerLock?.()?.catch?.(() => {}); lookLast = [e.clientX, e.clientY]; }
-    else throwStone();
+    e.preventDefault();
+    if (document.pointerLockElement !== canvas) canvas.requestPointerLock?.()?.catch?.(() => {});
   });
-  addEventListener('mouseup', () => { lookLast = null; });
-  addEventListener('mousemove', (e) => {
-    if (capture.viewing) return;
+  addEventListener('mousemove', e => {
     if (document.pointerLockElement === canvas) look(e.movementX, e.movementY, 0.0022);
-    else if (lookLast && e.buttons) { look(e.clientX - lookLast[0], e.clientY - lookLast[1], 0.004); lookLast = [e.clientX, e.clientY]; }
   });
+  canvas.addEventListener('pointerdown', e => {
+    if (!started || e.pointerType === 'touch' || e.button !== 0) return;
+    if (document.pointerLockElement === canvas) { throwStone(); return; }
+    dragStart = lookLast = [e.clientX, e.clientY];
+    dragged = false;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!dragStart || !lookLast || !e.buttons || e.pointerType === 'touch') return;
+    dragged ||= Math.hypot(e.clientX-dragStart[0], e.clientY-dragStart[1]) > 4;
+    if (dragged) {
+      look(e.clientX-lookLast[0], e.clientY-lookLast[1], 0.004);
+      lookLast = [e.clientX, e.clientY];
+    }
+  });
+  canvas.addEventListener('pointerup', e => {
+    if (e.pointerType === 'touch') return;
+    if (dragStart && lookLast && !dragged && e.button === 0) throwStone();
+    dragStart = lookLast = null;
+  });
+  canvas.addEventListener('lostpointercapture', e => { if (e.pointerType !== 'touch') dragStart = lookLast = null; });
+  canvas.addEventListener('wheel', e => {
+    if (!started || e.ctrlKey) return;
+    e.preventDefault();
+    look(e.deltaX, e.deltaY, e.deltaMode === 1 ? 0.035 : 0.0025);
+  }, { passive: false });
   capture = bindCapture(canvas, {
     audio: () => audio,
     pause() { resetMovement(); audio?.suspend(); },
@@ -4389,7 +4435,7 @@ function scripted(m, frames = 900, view = 'shore') {
   setMode(BOXEL);
   refreshModeUI();
   document.getElementById('status').textContent = `boxel ready: three surface fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
-  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, day cycle, timelapse, camera, switch engine, readout, record, gallery</span>'; }
+  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw or open the field menu</span>'; }
   window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
     runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, look: (view, pitch, yaw) => { const c = typeof view === 'string' ? VIEWS[view] : view; Object.assign(player, { x: c.eye[0], y: c.eye[1] - 1.65, z: c.eye[2], yaw: c.yaw + (yaw ?? 0), pitch: pitch ?? c.pitch, bob: 0, vx: 0, vz: 0 });
       foxPose.yaw = player.yaw; foxPose.pitch = foxPose.roll = 0; foxPose.height = chase.height = H(player.x, player.z);
@@ -4432,7 +4478,7 @@ function scripted(m, frames = 900, view = 'shore') {
   document.getElementById('intro').addEventListener('click', () => {
     document.getElementById('intro').hidden = true; document.documentElement.classList.remove('intro'); started = true;
     audio = createAudio(); audio?.resume();
-    if (!touch && !GRASS_LAB) canvas.requestPointerLock?.()?.catch?.(() => {});
+
   });
   requestAnimationFrame((t) => { last = t; frame(t); });
 })().catch((e) => fail('The field engine did not start: ' + e.message));
