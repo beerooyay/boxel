@@ -59,7 +59,7 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
     gl.vertexAttribPointer(rootLoc, 4, gl.UNSIGNED_SHORT, true, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, detailBuffer); gl.enableVertexAttribArray(detailLoc); gl.vertexAttribDivisor(detailLoc, 1);
     gl.vertexAttribPointer(detailLoc, 4, gl.UNSIGNED_BYTE, true, 0, 0);
-    tiles.push({ vao, x0, z0, y0: y0 - 0.1, y1: y1 + 1.7, pad: 1.7, count: used / 4 });
+    tiles.push({ vao, x0, z0, y0: y0 - 0.1, y1: y1 + 2.2, pad: 2.2, count: used / 4 });
     count += used / 4;
   }
   gl.bindVertexArray(null); gl.useProgram(shader); gl.uniform2fv(shader.u('uGrassHeight'), heightRange);
@@ -75,7 +75,8 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
         if (d2 >= far * far || outsideView(planes, tile, tileSize)) continue;
         const d = Math.sqrt(d2);
         const fade = Math.min(1, (far - d) / 22);
-        const fraction = Math.min(1, (17 / Math.max(1, d)) ** 1.8) * fade * densityScale;
+        // More blades near the eye, paid for by starting the thinning two metres sooner
+        const fraction = Math.min(1, (15 / Math.max(1, d)) ** 1.8) * fade * densityScale;
         const n = Math.floor(tile.count * fraction);
         if (!n) continue;
         gl.bindVertexArray(tile.vao);
