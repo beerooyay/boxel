@@ -4,14 +4,16 @@ export function highCanopyMesh(random) {
     normal = [],
     tissue = [],
     blade = [],
+    stalk = [],
     near = [],
     far = [];
   const tau = 2 * Math.PI;
-  function vertex(p, n, shade, u = 0, side = 0) {
+  function vertex(p, n, shade, u = 0, side = 0, root = p) {
     position.push(...p);
     normal.push(...n);
     tissue.push(shade);
     blade.push(u, side);
+    stalk.push(...root);
     return tissue.length - 1;
   }
   function normalise(x, y, z) {
@@ -78,7 +80,7 @@ export function highCanopyMesh(random) {
         root[2] + s * length * t + c * drift,
       ];
       const n = normalise(-c * slope + s * bank, 1, -s * slope - c * bank);
-      return vertex(p, n, shade, t, side);
+      return vertex(p, n, shade, t, side, root);
     }
     const base = point(0, 0, 0),
       l = point(0.39, -1, 1),
@@ -145,6 +147,7 @@ export function highCanopyMesh(random) {
     position: new Float32Array(position),
     normal: new Float32Array(normal),
     blade: new Float32Array(blade),
+    stalk: new Float32Array(stalk),
     tissue: new Float32Array(tissue),
     index: new Uint16Array([...near, ...far]),
     nearCount: near.length,

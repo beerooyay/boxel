@@ -55,13 +55,16 @@ function vnoise(x, y) {
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 function fbm(x, y, o = 4) { let s = 0, a = 0.5; for (let i = 0; i < o; i++) { s += a * vnoise(x, y); x = x * 2.03 + 17; y = y * 2.03 + 5; a *= 0.5; } return s; }
-function ridged(x, y, footprint = 0) {
+function ridged(x, y, footprint = 0, rounding = 0) {
   let height = 0, weight = 0.55;
   for (let i = 0; i < 5; i++) {
     // The far mesh cannot resolve every mineral ridge. Fade each octave to
     // its mean energy as the vertex spacing approaches its wavelength.
     const detail = footprint ? 1 - sm(0.22, 0.72, footprint) : 1;
-    const ridge = detail ? 1 - Math.abs(vnoise(x, y) * 2 - 1) : 0;
+    const slope = detail ? Math.abs(vnoise(x, y) * 2 - 1) : 1;
+    // Round the cusp at the crest before sampling it on the mesh.
+    const crest = slope < rounding ? 0.5 * (rounding + slope * slope / rounding) : slope;
+    const ridge = 1 - crest;
     height += weight * (detail * ridge * ridge + (1 - detail) * 0.48);
     x = x * 2.1 + 3; y = y * 2.1 + 9; footprint *= 2.1; weight *= 0.5;
   }
@@ -120,9 +123,11 @@ function H(x, z, footprint = 0) {
     const drainage = Math.abs(2 * fbm(mx * 0.011 + 8, mz * 0.006 - 3, 3) - 0.85);
     h -= 9 * m * m * (1 - sm(0.02, 0.16, drainage));
     // broad ridges, and on their crests a second, sharper set: crags, horns and notches
-    const rg = ridged(mx * 0.0035 + 2, mz * 0.0035 - 4, footprint * 0.007);
-    const crag = ridged(mx * 0.013 + 7, mz * 0.013 - 3, footprint * 0.026);
-    h += m * m * (18 + 115 * rg + 18 * crag * crag * rg) + sm(84, 170, range) * 6 * fbm(mx * 0.02, mz * 0.02);
+    const rg = ridged(mx * 0.0035 + 2, mz * 0.0035 - 4, footprint * 0.009, 0.15);
+    const crag = ridged(mx * 0.010 + 7, mz * 0.010 - 3, footprint * 0.032, 0.26);
+    const foothills = sm(84, 170, range) * 5 * fbm(mx * 0.017, mz * 0.017, 3);
+    const shoulder = 12 * vnoise(mx * 0.0027 - 2.1, mz * 0.0027 + 4.7);
+    h += m * m * (23 + shoulder + 106 * rg + 11 * crag * crag * rg) + foothills;
   }
   return terrainHeight(x, z, h);
 }
@@ -571,7 +576,7 @@ void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)
 
 const OCEAN_ATLAS = program(FSQ,oceanAtlasFragment);
 const HIGH_CANOPY = program(WORLD_VS + `
-in vec3 aPos, aNor; in float aTissue; in vec4 aSite; in vec2 aBlade;
+in vec3 aPos, aNor, aStalk; in float aTissue; in vec4 aSite; in vec2 aBlade;
 out vec2 vBlade; out vec3 vWP, vNormal, vRest; out float vTissue, vHue, vCrown;
 void main(){
   float seed = fract(dot(aSite.xz, vec2(0.75488, 0.56984)));
@@ -580,15 +585,26 @@ void main(){
   vec3 p=aPos;
   p.xz = rot * p.xz;
   vRest = p * aSite.w;
-  // the tree sways as one body; a leaf's tip bends a little further in the air where it is
+  // Attach each leaf to its stalk, then carry the stalk with the branch.
+  vec3 stalk = vec3(0., aStalk.y, 0.);
+  stalk.xz = rot * aStalk.xz;
+  vNormal = aNor;
+  vNormal.xz = rot * aNor.xz;
+  if (aTissue >= 0.) {
+    vec2 root = aSite.xz + stalk.xz * aSite.w;
+    float gust = windWave(root) * uWind;
+    float a = leafBend(gust * (0.31 + 0.24 * aTissue))
+      + 0.08 * tipFlutter(root,uWindFrame.x,aTissue) * min(gust,1.);
+    vec2 swivel = vec2(cos(a), sin(a));
+    vec3 hinge = vec3(WIND_DIR.y, 0., -WIND_DIR.x);
+    p = stalk + rotateFoliage(p - stalk, hinge, swivel);
+    vNormal = rotateFoliage(vNormal, hinge, swivel);
+  }
   float raw = crownLoad(aSite.xz) * uWind, load = 1.8 * raw / (1. + 0.45 * raw);
-  float flex = smoothstep(0.38,0.94,p.y)*min(1.,length(p.xz)*3.4), leaf = step(0.,aTissue);
-  float tip = leaf * aBlade.x*aBlade.x, tipLoad = leafBend(windWave(aSite.xz + vRest.xz) * uWind);
-  p.xz += WIND_DIR * (load * 0.012 * flex + tipLoad * 0.022 * tip);
-  p.xz += vec2(-WIND_DIR.y,WIND_DIR.x) * tip * 0.008 * tipLoad * tipFlutter(aSite.xz+vRest.xz,uWindFrame.x,seed);
-  p.y -= 0.020 * load * dot(vRest.xz/aSite.w,WIND_DIR) * flex + 0.014 * tipLoad * tip;
+  float flex = smoothstep(0.38,0.94,stalk.y)*min(1.,length(stalk.xz)*3.4);
+  p.xz += WIND_DIR * (load * 0.012 * flex);
+  p.y -= 0.020 * load * dot(stalk.xz,WIND_DIR) * flex;
   vWP = aSite.xyz + p * aSite.w;
-  vNormal=aNor; vNormal.xz=rot*aNor.xz-WIND_DIR*load*(0.085*flex+0.28*tip);
   vHue=seed; vTissue=aTissue; vBlade=aBlade;
   vCrown=clamp((aPos.y-0.50)*1.36+0.66*length(aPos.xz),0.,1.);
   gl_Position = project(vWP);
@@ -644,7 +660,7 @@ void main(){
   vCover = canopyCover(aPos); vAir = airAt(aPos);
   vGround = aGround; vWP = aPos; vN = aNor; gl_Position = project(aPos);
 }`,
-`uniform sampler2D uTrailMaterial; uniform float uClip; in vec4 vAir; in float vCover; in vec2 vGround; in vec3 vWP; in vec3 vN; out vec4 o;
+`uniform sampler2D uTrailMaterial, uRockSurface; uniform float uClip; in vec4 vAir; in float vCover; in vec2 vGround; in vec3 vWP; in vec3 vN; out vec4 o;
 // Project the same mineral grain onto the bank, floor and sidewalls.
 vec3 bankWeights(vec3 n){
   vec3 w = abs(n); w *= w; w *= w; return w / (w.x + w.y + w.z);
@@ -834,14 +850,32 @@ void main(){
   // much farther downslope. Resolved flakes would crawl at this distance.
   float shelter = 0.42 * (0.5 - crag) + 0.30 * (0.5 - seam) + 0.28 * (0.5 - chute) - 0.065 * dot(vN.xz, vec2(0.8, 0.6));
   float mantle = mix(1. - slopeG, N.y, 0.5) - 0.56 + shelter;
-  float snow = alpine * smoothstep(-0.024, 0.034 + min(0.07, fwidth(mantle)), mantle);
+  float snow = alpine * smoothstep(-0.026, 0.050 + min(0.085, fwidth(mantle)), mantle);
+  // Mipped scans give distant rock real grain. Stretch one projection along
+  // displaced beds; the others keep steep sidewalls from smearing.
+  float exposed = max(alpine, rk * far) * (1. - 0.86 * snow);
+  float stoneGrain = 0.5;
+  vec3 scan = vec3(vWP.x * 0.047 + chute * 0.20, bedding * 0.086, vWP.z * 0.052 + seam * 0.21);
+  vec3 scanX = dFdx(scan), scanY = dFdy(scan);
+  if (exposed > 0.015) {
+    vec3 w = bankWeights(normalize(vN));
+    vec3 x = textureGrad(uRockSurface, scan.zy, scanX.zy, scanY.zy).rgb;
+    vec3 y = textureGrad(uRockSurface, scan.xz, scanX.xz, scanY.xz).rgb;
+    vec3 z = textureGrad(uRockSurface, scan.xy, scanX.xy, scanY.xy).rgb;
+    stoneGrain = dot(vec3(x.b, y.b, z.b), w);
+    vec3 relief = w.x * vec3(0., x.g-0.5, x.r-0.5) + w.y * vec3(y.r-0.5, 0., y.g-0.5)
+                + w.z * vec3(z.r-0.5, z.g-0.5, 0.);
+    N = normalize(N + 0.94 * exposed * (relief - N * dot(N, relief)));
+  }
   vec3 schist = mix(vec3(0.052, 0.069, 0.095), vec3(0.37, 0.33, 0.30), 0.12 * bench + 0.30 * crag + 0.58 * chute);
   // Broad cross-beds and displaced seams read from the opposite side of the lake.
   float fault=sin(0.69*bedding+3.8*chute+1.2*seam);
   float lamina=smoothstep(0.48,0.90,fault)*(0.40+0.6*crag);
-  schist*=0.79+0.55*lamina;
+  schist *= (0.86 + 0.43 * lamina) * (0.64 + 0.82 * stoneGrain);
   alb = mix(alb, schist, alpine);
   vec3 frost = mix(vec3(0.50, 0.64, 0.78), vec3(0.86, 0.86, 0.92), smoothstep(-0.01, 0.22, mantle));
+  float scoured = smoothstep(0.04, 0.17, mantle) * smoothstep(0.33, 0.70, chute);
+  frost *= mix(0.86 + 0.26 * stoneGrain, 1., scoured);
   alb = mix(alb, frost, snow); rough = mix(rough, 0.60, snow);
   // Sand sorts into pockets of shingle. Loose cobbles here are actual settled meshes.
   float cobZ = smoothstep(0.34, 0.72, normalize(vN).y) * (1. - smoothstep(0.30, 0.83, bank)) * smoothstep(-1.6, -0.9, bank) * (1. - smoothstep(14., 32., dist)) * (1. - 0.6 * rk);
@@ -1028,7 +1062,6 @@ const JLEAF = program(WORLD_VS + BRUSH_VS + `
 uniform bool uSimpleLeaf; in vec4 aR; in vec4 aD; in vec4 aM; in vec4 aB;
 centroid out vec3 vWP, vN;
 centroid out vec2 vBlade; flat out vec4 vLeaf; flat out vec3 vAcross; centroid out vec3 vTan;
-vec3 turnAbout(vec3 v, vec3 k, float t){ float c = cos(t), s = sin(t); return v * c + cross(k, v) * s + k * dot(k, v) * (1. - c); }
 void main(){
   // Nearby leaves share a raised spine between two curved faces. The distant
   // strip and shadow caster use the same silhouette with three lengthwise spans.
@@ -1046,15 +1079,15 @@ void main(){
   vec3 carried = boughOffset(crownLoad(aB.xy) * uWind, aR.w, aB.z);
   float gust = windWave(aR.xz) * uWind;
   float ripple = tipFlutter(aR.xz,uWindFrame.x,seed);
-  // Bend about the stalk toward the wind, progressively along the blade, as a rotation so the leaf keeps its length.
-  // The flutter is a small twist about the same stalk, not a stretch.
-  vec3 hinge = normalize(cross(up, vec3(WIND_DIR.x, 0., WIND_DIR.y)));
-  float a = leafBend(gust * (0.48 + 0.27 * seed)) + 0.09 * ripple * min(gust, 1.5);
-  vec3 o = p - aR.xyz;
-  vec3 ahead = L * 0.01 * (dir + up * (lift * 3.14159 * cos(u * 3.14159) - 2. * droop * u)) + bend * (0.0156 * L * u);
-  vec3 r1 = turnAbout(o, hinge, a * u), r2 = turnAbout(o + ahead, hinge, a * (u + 0.01));
-  p = aR.xyz + r1 + carried;
-  vec3 tang = normalize(r2 - r1);
+  // Swivel the whole spray at its stalk. The same angle drives both the
+  // shape and normals so the leaf veins stay fixed to the leaf.
+  vec2 push = normalize(WIND_DIR + sd.xz * ((seed - 0.5) * 0.61));
+  vec3 hinge = vec3(push.y,0.,-push.x);
+  float a = leafBend(gust * (0.38 + 0.40 * seed));
+  a += 0.095 * ripple * min(gust, 1.25) * (0.55 + 0.45 * abs(dot(dir.xz, WIND_DIR)));
+  vec2 swivel = vec2(cos(a), sin(a));
+  vec3 tang = normalize(dir + up * (lift * 3.14159 * cos(u * 3.14159) - 2. * droop * u)
+    + bend * (1.56 * u));
   vec3 upper = normalize(cross(tang, sd));
   vec3 across = normalize(sd + upper * ((seed - 0.5) * (0.40 + 1.65 * u)));
   upper = normalize(cross(tang, across));
@@ -1065,10 +1098,11 @@ void main(){
   float fold = (0.26 + 0.20 * min(kind, 1.) + 0.10 * curve) * 0.6;
   p += across * side * width;
   if (!uSimpleLeaf) p += upper * (1. - abs(side)) * width * fold;
-  vN = normalize(upper + across * side * fold * 1.65);
+  p = aR.xyz + carried + rotateFoliage(p - aR.xyz, hinge, swivel);
+  vN = rotateFoliage(normalize(upper + across * side * fold * 1.65), hinge, swivel);
   vec2 uv = fieldUV(aB.xy);
   vLeaf = vec4(aB.w, aM.w, textureLod(uGlow, uv, 0.).r, clamp(textureLod(uGround, uv, 0.).r + uSheet, 0., 1.));
-  vAcross = sd; vWP = p; vBlade = vec2(u, side); vTan = tang;
+  vAcross = rotateFoliage(sd, hinge, swivel); vWP = p; vBlade = vec2(u, side); vTan = rotateFoliage(tang, hinge, swivel);
   gl_Position = project(p);
 }`, sprayGLSL + `
 uniform float uClip; uniform bool uCoverage;
@@ -1165,35 +1199,44 @@ void main(){
            * mix(1.,0.68,slender)*mix(1.,1.19,broad)*mix(1.22,1.,sisters);
   float wd = W0 * (0.43 + 0.57*smoothstep(0.,0.27,by)) * pow(1.-by,0.75);
   if (sister) wd *= 0.79*sisters;
-  // Rain weighs the blades: water held along a blade bends it from the foot and lays its tip over, and the stand
-  // rises again as the moisture field dries.
+  // Each blade answers the same moving front with its own spring angle and
+  // phase. Short shoots inside a tuft shelter behind its taller outer blades.
   float soak = smoothstep(0.05, 0.75, wet) * (1. - trample);
-  float lean = (0.09 + 0.47 * aR.z + 0.8 * trample + 0.95 * soak + 0.21 * edge) * H * mix(1., 1.45, slender);
-  vec2 away = tuftDist > 0.02 ? -toTuft / tuftDist : vec2(0.);
-  float load = windWave(aG.xy) * uWind * (1. - 0.74 * trample);
-  float flexibility = mix(0.56, 1.18, shape) * (sister ? 0.84 : 1.);
-  // A stronger front keeps travelling through the stand. A soft limit
-  // preserves local differences even where an entire patch is laid over.
+  vec2 away = toTuft / max(tuftDist, 0.04) * -1.;
+  float crowded = 1. - smoothstep(0.12, 0.52, tuftDist);
+  float flexibility = mix(0.63, 1.27, shape) * (sister ? 0.79 : 1.);
+  float shelter = mix(0.68, 1., smoothstep(0.08, 0.66, H));
+  float wake = 0.11 + 0.35 * shape + 0.15 * float(sister);
+  float load = windWave(aG.xy + WIND_DIR * wake) * uWind * (1. - 0.74 * trample);
   float force = load * flexibility;
-  // The taller blades follow the gust. Shorter shoots shelter in each tuft
-  // and keep volume between the blades that bend farther.
-  float shelter = mix(0.65,1.,smoothstep(0.08,0.62,H));
-  float angle = by * 1.49 * force * shelter / sqrt(0.80 + force*force);
-  float recoil = tipFlutter(aG.xy,uWindFrame.x,tuft) * (0.035 + 0.075*abs(load));
+  float sweep = 1.27 * force * shelter / sqrt(0.84 + force * force);
+  float flutter = tipFlutter(aG.xy, uWindFrame.x, (shape + tuft) * 1.6);
+  vec2 lateral = vec2(-WIND_DIR.y,WIND_DIR.x);
+  vec3 brush = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
+  vec2 rest = mix(fd, away, 0.66 * smoothstep(0.09, 0.45, tuftDist));
+  vec2 steer = WIND_DIR * sweep + rest * (0.24 + 0.46 * aR.z + 0.68 * soak + 0.31 * trample + 0.17 * edge)
+             + lateral * flutter * (0.07 + 0.18 * abs(sweep)) * (1. - 0.53 * crowded) + brush.xz * 1.12;
+  // Treat the adjacent shoots as a compliant tuft. Inward bending presses
+  // against its core and shares the windward lay, while the tips stay free.
+  float inward = max(0., -dot(steer, away));
+  steer += away * inward * crowded * 0.42;
+  float magnitude = length(steer);
+  vec2 lean = steer / max(magnitude, 0.0001);
+  float curvature = 1.78 * magnitude * inversesqrt(0.48 + magnitude * magnitude);
+  float angle = by * curvature;
   float bow = sin(angle), upright = cos(angle);
-  // The arc turns the blade face into the sky and lowers its tip. Its foot stays planted.
-  float twist = by * (aG.w - 0.5) * (1. - 0.7 * reed) + bow * dot(fd, WIND_DIR) * 0.32;
-  vec2 across = normalize(ax + twist * fd);
-  float curl = (aG.w - 0.5) * (0.21 + 0.24*slender);
-  vec3 p = vec3(aG.x, aG.z, aG.y);
-  vec2 leanDir = normalize(fd + twist * ax + away * 1.6 * smoothstep(0.08, 0.4, tuftDist));
-  p.xz += across * (side*wd + curl*H*by*by*by) + by*by*leanDir*lean;
-  p.xz += H * by * (WIND_DIR * bow + vec2(-WIND_DIR.y,WIND_DIR.x) * by*by * recoil);
-  p.y += by * H * (1. - 0.14 * by * by) * (1. - 0.7 * trample) * mix(upright,1.,0.20) * (1. - 0.55 * soak * by * by);
-  vec3 bend = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
-  p += bend * (0.88 * H * by * by);
-  vN = normalize(vec3(fd.x, 0.56 + 0.58*by, fd.y) + vec3(across.x, 0., across.y) * side * 0.88
-       + vec3(-WIND_DIR.x, 0.56, -WIND_DIR.y) * bow * 1.65 + bend * (0.62 * by));
+  // Integrate the circular arc along the blade so its centreline has the
+  // same length in still air, in a gust, and while springing back.
+  float arc = H * (1. - 0.18 * soak) * (1. - 0.42 * trample) * (1. + 0.36 * min(0., brush.y));
+  float horizontal = angle < 0.04 ? 0.5 * angle : (1. - upright) / angle;
+  float vertical = angle < 0.04 ? 1. - angle * angle / 6. : bow / angle;
+  vec3 tangent = vec3(lean.x * bow, upright, lean.y * bow);
+  vec3 hinge = vec3(lean.y, 0., -lean.x);
+  vec3 across = rotateFoliage(vec3(ax.x, 0., ax.y), hinge, vec2(upright, bow));
+  vec3 centre = vec3(aG.x, aG.z, aG.y) + arc * by * vec3(lean.x * horizontal, vertical, lean.y * horizontal);
+  vec3 p = centre + across * (side * wd);
+  vec3 face = cross(tangent, across);
+  vN = normalize(-face + tangent * (0.48 + 0.41 * by) + across * (side * 0.88));
   vGA = vec4(by, aR.z, 2. * side, bow); vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
   // last season's blades still standing: a few everywhere, more in some tufts, many along the tread
   vDry = step(deadRoll, 0.05 + 0.3 * tuft * tuft * tuft + 0.24 * edge); vGrassSite = vec4(aG.xy, tuft, aG.z);
@@ -2607,14 +2650,18 @@ function buildValley() {
       }
       const edge = Math.max(Math.abs(x), Math.abs(z)), upland = sm(51, 85, edge);
       const moisture = water > 0.02 ? sm(0.04, 0.80, y - water) : 1;
-      const grow = sm(0.2, 0.55, y) * (1 - sm(16 + 12 * upland, 25 + 16 * upland, y)) * sm(0.53, 0.81, nearNy(near, x, z))
-        * (1 - 0.65 * outcrop(x, z)) * Math.min(1, 0.75 + 0.5 * vnoise(x * 0.9 + 7, z * 0.9 - 3));
-      const tall = sm(0.5, 0.78, fbm(x * 0.028 + 21, z * 0.028 - 9, 3));
+      const grade = nearNy(near, x, z);
+      const soil = sm(0.49, 0.79, grade) * (1 - 0.73 * outcrop(x, z));
+      const patch = vnoise(x * 0.64 + 7, z * 0.64 - 3);
+      const grow = sm(0.06, 0.49, y - water) * (1 - sm(16 + 12 * upland, 25 + 16 * upland, y))
+        * soil * (0.81 + 0.32 * patch);
+      const tall = sm(0.31, 0.64, fbm(x * 0.028 + 21, z * 0.028 - 9, 3));
       const heath = 1 - sm(WORLD_HALF - 5 - 10 * tall, WORLD_HALF, edge);
-      data[i] = Math.min(1, grow * 1.24) * (0.035 + 0.965 * moisture) * heath * (1-sm(0.12,0.96,tread));
+      data[i] = Math.min(1, grow * 1.47) * (0.08 + 0.92 * moisture) * heath * (1-sm(0.12,0.96,tread));
       data[i + 2] = 1 - sm(0.9, 2.7, trailDistance(x, z));
-      data[i + 1] = (0.45 + 0.55 * Math.min(1, grow * 1.2)) * (0.8 + 0.75 * fbm(x * 0.06 + 11, z * 0.06 - 4, 3))
-        * (1 + 0.65 * tall) * (0.82 + 0.18 * moisture) * (1 - 0.22 * tread);
+      const sward = sm(0.26, 0.72, vnoise(x * 0.14 + 11, z * 0.14 - 4) * 0.77 + patch * 0.23);
+      data[i + 1] = (0.50 + 0.50 * Math.min(1, grow * 1.3)) * (0.56 + 0.75 * sward)
+        * (0.91 + 0.47 * tall) * (0.82 + 0.18 * moisture) * (1 - 0.27 * tread);
     },
   });
   const forest = growForest(sc, near);
@@ -2645,6 +2692,7 @@ function uploadHighCanopy(sites) {
       { loc:loc(HIGH_CANOPY,'aPos'), size:3, data:mesh.position },
       { loc:loc(HIGH_CANOPY,'aNor'), size:3, data:mesh.normal },
       { loc:loc(HIGH_CANOPY,'aBlade'), size:2, data:mesh.blade },
+      { loc:loc(HIGH_CANOPY,'aStalk'), size:3, data:mesh.stalk },
       { loc:loc(HIGH_CANOPY,'aTissue'), size:1, data:mesh.tissue }, siteAttr,
     ];
     gl.bindVertexArray(null);

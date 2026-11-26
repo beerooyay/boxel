@@ -160,6 +160,9 @@ float windWave(vec2 p){ return windAir(p, 0.); }
 // the air a little downwind of the trunk is the air the trunk felt a moment ago). Every part of one tree reads this
 // one value, so its twigs, the leaves on them and its trunk move together instead of shearing apart.
 float crownLoad(vec2 base){ return windAir(base + WIND_DIR * 2.2, 1.7); }
+vec3 rotateFoliage(vec3 v, vec3 axis, vec2 rotation) {
+  return v * rotation.x + cross(axis, v) * rotation.y + axis * dot(axis,v) * (1. - rotation.x);
+}
 // A leaf turns about its stalk toward the wind and no further than it can bend: the angle saturates, so a storm lays
 // leaves over instead of folding them back on themselves.
 float leafBend(float load){ return 1.15 * load / (1. + load); }
