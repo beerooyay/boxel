@@ -1,11 +1,11 @@
 // Both levels of detail share the same arch, leaflet tips and gaps to preserve the skyline.
 export function highCanopyMesh(random) {
-  const position = [], normal = [], tissue = [], near = [], far = [];
+  const position = [], normal = [], tissue = [], pinna = [], near = [], far = [];
   const bend = t => 0.13 * t * t - 0.036 * Math.sin(t * Math.PI);
   function vertex(x, y, z, nx, ny, nz, pigment) {
     position.push(x, y, z);
     normal.push(nx, ny, nz);
-    tissue.push(pigment);
+    tissue.push(pigment); pinna.push(0,0);
     return tissue.length - 1;
   }
   function quad(indices, a, b, c, d) { indices.push(a, b, c, b, d, c); }
@@ -31,10 +31,10 @@ export function highCanopyMesh(random) {
     const spear = frond >= 16, tier = (frond % 4) / 3;
     const a = frond * 2.39996 + 0.33 * random(), dx = Math.cos(a), dz = Math.sin(a);
     const height = spear ? 0.986 : 0.91 + 0.074 * tier;
-    const reach = spear ? 0.05 + 0.08 * random() : (0.38 + 0.073 * random()) * (1 - 0.20 * tier);
-    const lift = spear ? 0.24 + 0.05 * random() : 0.38 + 0.16 * tier;
-    const fall = spear ? 0.08 : 0.60 - 0.22 * tier + 0.09 * random();
-    const curl = (random() - 0.5) * 0.090, roll = (random() - 0.5) * 0.7;
+    const reach = spear ? 0.05 + 0.08 * random() : (0.33 + 0.17 * random()) * (1 - 0.20 * tier);
+    const lift = spear ? 0.24 + 0.05 * random() : 0.28 + 0.17 * tier + 0.12 * random();
+    const fall = spear ? 0.08 : 0.49 - 0.20 * tier + 0.20 * random();
+    const curl = (random() - 0.5) * 0.15, roll = (random() - 0.5) * 0.7;
     const base = bend(height), shade = 0.30 + 0.26 * tier + 0.15 * random();
 
     // Coordinates follow the curved midrib. Across and relief are in tree-height units.
@@ -57,7 +57,7 @@ export function highCanopyMesh(random) {
     }
     if (spear) continue;
 
-    const pairs = 8 + Math.floor(3 * random()), breadth = 0.10 + 0.02 * random();
+    const pairs = 11 + Math.floor(4 * random()), breadth = 0.118 + 0.037 * random();
     for (let i = 0; i < pairs; i++) {
       for (const side of [-1, 1]) {
         const t = 0.075 + 0.84 * (i + 0.44 + side * 0.12 + 0.16 * random()) / pairs;
@@ -65,19 +65,20 @@ export function highCanopyMesh(random) {
         const span = side * breadth * envelope * (0.84 + 0.22 * random());
         const forward = (0.080 + 0.087 * t + 0.028 * random()) * envelope;
         const drop = Math.abs(span) * (0.38 + 0.55 * t + 0.27 * random());
-        const shoulder = t + forward * 0.40, halfWidth = (0.029 + 0.013 * envelope) * (0.88 + 0.19 * random());
+        const shoulder = t + forward * 0.40, halfWidth = (0.015 + 0.011 * envelope) * (0.88 + 0.19 * random());
         const color = shade + 0.09 * random(), cant = side * 0.4 - roll;
         const root = blade(t, 0, -0.0003, cant, color - 0.10);
         const trailing = blade(shoulder - halfWidth, span * 0.48, -drop * 0.20, cant - 0.43, color);
-        const keel = blade(shoulder, span * 0.52, -drop * 0.12 + 0.003, cant, color + 0.32);
+        const keel = blade(shoulder, span * 0.52, -drop * 0.12 + 0.009, cant, color + 0.32);
         const leading = blade(shoulder + halfWidth, span * 0.47, -drop * 0.17, cant + 0.43, color + 0.11);
         const taper = t + forward * 0.72;
         const outerTrail = blade(taper - 0.52 * halfWidth, span * 0.77, -drop * 0.50, cant - 0.24, color + 0.06);
         const outerLead = blade(taper + 0.46 * halfWidth, span * 0.76, -drop * 0.46, cant + 0.34, color + 0.17);
         const tip = blade(t + forward, span, -drop, cant + side * 0.35, color + 0.21);
+        pinna.splice(2*root,14,0,0, 0.45,-1, 0.5,0, 0.46,1, 0.78,-0.6, 0.79,0.6, 1,0);
         near.push(root, trailing, keel, root, keel, leading, trailing, outerTrail, keel,
           keel, outerTrail, outerLead, keel, outerLead, leading, outerTrail, tip, outerLead);
-        far.push(root, trailing, leading, trailing, tip, leading);
+        far.push(root,trailing,keel, root,keel,leading, trailing,tip,keel, keel,tip,leading);
       }
     }
     // A narrow terminal leaflet closes the rachis beyond the last pair.
@@ -88,7 +89,7 @@ export function highCanopyMesh(random) {
     quad(near, baseTip, l, r, end);
     quad(far, baseTip, l, r, end);
   }
-  return { position: new Float32Array(position), normal: new Float32Array(normal), tissue: new Float32Array(tissue),
+  return { position: new Float32Array(position), normal: new Float32Array(normal), pinna: new Float32Array(pinna), tissue: new Float32Array(tissue),
     index: new Uint16Array([...near, ...far]), nearCount: near.length, farCount: far.length };
 }
 

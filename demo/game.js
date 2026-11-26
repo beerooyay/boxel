@@ -1,3 +1,5 @@
+import { createWind, windShader } from './wind.js';
+import { bakeTrailMaterial } from './trail-material.js';
 import { galaxyFragment } from './galaxy.js';
 import { FieldTexture } from './field-texture.js';
 import { bakeMeadow, BLADE_HEIGHT_RANGE } from './meadow.js';
@@ -22,8 +24,8 @@ import { bakeShadows } from './shadows.js';
 // that can still matter exist. The renderer sees the map through one R8 texture per field and
 // re-uploads exactly the blocks the engine holds, clearing the ones it lets go.
 
-import { WORLD_HALF, VALLEY_HALF, spring, rangeWalks, summit, trail, valleyWalks, terrainHeight, trailCover, trailDistance, riverX, riverFlow, waterLevel } from './landmarks.js';
-import { companionWorlds, skyBodies } from './worlds.js';
+import { WORLD_HALF, VALLEY_HALF, spring, inRestArea, overlooks, rangeWalks, summit, trail, valleyWalks, terrainHeight, trailCover, trailDistance, riverX, riverFlow, waterLevel } from './landmarks.js';
+import { companionWorlds, oceanAtlasFragment, skyBodies } from './worlds.js';
 import { load } from '../ffi/boxel.js';
 
 const EXTENT = 2 * WORLD_HALF, CELL = 0.125, N = EXTENT / CELL;
@@ -80,8 +82,17 @@ function H(x, z, footprint = 0) {
   const bowl = -0.6 * (1 - sm(8.5, 10.8, d)) - 4.4 * (1 - sm(1, 8.5, d)) - 0.35;
   const t = sm(9.6, 14, d);
   let h = bowl * (1 - t) + meadow * t;
-  const ri = Math.hypot(x - ISLET[0], z - ISLET[1]) * 0.5;
-  if (ri < 7) h += 2.6 * Math.exp(-ri * ri / 5) * (1 - t);
+  const ix = x - ISLET[0], iz = z - ISLET[1];
+  if (Math.abs(ix) < 12 && Math.abs(iz) < 10) {
+    // A bedding shelf with a low landing to the east and a scalloped western scarp.
+    const a = Math.atan2(iz, ix), lip = 1 + 0.14*Math.sin(3*a+0.7) + 0.085*Math.sin(5*a-1.1);
+    const r = Math.hypot((ix+iz*0.21)/7.0, iz/5.1) / lip;
+    const apron = sm(-0.55,0.9,Math.cos(a-0.38));
+    const crown = 2.05 - 0.035*ix + 0.13*(vnoise(x*0.65,z*0.65)-0.5);
+    const shelf = crown - (0.32+0.85*apron)*sm(0.48,0.86,r)
+      - (1.48-0.80*apron)*sm(0.72,1.05+0.16*apron,r);
+    h += (shelf-h)*(1-sm(0.91,1.40,r));
+  }
   // A continuous stone shoulder carries the trail. Fractured rock emerges on its flanks.
   const o = outcrop(x, z);
   if (o > 0) {
@@ -299,9 +310,7 @@ vec3 glowCol(vec2 p){ return mix(vec3(0.12, 0.95, 0.85), vec3(0.62, 0.38, 1.0), 
 // Ease in across the lowest R8 levels so a one-level field change stays subtle in the dark.
 float glowI(float g){ return (1. - exp(-g * 5.)) * smoothstep(0., 0.045, g); }
 vec2 fieldUV(vec2 xz){ return xz / uExtent + 0.5; }
-const vec2 WIND_DIR = vec2(0.87, 0.5);
-// Corey's gusts: two sine waves travelling across the world, so the wind visibly rolls over grass, leaves and water together
-float windWave(vec2 p){ return sin(dot(p, vec2(0.31, 0.18)) + uTime * 1.25) * 0.55 + sin(dot(p, vec2(-0.23, 0.41)) * 1.7 + uTime * 2.3) * 0.3; }
+${windShader}
 float inField(vec2 uv){ return step(0., uv.x) * step(0., uv.y) * step(uv.x, 1.) * step(uv.y, 1.); }
 
 ${groundLight}
@@ -541,8 +550,7 @@ const WORLD_VS = WAVES + `
 uniform mat4 uVP; uniform float uMirror, uLodW;
 uniform float uTime, uExtent, uSheet, uWind; uniform sampler2D uGlow, uGround, uWear;
 vec2 fieldUV(vec2 xz){ return xz / uExtent + 0.5; }
-const vec2 WIND_DIR = vec2(0.87, 0.5);
-float windWave(vec2 p){ return sin(dot(p, vec2(0.31, 0.18)) + uTime * 1.25) * 0.55 + sin(dot(p, vec2(-0.23, 0.41)) * 1.7 + uTime * 2.3) * 0.3; }
+${windShader}
 vec4 project(vec3 w){ return uVP * vec4(w.x, w.y * uMirror, w.z, 1.); }
 `;
 
@@ -553,8 +561,10 @@ void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)
   vec3 d = uF + (p.x - uJitter.x) * uTan.x * uR + (p.y - uJitter.y) * uTan.y * uU; d.y *= uMirror; vDir = d; gl_Position = vec4(p, 1., 1.); }`,
 `in vec3 vDir; out vec4 o; void main(){ vec3 sky = skyColor(normalize(vDir)); o = vec4(tonemap(sky), starTransmission); }`);
 
+const OCEAN_ATLAS = program(FSQ,oceanAtlasFragment);
 const HIGH_CANOPY = program(WORLD_VS + `
 in vec3 aPos, aNor; in float aTissue; in vec4 aSite;
+in vec2 aPinna; out vec2 vPinna; out float vCrown;
 out vec3 vWP, vNormal; out float vTissue, vHue;
 void main(){
   float seed = fract(dot(aSite.xz, vec2(0.75488, 0.56984)));
@@ -563,21 +573,26 @@ void main(){
   vec3 p = aPos;
   p.xz = rot * p.xz;
   float breeze = windWave(aSite.xz + 3.0 * p.xz) * uWind;
-  p.xz += WIND_DIR * 0.012 * breeze * p.y * p.y;
-  p.y += 0.055 * breeze * dot(p.xz - rot * vec2(0.13, 0.), WIND_DIR) * step(0., aTissue);
+  p.xz += WIND_DIR * 0.039 * breeze * p.y * p.y;
+  p.y += 0.20 * breeze * dot(p.xz - rot * vec2(0.13, 0.), WIND_DIR) * step(0., aTissue);
   vWP = aSite.xyz + p * aSite.w;
   vNormal = aNor; vNormal.xz = rot * aNor.xz;
-  vHue = seed; vTissue = aTissue;
+  vHue = seed; vTissue = aTissue; vPinna=aPinna;
+  vCrown=clamp((aPos.y-0.66)*1.1+0.95*length(aPos.xz-vec2(0.13,0.)),0.,1.);
   gl_Position = project(vWP);
 }`, `uniform float uClip;
-in vec3 vWP, vNormal; in float vTissue, vHue; out vec4 o;
+in vec2 vPinna; in float vCrown; in vec3 vWP, vNormal; in float vTissue, vHue; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 n = normalize(vNormal);
   vec3 leaf = mix(vec3(0.036, 0.205, 0.124), vec3(0.068, 0.27, 0.245), vHue);
   leaf = mix(leaf, vec3(0.18, 0.085, 0.21), smoothstep(0.68, 0.98, vHue));
   vec3 pigment = leaf * (0.45 + vTissue);
-  if (vTissue < 0.) {
+  float rib = (1.-smoothstep(0.04,0.18+fwidth(vPinna.y),abs(vPinna.y))) * (1.-smoothstep(0.15,0.68,fwidth(vPinna.y)));
+  if (vTissue >= 0.) {
+    pigment *= (0.64+0.52*vCrown)*(0.81+0.22*vPinna.x+0.12*vPinna.y);
+    pigment=mix(pigment,leaf*vec3(1.45,1.22,0.89),0.33*rib);
+  } else {
     float height = -vTissue - 1.;
     float bands = height * 21. + 0.29 * sin(height * 19. + vHue) + dot(n.xz, vec2(0.14, 0.11));
     float scar = (1. - smoothstep(0.025, 0.12, abs(fract(bands) - 0.5))) * (1. - smoothstep(0.12, 0.48, fwidth(bands)));
@@ -588,7 +603,7 @@ void main(){
   }
   float incidence = dot(n, uSunDir);
   float backlight = step(0., vTissue) * max(-incidence, 0.);
-  vec3 light = contactLight(vWP) * ambient(n) * 2.5 + uSunCol * (0.045 + 0.59 * max(incidence, 0.) + 0.20 * backlight) * directLight(vWP);
+  vec3 light = contactLight(vWP) * ambient(n) * (1.48+0.68*vCrown) + uSunCol * (0.045 + 0.86 * max(incidence, 0.) + 0.20 * backlight) * directLight(vWP);
   o = vec4(tonemap(fogged(pigment * light, vWP)), 0.);
 }`);
 
@@ -600,7 +615,7 @@ void main(){
   vCover = canopyCover(aPos); vAir = airAt(aPos);
   vGround = aGround; vWP = aPos; vN = aNor; gl_Position = project(aPos);
 }`,
-`uniform float uClip; in vec4 vAir; in float vCover; in vec2 vGround; in vec3 vWP; in vec3 vN; out vec4 o;
+`uniform sampler2D uTrailMaterial; uniform float uClip; in vec4 vAir; in float vCover; in vec2 vGround; in vec3 vWP; in vec3 vN; out vec4 o;
 // Project the same mineral grain onto the bank, floor and sidewalls.
 vec3 bankWeights(vec3 n){
   vec3 w = abs(n); w *= w; w *= w; return w / (w.x + w.y + w.z);
@@ -714,11 +729,30 @@ void main(){
     alb = mix(alb, face * (0.73 + 0.46 * n1), cliff);
     N = normalize(N + cliff * (vec3(0., 1., 0.) - N * N.y) * (0.68 * ledge - 0.26 - runnel * 0.20));
   }
-  if (vGround.x > 0.001) {
-    vec3 tread = mix(vec3(0.32, 0.20, 0.16), vec3(0.20, 0.15, 0.095), smoothstep(-4., 8., p.y));
-    vec3 mineral = mix(vec3(0.25, 0.32, 0.32), vec3(0.39, 0.25, 0.14), smoothstep(-4., 8., p.y));
-    tread = mix(tread, mineral, smoothstep(9., 20., p.x));
-    alb = mix(alb, tread * (0.68 + 0.42 * n2 + 0.12 * n3), vGround.x * 0.90);
+  vec2 isle=p-vec2(${ISLET[0].toFixed(3)},${ISLET[1].toFixed(3)});
+  float islandDist=length(vec2((isle.x+0.21*isle.y)/7.,isle.y/5.1));
+  float islandStone=(1.-smoothstep(1.07,1.50,islandDist))*smoothstep(-0.35,0.28,y);
+  if (islandStone>0.) {
+    float shelf=smoothstep(-0.78,0.46,sin(y*9.4+dot(p,vec2(0.4,-0.27))+2.3*n2));
+    vec3 slate=mix(vec3(0.063,0.074,0.083),vec3(0.265,0.244,0.211),0.48*shelf+0.52*n2);
+    alb=mix(alb,slate,islandStone*(0.58+0.42*smoothstep(0.45,0.88,islandDist)));
+  }
+  // The verge shares its patch mask with the blade canopy. Fine chips fade
+  // through mip levels as the path recedes across the valley.
+  vec2 soilDx=dFdx(p)*0.28, soilDy=dFdy(p)*0.28;
+  float pathMask=smoothstep(0.075,0.93,vGround.x+(n2-0.5)*0.43);
+  if (vGround.x>0.01) {
+    vec4 soil=textureGrad(uTrailMaterial,p*0.28,soilDx,soilDy);
+    float grains=soil.a, pebbles=smoothstep(0.08,0.66,soil.b);
+    vec3 clay=mix(vec3(0.105,0.066,0.047),vec3(0.36,0.213,0.115),0.23+0.64*n1+0.13*n3);
+    vec3 grit=mix(clay*0.62,vec3(0.34,0.30,0.25),soil.b);
+    vec3 tread=mix(clay*(0.39+1.44*grains),grit,pebbles);
+    vec3 verge=mix(vec3(0.054,0.086,0.040),vec3(0.159,0.186,0.055),n2);
+    alb=mix(alb,verge*(0.55+0.8*grains),4.*pathMask*(1.-pathMask)*0.65);
+    alb=mix(alb,tread,pathMask);
+    vec2 relief=soil.rg*2.-1.;
+    N=normalize(N+vec3(relief.x,0.,relief.y)*pathMask*0.81);
+    rough=mix(rough,0.86-0.23*pebbles,pathMask);
   }
   float vein = rk * smoothstep(0.74, 0.8, n3) * (1. - smoothstep(12., 28., dist));
   // Pale seams are silica in the bedrock, so they keep a broad dielectric highlight.
@@ -739,6 +773,10 @@ void main(){
   float mantle = mix(1. - slopeG, N.y, 0.5) - 0.56 + shelter;
   float snow = alpine * smoothstep(-0.024, 0.034 + min(0.07, fwidth(mantle)), mantle);
   vec3 schist = mix(vec3(0.052, 0.069, 0.095), vec3(0.37, 0.33, 0.30), 0.12 * bench + 0.30 * crag + 0.58 * chute);
+  // Broad cross-beds and displaced seams read from the opposite side of the lake.
+  float fault=sin(0.69*bedding+3.8*chute+1.2*seam);
+  float lamina=smoothstep(0.48,0.90,fault)*(0.40+0.6*crag);
+  schist*=0.79+0.55*lamina;
   alb = mix(alb, schist, alpine);
   vec3 frost = mix(vec3(0.50, 0.64, 0.78), vec3(0.86, 0.86, 0.92), smoothstep(-0.01, 0.22, mantle));
   alb = mix(alb, frost, snow); rough = mix(rough, 0.60, snow);
@@ -764,7 +802,7 @@ void main(){
     float focus = 0.5 + 0.5 * sin(drift * 2.6 + sin(p.y * 1.7 - uTime * 0.43) * 2.8);
     alb *= 1. + 0.48 * under * (1. - uNight) * sun * wcob * focus * focus * n2;
   }
-  alb = mix(alb, vec3(0.21, 0.15, 0.19), smoothstep(0.03, 0.6, wear) * 0.75); rough = mix(rough, 0.75, wear);
+  alb = mix(alb, vec3(0.21, 0.15, 0.19), smoothstep(0.03, 0.6, wear) * mix(0.70,0.22,pathMask)); rough = mix(rough, 0.75, wear);
   // Keep wet sand granular; only a film of standing water gives a tight sky highlight.
   alb *= 1. - 0.44 * moist;
   rough = mix(rough, 0.30, smoothstep(0.04, 0.65, moist) * 0.87);
@@ -827,6 +865,9 @@ void main(){
     vec3 alb = mix(vec3(0.077, 0.09, 0.11), vec3(0.29, 0.27, 0.24), n1);
     alb = mix(alb, vec3(0.31, 0.28, 0.27), smoothstep(0.55, 0.8, n2) * 0.5);
     float grain = sin(dot(vLoc, vec3(1.9, 8.5, -1.1)) + n1 * 5.3 + n2 * 1.8);
+    float beds=sin(2.7*lp.y+dot(lp.xz,vec2(0.32,-0.18))+2.5*n1);
+    alb=mix(alb,alb*vec3(1.28,1.14,0.97),smoothstep(0.15,0.87,beds));
+    alb*=0.78+0.24*smoothstep(-0.86,-0.36,beds);
     alb *= (0.84 + 0.28 * speck) * (0.86 + 0.14 * grain);
     alb += vec3(0.073, 0.061, 0.048) * smoothstep(0.78, 0.98, grain) * n2 * near;
     alb *= mix(0.72, 1.12, smoothstep(-0.4, 0.8, N.y));      // weathered tops pale, overhangs shadowed
@@ -857,7 +898,7 @@ in vec3 aPos; in vec3 aNor; in vec4 aW; in vec4 aB;
 out vec3 vWP; out vec3 vN; out vec4 vW; out float vStir; out float vHue;
 void main(){
   vec3 p = aPos; float flex = aW.x, g = windWave(aB.xy) * uWind;
-  p.xz += WIND_DIR * g * 0.05 * aB.z * flex * flex;
+  p.xz += WIND_DIR * g * 0.085 * aB.z * flex * flex;
   p.y -= abs(g) * 0.01 * aB.z * flex * flex;
   vWP = p; vN = aNor; vW = aW; vHue = aB.w;
   vStir = texture(uGlow, fieldUV(aB.xy)).r;
@@ -915,8 +956,8 @@ void main(){
   vec3 bend = brushBend(aR.xyz + L * (dir * 0.67 + up * (0.86 * lift - 0.45 * droop)));
   p += bend * (0.78 * L * u * u);
   float gust = windWave(aB.xy) * uWind, flex = aR.w + 0.2 * u;
-  p.xz += WIND_DIR * gust * 0.05 * aB.z * flex * flex;
-  p += sd * sin(uTime * 2.6 + seed * 40. + u * 3.) * 0.025 * u * L;
+  p.xz += WIND_DIR * gust * 0.085 * aB.z * flex * flex;
+  p += sd * sin(uTime * 2.6 + seed * 40. + u * 3.) * 0.018 * (0.35+abs(gust)) * u * L;
   vec3 tang = normalize(dir + up * (lift * 3.14159 * cos(u * 3.14159) - 2. * droop * u) + bend * (1.56 * u));
   vec3 upper = normalize(cross(tang, sd));
   vec3 across = normalize(sd + upper * ((seed - 0.5) * (0.40 + 1.65 * u)));
@@ -1022,12 +1063,13 @@ void main(){
   float a = aR.x * 6.2831853; vec2 ax = vec2(cos(a), sin(a)); vec2 fd = vec2(-ax.y, ax.x);
   vec2 uv = fieldUV(aG.xy); vec2 gr = vec2(texture(uGround, uv).r, texture(uWear, uv).r); float glow = texture(uGlow, uv).r;
   float wet = min(1., gr.r + uSheet), trample = smoothstep(0.04, 0.45, gr.g);
-  float H = 0.34 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample);
+  float H = 0.40 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample);
   float reed = step(1.6, aR.w);
-  float W0 = (0.05 + 0.03 * aR.z) * mix(1.9, 1.0, clamp(H / 0.2, 0., 1.)) * mix(1., 0.4, reed) * uLodW;
-  float wd = W0 * pow(max(1. - by, 0.), 0.75);
-  float lean = (0.10 + 0.32 * aR.z) * H + trample * 0.8 * H + wet * 0.22 * H;
-  float sway = windWave(aG.xy) * uWind * 0.22 * H * (1. - 0.7 * trample);
+  // Worn and sheltered blades along the tread stay slender as they get shorter.
+  float W0 = (0.045 + 0.032 * aR.z) * mix(0.15, 1., smoothstep(0., 0.36, H)) * mix(1., 0.4, reed) * uLodW;
+  float wd = W0 * pow(max(1. - by, 0.), 0.92);
+  float lean = (0.18 + 0.52 * aR.z) * H + trample * 0.8 * H + wet * 0.22 * H;
+  float sway = windWave(aG.xy) * uWind * 0.61 * H * (1. - 0.7 * trample);
   // A blade twists along its length. The taper and wind bend share the same rooted strip.
   float twist = (aG.w - 0.5) * by * (1. - 0.7 * reed);
   vec2 across = ax + twist * fd;
@@ -1037,7 +1079,7 @@ void main(){
          + by * by * (vec3(fd.x + twist * ax.x, 0., fd.y + twist * ax.y) * lean + vec3(WIND_DIR.x, 0., WIND_DIR.y) * sway);
   vec3 bend = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
   p += bend * (0.88 * H * by * by);
-  vN = normalize(vec3(0., 1., 0.) + vec3(across.x, 0., across.y) * side * 0.9 + vec3(fd.x, 0., fd.y) * (0.15 + 0.35 * by) + bend * (0.62 * by));
+  vN = normalize(vec3(-WIND_DIR.x*sway/max(H,0.01)*by, 1., -WIND_DIR.y*sway/max(H,0.01)*by) + vec3(across.x, 0., across.y) * side * 0.9 + vec3(fd.x, 0., fd.y) * (0.15 + 0.35 * by) + bend * (0.62 * by));
   vGA = vec3(by, aR.z, 2. * side); vGH = H; vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
   gl_Position = project(p);
 }`,
@@ -1096,23 +1138,20 @@ void main(){
   float seed = fract(phi * 7.31 + aP.x * 0.13);
   vec3 up = vec3(0., 1., 0.), dir = vec3(cos(phi), 0., sin(phi)), sd = vec3(-sin(phi), 0., cos(phi));
   if (type > 5.5) {
-    // One complete pleated fan per instance. Its short stem and ten membrane
-    // panels share the same strip and stay together at every distance.
-    float angle = clamp(floor(float(vid - 3) * 0.5) / 10., 0., 1.) * 2. - 1.;
-    float outer = vid >= 3 && vid % 2 == 0 ? 1. : 0.;
-    float arc = angle * aS2.x, radius = L * (0.78 + 0.028 * cos(15. * angle + 4. * seed) - 0.065 * exp(-34. * angle * angle)) * outer;
-    float pleat = cos(15. * angle + 1.2 * seed);
-    vec3 p = up * (L * 0.32) + sd * sin(arc) * radius
-           + up * cos(arc) * radius * aS2.y + dir * radius * (aS2.z + 0.09 * pleat);
-    if (vid < 3) p = sd * (float(vid % 2) - 0.5) * W + up * L * (vid == 2 ? 0.32 : 0.);
-    else if (outer == 0.) p += sd * angle * W * 0.49;
-    p.xz += WIND_DIR * windWave(aP.xz) * uWind * 0.10 * p.y * p.y;
-    vec3 bend = brushBend(aP.xyz + up * (0.56 * L));
-    p += bend * (0.47 / L * p.y * p.y);
-    vN = normalize(dir + sd * (0.37 * sin(15. * angle + 1.2 * seed)) + up * (aS2.z - dot(bend.xz, dir.xz) * outer * 0.6));
-    vWP = p + aP.xyz; vU = vid < 3 ? 0. : mix(0.16, 1., outer);
-    vSide = outer * sin(arc); vType = type; vSeed = seed; vHue = aS2.w;
-    vStir = texture(uGlow, fieldUV(aP.xz)).r;
+    float blade = clamp((u-0.24)/0.76,0.,1.);
+    float belly = pow(max(0.,sin(3.14159*pow(blade,0.77))),0.79);
+    float width = W*(0.043*(1.-blade)+belly*(1.-0.22*blade));
+    float fold = (0.36+0.24*seed)*belly;
+    vec3 along = normalize(dir + sd*(seed-0.5)*blade*0.8);
+    vec3 across = normalize(sd + up*(seed-0.48)*0.9*blade);
+    vec3 p = along*L*(0.11*u+aS2.x*blade) + up*L*(aS2.y*u+aS2.z*sin(u*3.14159)-0.56*blade*blade)
+      + across*width*side + up*fold*width*side*side;
+    float gust = windWave(aP.xz+along.xz*blade*L)*uWind;
+    p.xz += WIND_DIR * gust * L * 0.24*u*u;
+    p += brushBend(aP.xyz+up*L*0.48)*L*0.57*u*u;
+    vN = normalize(up*(0.35+0.8*blade) - along*(aS2.y-1.25*blade) - across*side*fold);
+    vWP=p+aP.xyz; vU=u; vSide=side; vType=type; vSeed=seed; vHue=aS2.w;
+    vStir=texture(uGlow,fieldUV(aP.xz)).r;
     gl_Position = project(vWP); return;
   }
   vec2 c = path(type, u, L, aS2), t2 = normalize(path(type, min(u + 0.01, 1.), L, aS2) - path(type, max(u - 0.01, 0.), L, aS2));
@@ -1156,7 +1195,7 @@ void main(){
   else if (vType < 2.5) tip = CYAN;
   else if (vType < 3.5) tip = mix(VIOLET, CYAN, vHue * 0.4);
   else if (vType < 4.5) tip = mix(MAGENTA, VIOLET, vHue * 0.5);
-  else if (vType > 5.5) tip = mix(vec3(0.13, 0.69, 0.51), vec3(0.88, 0.32, 0.15), smoothstep(0.37, 0.70, vHue));
+  else if (vType > 5.5) tip = mix(vec3(0.085, 0.47, 0.32), vec3(0.39, 0.17, 0.39), smoothstep(0.37, 0.70, vHue));
   else tip = mix(vec3(0.085, 0.72, 0.62), vec3(0.94, 0.22, 0.34), smoothstep(0.40, 0.57, vHue));
   vec3 gc = floraRamp(tip, pow(u, 1.1));
   float veins = leafVeins(u, s, vSeed);
@@ -1170,25 +1209,15 @@ void main(){
     gc *= 1. - lobe * (0.15 + 0.23 * (1. - ribs));
   }
   if (vType > 5.5) {
-    // Veins split halfway up the fan and carry its own jade or amber pigment.
-    float web = smoothstep(0.15, 0.45, u), radial = clamp((u - 0.16) / 0.84, 0., 1.);
-    float fanAngle = asin(clamp(s / max(radial, 0.03), -0.96, 0.96));
-    float strand = fanAngle * (4.25 + 0.7 * vSeed) + 0.07 * sin(6. * u + 2. * fanAngle);
-    float split = abs(fract(strand + 0.5) - 0.5), width = max(fwidth(strand), 0.008);
-    float mainVein = 1. - smoothstep(0.014, 0.042 + width, split);
-    float fork = 0.39 * smoothstep(0.30, 0.83, u);
-    float branch = 1. - smoothstep(0.012, 0.035 + width, abs(split - fork));
-    float strands = max(mainVein, branch * smoothstep(0.33, 0.62, u) * 0.80) * (1. - smoothstep(0.14, 0.55, width));
-    // Thin windows follow the gaps between gills, like a lace membrane.
-    vec2 pores = vec2(strand * 2.0, radial * 5.6 + 0.7 * split);
-    vec2 cell = fract(pores) - 0.5;
-    float hole = length(cell * vec2(1.6, 0.87));
-    float holeSize = smoothstep(0.48, 0.88, radial) * (0.06 + 0.12 * hash12(floor(pores))) * (1. - smoothstep(0.12, 0.40, width));
-    if (hole < holeSize) discard;
-    float lace = (1. - smoothstep(holeSize + 0.015, holeSize + 0.07 + width, hole)) * smoothstep(0.025, 0.10, holeSize);
-    float fold = cos(6.2832 * strand), margin = smoothstep(0.975, 1., radial);
-    gc = tip * mix(0.033, 0.12 + 0.051 * fold + 0.06 * strands, web);
-    tissue = web * (0.010 + 0.62 * strands + 0.23 * lace + 0.25 * margin);
+    float blade = clamp((u-0.24)/0.76,0.,1.);
+    float midrib = 1.-smoothstep(0.025,0.08+fwidth(s),abs(s));
+    float arch = blade*6.5 - abs(s)*(0.52+0.29*blade) + 0.13*s*s;
+    float fillet = abs(fract(arch+0.5)-0.5);
+    float laterals = (1.-smoothstep(0.014,0.045+fwidth(arch),fillet))*(1.-abs(s));
+    float ribs = max(midrib,laterals*0.83)*smoothstep(0.03,0.15,blade);
+    gc = tip*(0.27+0.35*blade+0.14*s+0.22*ribs);
+    gc = mix(gc,vec3(0.23,0.34,0.16),0.39*midrib);
+    tissue = ribs * 0.69;
   } else if (vType > 4.5) {
     float rim = smoothstep(0.83, 0.97, u);
     float striae = 0.5 + 0.5 * cos(s * 16. + u * 7. + vSeed);
@@ -1476,7 +1505,7 @@ function waterMesh(terrain) {
   }
   return { xz, water, idx: new Uint32Array(idx), patches };
 }
-function rockMesh(seed, sub, tall, stack) {
+function rockMesh(seed, sub, tall) {
   const rr = rng(Math.floor(seed * 100003));
   // fracture planes: the stone is cut flat where it broke, so lumps meet facets
   const planes = [];
@@ -1505,21 +1534,11 @@ function rockMesh(seed, sub, tall, stack) {
   // big lumps, a ridge or two, ledged strata, a flat seat on the ground
   const pos = v.map(([x, y, z]) => {
     let k = 1 + 0.3 * (fbm(x * 1.3 + seed * 7, z * 1.3 + y * 1.7 - seed, 3) - 0.5) + 0.14 * (ridged(x * 0.9 + seed, z * 0.9 + y) - 0.45) + 0.06 * (vnoise(x * 6 + seed, z * 6 + y * 5) - 0.5);
-    k *= 1 + (stack ? 0.08 : 0.045) * Math.round(Math.sin(y * (stack ? 6 : 9) + seed * 3) * 1.6) / 1.6;
+    k *= 1 + 0.045 * Math.round(Math.sin(y * 9 + seed * 3) * 1.6) / 1.6;
     let px = x * k, py = y * k * (tall ? 1 : 0.72), pz = z * k;
-    if (stack) {
-      const tw = (py + 1) * 0.55, c = Math.cos(tw), sn = Math.sin(tw), taper = 1 - 0.12 * (py + 1) / 2;
-      [px, pz] = [(c * px - sn * pz) * taper, (sn * px + c * pz) * taper];
-      px += 0.28 * Math.max(0, py - 0.2) ** 2;
-    }
+
     for (const [n, d] of planes) { const dp = px * n[0] + py * n[1] + pz * n[2]; if (dp > d) { const f = (dp - d) * 0.9; px -= n[0] * f; py -= n[1] * f; pz -= n[2] * f; } }
-    if (stack) {
-      // Round the shoulder into a broad, slightly tilted bedding plane. The lower
-      // sides retain their original fractures and undercut at the waterline.
-      py += 0.08 * sm(0.15, 0.75, py);
-      const cap = 0.916 + 0.018 * px - 0.012 * pz;
-      py -= 0.055 * Math.log1p(Math.exp((py - cap) / 0.055));
-    }
+
     if (py < -0.22) py = -0.22 + (py + 0.22) * 0.25;
     return [px, py, pz];
   });
@@ -1540,7 +1559,6 @@ function rockMesh(seed, sub, tall, stack) {
     idx: new Uint16Array(f.flat()), coarseIdx: new Uint16Array(coarseFaces.flat()), detailError };
 }
 // ---------------------------------------------------------------- scatter
-const STACK_GEO = rockMesh(9.31, 4, true, true), STACK_S = [4.05, 4.8, 3.5];
 // terrain height and slope from the near mesh (fast, for a million blades)
 function nearH(near, x, z) {
   const { S } = NEAR, fx = Math.min(S - 1e-6, Math.max(0, terrainCoord(x))), fz = Math.min(S - 1e-6, Math.max(0, terrainCoord(z)));
@@ -1555,7 +1573,7 @@ function nearNy(near, x, z) {
   return near.nor[(j * (S + 1) + i) * 3 + 1];
 }
 // Blades per square metre in a full stand. bakeMeadow thins distant tiles.
-const GRASS_DENSITY = touch ? 46 : TEST ? 56 : 104;
+const GRASS_DENSITY = touch ? 54 : TEST ? 64 : 118;
 const START = [8, 30], SHORE_CAM = [19, 26];
 const clearOf = (x, z) => trailCover(x, z) < 0.02 && (waterLevel(x, z) === 0 || H(x, z) > waterLevel(x, z) + 0.2) && Math.hypot(x - START[0], z - START[1]) > 3.5 && Math.hypot(x - SHORE_CAM[0], z - SHORE_CAM[1]) > 3.5;
 const inMap = (x, z, m = 2) => Math.abs(x) < WORLD_HALF - m && Math.abs(z) < WORLD_HALF - m;
@@ -1568,14 +1586,15 @@ function besideWalk(points, rand, inner = 1.8, width = 2.2) {
 }
 
 function scatter(near) {
-  // rocks: clusters with one big stone each, a broken field on the outcrop, monoliths on the rim, the sea stack, stones
+  // rocks: clusters with one big stone each, a broken field on the outcrop, monoliths on the rim, stones
   // in the shallows, pebbles on the shore
   // Keep the established shoreline across grass densities and quality settings.
   let r = rng(1306441690);
-  const rv = [[], [], [], [], []], rs = [[], [], [], [], []];
+  const rv = [[], [], [], []], rs = [[], [], [], []];
   const add = (v, x, z, sx, sy, sz, sink, rand = r) => {
     const yaw = rand() * 6.28, tint = rand();
-    if (v !== 3 && trailDistance(x, z) < 0.85 + 1.2 * Math.max(sx, sz)) return;
+    const footprint = Math.max(sx, sz);
+    if (v !== 3 && (trailDistance(x,z) < 0.85+1.2*footprint || inRestArea(x,z,footprint))) return;
     // small stones only rest where the ground could hold them; a steep bank would leave them stuck to the wall
     const ny = Math.max(sx, sz) < 0.6 ? nearNy(near, x, z) : 1;
     if (ny < (v === 3 ? 0.84 : 0.62)) return;
@@ -1605,7 +1624,7 @@ function scatter(near) {
     const w = 0.6 + r() * 0.4;
     add(2, x, z, w, 2.4 + r() * 2.8, w * (0.8 + 0.3 * r()), 0.3);
   }
-  { const y = H(ISLET[0], ISLET[1]); rv[4].push(ISLET[0], y - 0.2, ISLET[1], 0); rs[4].push(STACK_S[0], STACK_S[1], STACK_S[2], 0.42); }
+
   for (let q = 0; q < 26; q++) {
     let x, z, k = 0;
     do { x = LAKE[0] + (r() * 2 - 1) * 30; z = LAKE[1] + (r() * 2 - 1) * 24; k++; } while ((lakeD(x, z) < 8.6 || lakeD(x, z) > 10.6) && k < 60);
@@ -1637,6 +1656,26 @@ function scatter(near) {
     }
   }
 
+  // Fallen chips collect in discontinuous runs near the edges of a tread.
+  const shingle = rng(89431);
+  for (const walk of [trail, ...Object.values(valleyWalks), ...Object.values(rangeWalks)]) {
+    for (let i = 1; i < walk.length; i++) {
+      const [x,z] = walk[i-1], dx=walk[i][0]-x, dz=walk[i][1]-z, length=Math.hypot(dx,dz);
+      for (let j=0; j<length*1.55; j++) {
+        const u=shingle(), side=(shingle()<0.5?-1:1)*(0.14+1.32*shingle());
+        const cx=x+u*dx-side*dz/length, cz=z+u*dz+side*dx/length;
+        const size=0.036+0.19*shingle()**2*(0.4+Math.abs(side));
+        if (nearH(near,cx,cz)>waterLevel(cx,cz)) add(3,cx,cz,size,0.48*size,0.74*size,0.11*size,shingle);
+      }
+    }
+  }
+  for (const [cx,cz,,rx,rz] of overlooks) {
+    // A few knee-high stones on the uphill rim leave a clear view and room to stand.
+    for (let i=0;i<7;i++) {
+      const a=2.5+2.5*shingle(), size=0.30+0.71*shingle();
+      add(i%2,cx+(rx+0.7)*Math.cos(a),cz+(rz+0.7)*Math.sin(a),size,size*0.68,size*0.77,size*0.19,shingle);
+    }
+  }
   // Low shingle bars follow the outside bends. Each has a few exposed slate slabs among the gravel.
   const gravelRand = rng(31527), extraGravel = rng(14276);
   for (let group = 0; group < 27; group++) {
@@ -1654,7 +1693,7 @@ function scatter(near) {
   const trees = [];
   const ground = (x, z) => { const y = H(x, z); return y > 0.3 && y < 11 && normalAt(x, z)[1] > 0.84 && lakeD(x, z) > 12.3 && clearOf(x, z) && Math.hypot(x - START[0], z - START[1]) > 7 && Math.hypot(x - SHORE_CAM[0], z - SHORE_CAM[1]) > 7 && inMap(x, z, 4) && outcrop(x, z) < 0.5; };
   const room = (x, z, d) => {
-    if (trailDistance(x, z) < (d > 10 ? 3.7 : d > 3 ? 2.8 : 1.65)) return false;
+    if (inRestArea(x,z,0.9) || trailDistance(x, z) < (d > 10 ? 3.7 : d > 3 ? 2.8 : 1.65)) return false;
     for (let q = 0; q < trees.length; q += 5) if (Math.hypot(trees[q] - x, trees[q + 2] - z) < d + (trees[q + 4] > 6 ? 3 : 0)) return false;
     return true;
   };
@@ -1698,6 +1737,12 @@ function scatter(near) {
         trees.push(x, y - 0.07, z, seed, (habitat === 'west' ? 4.5 : 3.2) + 2.8 * upland());
       }
     }
+  }
+  // A few wind-shaped trees frame the uphill lip of each inner terrace.
+  for (const [x,z,h] of [[-51,-21,3.8],[-25,-35,3.2],[-47,-41,4.4],[-50,13,3.3],
+    [47,41,3.8],[39,-35,3.4],[10,-49,3.1],[-23,53,3.6]]) {
+    if (room(x,z,1.85) && nearNy(near,x,z)>0.60)
+      trees.push(x,nearH(near,x,z)-0.12,z,0.59+0.33*upland(),h);
   }
   // Flat shoals around the new spring leave gaps for wading and the outlet.
   for (let i = 0; i < 160; i++) {
@@ -1871,7 +1916,7 @@ function growRosettes(sc, near, leaves) {
       const x = cx + Math.cos(a) * offset, z = cz + Math.sin(a) * offset;
       const y = nearH(near, x, z), h = (0.63 + 0.99 * r()) * (plant ? 0.83 : 1.24);
       if (!inMap(x, z) || y < waterLevel(x, z) + 0.12 || nearNy(near, x, z) < 0.84 ||
-          trailDistance(x, z) < 1.15 + h || Math.hypot(x - START[0], z - START[1]) < 1.9) continue;
+          trailCover(x,z) > 0.12 || trailDistance(x, z) < 1.15 + h || Math.hypot(x - START[0], z - START[1]) < 1.9) continue;
       // Leave room around boulders and tree trunks for every crown to open.
       if (nearby.some(([bx, bz, radius]) => (x - bx) ** 2 + (z - bz) ** 2 < (radius + 0.32 * h) ** 2)) continue;
       const hue = warm ? 0.81 + 0.16 * r() : r() * 0.42, spin = r() * 6.2832;
@@ -1899,16 +1944,8 @@ function growForest(sc, near) {
     const [x, y, z, seed, height] = sc.trees.subarray(q, q + 5);
     addTree(x, y, z, height, seed);
   }
-  // Root the juniper at an actual vertex a little off-centre on the stone bench.
-  const rock = STACK_GEO.pos;
-  let root = 0, nearest = Infinity;
-  for (let i = 0; i < rock.length; i += 3) {
-    const d = (rock[i] + 0.13) ** 2 + (rock[i + 2] - 0.08) ** 2;
-    if (rock[i + 1] > 0.82 && d < nearest) { root = i; nearest = d; }
-  }
-  const sx = ISLET[0] + rock[root] * STACK_S[0], sz = ISLET[1] + rock[root + 2] * STACK_S[2];
-  const sy = H(...ISLET) - 0.2 + rock[root + 1] * STACK_S[1];
-  addTree(sx, sy - 0.1, sz, 3.2, 0.7317, Math.atan2(LAKE[1] - sz, LAKE[0] - sx) + 2.4);
+  const sx = ISLET[0]-1.15, sz = ISLET[1]+0.55;
+  addTree(sx, nearH(near,sx,sz)-0.08, sz, 4.35, 0.7317, Math.atan2(LAKE[1]-sz, LAKE[0]-sx)+2.4);
 
   // Pack neighbouring trunks into contiguous index ranges. The main view
   // and its water reflection can discard whole stands before drawing.
@@ -2007,40 +2044,40 @@ function plantScatter(sc, near) {
       }
     }
   }
-  // The limestone shelves above the meadow carry tougher, wind-bent fans.
-  // Groups grow beside the switchbacks and on rock benches around the rim.
+  // Offset clumps of arrowleaf grow from short rootstocks on the rock benches.
   const ridgeRand = rng(71349);
-  function ridgeFan(cx, cz, warm = false) {
-    const family = warm ? 0.76 + 0.20 * ridgeRand() : ridgeRand(), yaw = ridgeRand() * 6.2832;
-    for (let i = 0; i < 11; i++) {
-      const a = i * 2.39996 + yaw, d = i === 0 ? 0. : 0.35 + 1.35 * ridgeRand();
-      const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
-      if (!inMap(x, z) || trailCover(x, z) > 0.01 || nearNy(near, x, z) < 0.66) continue;
-      const y = H(x, z);
-      if (y < 4.3 || y > 26.) continue;
-      const length = i === 0 ? 1.28 : 0.35 + 0.67 * ridgeRand();
-      const hue = Math.min(1., Math.max(0., family + 0.10 * (ridgeRand() - 0.5)));
-      P.push(x, y - 0.022, z, 1);
-      F.push(a + 0.21 * ridgeRand(), length, 0.038 * length, 6);
-      S2.push(0.89 + 0.29 * ridgeRand(), 0.83 + 0.16 * ridgeRand(), 0.14 + 0.22 * ridgeRand(), hue);
+  function arrowleaf(cx,cz,warm=false) {
+    const pigment = warm ? 0.64+0.25*ridgeRand() : ridgeRand();
+    const yaw = ridgeRand()*6.283, stems = 2+Math.floor(ridgeRand()*3);
+    for (let j=0;j<stems;j++) {
+      const x=cx+(ridgeRand()-0.5)*1.9, z=cz+(ridgeRand()-0.5)*1.9;
+      if (!inMap(x,z) || trailCover(x,z)>0.15 || nearNy(near,x,z)<0.66) continue;
+      const y=nearH(near,x,z);
+      if(y<3.1 || y>29) continue;
+      const h=(j===0?1.09:0.55)+0.57*ridgeRand(), count=5+Math.floor(4*ridgeRand());
+      for(let i=0;i<count;i++) {
+        const angle=yaw+i*2.39996+0.54*ridgeRand(), leaf=h*(0.63+0.54*ridgeRand());
+        P.push(x,y-0.025,z,1); F.push(angle,leaf,leaf*(0.12+0.085*ridgeRand()),6);
+        S2.push(0.52+0.40*ridgeRand(),0.65+0.49*ridgeRand(),0.23+0.19*ridgeRand(),pigment);
+      }
     }
   }
   for (let i = 2; i < trail.length - 3; i += 3) {
     const [x, z] = trail[i], dx = trail[i + 1][0] - x, dz = trail[i + 1][1] - z;
     const side = (i % 2 ? 1 : -1) * (2.4 + ridgeRand() * 0.8) / Math.hypot(dx, dz);
-    ridgeFan(x - dz * side, z + dx * side);
+    arrowleaf(x - dz * side, z + dx * side);
   }
   for (let i = 0; i < 140; i++) {
-    if (i % 6 === 0) { ridgeFan(...besideWalk(valleyWalks.fan, ridgeRand), true); continue; }
+    if (i % 6 === 0) { arrowleaf(...besideWalk(valleyWalks.terrace, ridgeRand), true); continue; }
     const x = (ridgeRand() * 2 - 1) * (VALLEY_HALF - 3), z = (ridgeRand() * 2 - 1) * (VALLEY_HALF - 3);
-    if (Math.hypot(x, z) > 35 && H(x, z) > 5.2) ridgeFan(x, z);
+    if (Math.hypot(x, z) > 35 && H(x, z) > 5.2) arrowleaf(x, z);
   }
   const outer = rng(92381);
   for (const [habitat, points] of Object.entries(rangeWalks)) {
     for (let i = 0; i < 210 * k; i++) {
       const [cx, cz] = besideWalk(points, outer, 2.0, i % 3 === 0 ? 35 : 7.5);
       if (Math.max(Math.abs(cx), Math.abs(cz)) < VALLEY_HALF - 2 || !inMap(cx, cz)) continue;
-      if (habitat === 'south' || (habitat === 'east' && i % 3)) { ridgeFan(cx, cz, true); continue; }
+      if (habitat === 'south' || (habitat === 'east' && i % 3)) { arrowleaf(cx, cz, true); continue; }
       const yaw = outer() * 6.2832, scale = 0.75 + 0.6 * outer();
       for (let j = 0; j < 6; j++) {
         const x = cx + (outer() - 0.5) * 1.6, z = cz + (outer() - 0.5) * 1.6;
@@ -2251,20 +2288,27 @@ function buildValley() {
     heightAt: (x, z) => nearH(near, x, z), outsideView, rng, touch,
     habitatAt(x, z, data, i) {
       const y = nearH(near, x, z), water = waterLevel(x, z);
-      if (y < water - 0.12 || trailCover(x, z) > 0.18) return;
+      const tread = trailCover(x,z);
+      if (y < water - 0.12 || tread >= 0.98) return;
+      const island = Math.hypot((x-ISLET[0]+0.21*(z-ISLET[1]))/7, (z-ISLET[1])/5.1);
+      if (island < 1.6) {
+        data[i] = 0.36*(1-sm(0.43,0.87,island))*sm(0.8,1.6,y);
+        data[i+1] = 0.52+0.28*vnoise(x*0.8,z*0.8);
+        return;
+      }
       const ld = y > -0.38 && y < 0.55 ? lakeD(x, z) : 0;
       if (ld > 10 && ld < 12.6 || water > 4.8 && y - water < 0.28) {
         data[i] = 0.23; data[i + 1] = 2.45; return;
       }
       const edge = Math.max(Math.abs(x), Math.abs(z)), upland = sm(51, 85, edge);
       const moisture = water > 0.02 ? sm(0.04, 0.80, y - water) : 1;
-      const grow = sm(0.2, 0.55, y) * (1 - sm(9 + 14 * upland, 14 + 18 * upland, y)) * sm(0.62, 0.84, nearNy(near, x, z))
-        * (1 - 0.92 * outcrop(x, z)) * Math.min(1, 0.75 + 0.5 * vnoise(x * 0.9 + 7, z * 0.9 - 3));
+      const grow = sm(0.2, 0.55, y) * (1 - sm(16 + 12 * upland, 25 + 16 * upland, y)) * sm(0.53, 0.81, nearNy(near, x, z))
+        * (1 - 0.65 * outcrop(x, z)) * Math.min(1, 0.75 + 0.5 * vnoise(x * 0.9 + 7, z * 0.9 - 3));
       const tall = sm(0.5, 0.78, fbm(x * 0.028 + 21, z * 0.028 - 9, 3));
       const heath = 1 - sm(WORLD_HALF - 5 - 10 * tall, WORLD_HALF, edge);
-      data[i] = Math.min(1, grow * 1.15) * (0.035 + 0.965 * moisture) * heath;
+      data[i] = Math.min(1, grow * 1.24) * (0.035 + 0.965 * moisture) * heath * (1-sm(0.12,0.96,tread));
       data[i + 1] = (0.45 + 0.55 * Math.min(1, grow * 1.2)) * (0.8 + 0.75 * fbm(x * 0.06 + 11, z * 0.06 - 4, 3))
-        * (1 + 0.65 * tall) * (0.2 + 0.8 * moisture);
+        * (1 + 0.65 * tall) * (0.2 + 0.8 * moisture) * (1-0.80*tread);
     },
   });
   const forest = growForest(sc, near);
@@ -2280,7 +2324,7 @@ function buildValley() {
   const heightRange = bakeGroundLight(gl, EXTENT, (x, z) => nearH(near, x, z), waterLevel, sc, highSites.instances, pl);
   bakeCanopy(gl, forest, EXTENT);
   bakeFloraSpill(pl);
-  const sailwings = createSailwings({ gl, program, vao, worldVertex: WORLD_VS, groundAt: (x, z) => nearH(near, x, z), waterLevel, riverX, sc, random: rng(971), outsideView });
+  const sailwings = createSailwings({ gl, program, vao, worldVertex: WORLD_VS, groundAt: (x, z) => nearH(near, x, z), waterLevel, riverX, sc, random: rng(971), windAt: (x,z) => wind.sample(x,z)*windStrength(), outsideView });
   return { near: uploadTerrain(near), wm: uploadWater(waterMesh(near)), heightRange, sailwings, sc,
     wood: { vao: vWood, count: forest.idx.length, patches: forest.patches,
       drawCounts: new Int32Array(forest.patches.length), byteOffsets: new Int32Array(forest.patches.length) },
@@ -2291,6 +2335,7 @@ function uploadHighCanopy(mesh, sites) {
   const attrs = [
     { loc: loc(HIGH_CANOPY, 'aPos'), size: 3, data: mesh.position },
     { loc: loc(HIGH_CANOPY, 'aNor'), size: 3, data: mesh.normal },
+    { loc: loc(HIGH_CANOPY, 'aPinna'), size: 2, data: mesh.pinna },
     { loc: loc(HIGH_CANOPY, 'aTissue'), size: 1, data: mesh.tissue },
     { loc: loc(HIGH_CANOPY, 'aSite'), size: 4, data: sites.instances, div: 1 },
   ];
@@ -2320,7 +2365,7 @@ function drawHighCanopy(planes, mirror = 1, eye) {
       gl.UNSIGNED_SHORT, folds ? 0 : farOffset, tile.count);
   }
 }
-const rocks = [rockMesh(1.3, 3, false), rockMesh(4.1, 3, false), rockMesh(7.7, 3, true), rockMesh(2.2, 1, false), STACK_GEO]
+const rocks = [rockMesh(1.3, 3, false), rockMesh(4.1, 3, false), rockMesh(7.7, 3, true), rockMesh(2.2, 1, false)]
   .map((mesh, k) => rockBatches(mesh, sc.rv[k], sc.rs[k]));
 
 function rockBatches(mesh, sites, sizes) {
@@ -2390,6 +2435,23 @@ function drawRocks(VP, mirror = 1, focalPixels, planes) {
 let grassDensity = 1;
 const stars = starScatter(), vStars = vao([{ loc: loc(STARS, 'aS'), size: 4, data: stars.S }, { loc: loc(STARS, 'aC'), size: 4, data: stars.C }]);
 let clouds;
+function bakeOceanAtlas() {
+  const width=1024, height=512, f=gl.createFramebuffer();
+  const atlas=gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0+18); gl.bindTexture(gl.TEXTURE_2D,atlas);
+
+  gl.texStorage2D(gl.TEXTURE_2D,11,gl.RGBA8,width,height);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,atlas,0);
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.DITHER);
+  gl.bindVertexArray(null); gl.viewport(0,0,width,height); gl.useProgram(OCEAN_ATLAS);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.deleteFramebuffer(f);
+  gl.generateMipmap(gl.TEXTURE_2D);
+}
+bakeOceanAtlas();
 const milkyWay = bakeMilkyWay();
 const motes = moteScatter();
 const vMotes = vao([{ loc: loc(POINTS, 'aP'), size: 4, data: motes }]);
@@ -2634,6 +2696,9 @@ function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
 }
 
 // ---------------------------------------------------------------- engine state
+let wind, uploadedWind = -1;
+const gustTexture = gl.createTexture();
+bakeTrailMaterial(gl, rng(440951));
 let engine, glowF, groundF, wearF, mode = BOXEL;
 const brush = new BrushField();
 const bendTex = gl.createTexture();
@@ -2908,7 +2973,7 @@ function bakeFloraSpill(plants) {
     const extent = plants.F[i + 1] * plants.P[i + 3], radius = extent * (type === 4 ? 0.90 : 1.65);
     const hue = plants.S2[i + 3], warm = type === 6 ? sm(0.37, 0.70, hue) : sm(0.40, 0.57, hue);
     const bell = x * 0.21 + z * 0.17, bellHue = 0.5 * (bell - Math.floor(bell));
-    const pigment = type === 6 ? [0.13 + 0.75 * warm, 0.69 - 0.37 * warm, 0.51 - 0.36 * warm]
+    const pigment = type === 6 ? [0.085 + 0.305 * warm, 0.47 - 0.30 * warm, 0.32 + 0.07 * warm]
       : type === 4 ? [0.88 - 0.16 * bellHue, 0.30 + 0.12 * bellHue, 0.70 + 0.28 * bellHue]
       : [0.085 + 0.855 * warm, 0.72 - 0.50 * warm, 0.62 - 0.28 * warm];
     const cx = (x + WORLD_HALF) * perMetre - 0.5, cz = (z + WORLD_HALF) * perMetre - 0.5, r = radius * perMetre;
@@ -3036,9 +3101,11 @@ function toggleDay() {
 }
 
 let frameNumber = 0, lightDirection = SUN, lightColor = SUNCOL, exposure = 0.95;
+function windStrength() { return (rain && !TEST ? 1.15 : 0.7) + 0.9 * storm; }
 function common(p, eye, VP, mirror, t) {
   gl.useProgram(p);
   if (p.worldFrame === undefined) {
+    gl.uniform1i(p.u('uOceanAtlas'),18); gl.uniform1i(p.u('uGusts'),16); gl.uniform1i(p.u('uTrailMaterial'),17);
     gl.uniform1i(p.u('uShadows'), 9); gl.uniform1i(p.u('uFloraSpill'), 10);
     gl.uniform1i(p.u('uClouds'), 11); gl.uniform1i(p.u('uCanopy'), 12);
     gl.uniform1i(p.u('uBendTex'), 13); gl.uniform1i(p.u('uValleyGround'), 14); gl.uniform2fv(p.u('uGroundRange'), heightRange);
@@ -3058,11 +3125,12 @@ function common(p, eye, VP, mirror, t) {
       gl.uniformMatrix4fv(p.u('uLightVP[0]'), false, valleyShadows.matrices);
     }
     gl.uniform2i(p.u('uSunLayers'), shadowKeys.layers[0], shadowKeys.layers[1]); gl.uniform1f(p.u('uSunBlend'), shadowKeys.blend);
+    gl.uniform2f(p.u('uWindFrame'),wind.travel,wind.mix);
     gl.uniform1f(p.u('uNight'), night);
     gl.uniform1f(p.u('uExposure'), exposure); gl.uniform1f(p.u('uTime'), t);
     gl.uniform1f(p.u('uStorm'), storm); gl.uniform1f(p.u('uFlash'), flash * storm * (0.3 + 0.7 * night));
     gl.uniform1f(p.u('uSheet'), sheet); gl.uniformMatrix3fv(p.u('uSky'), false, skyTurn);
-    gl.uniform1f(p.u('uWind'), TEST ? 0.7 + 0.9 * storm : (rain ? 1.15 : 0.7) + 0.9 * storm + 0.2 * Math.sin(t * 0.13));
+    gl.uniform1f(p.u('uWind'), windStrength());
     if (p === GRASS || p === JLEAF || p === PLANT) {
       gl.uniform3f(p.u('uBrush'), player.x, player.z, brush.cells.size ? 1 : 0);
     }
@@ -3160,6 +3228,11 @@ function render(t, camOverride, glowTexture = texGlow) {
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, glowTexture);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texGround);
   gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, texWear);
+  if (uploadedWind !== wind.version) {
+    gl.activeTexture(gl.TEXTURE0+16);
+    gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,wind.size,wind.size,gl.RGBA,gl.UNSIGNED_BYTE,wind.bytes);
+    uploadedWind = wind.version;
+  }
   if (brush.dirty) {
     gl.activeTexture(gl.TEXTURE13); gl.bindTexture(gl.TEXTURE_2D, bendTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, brush.size, brush.size, gl.RGBA, gl.UNSIGNED_BYTE, brush.bytes);
@@ -3299,15 +3372,16 @@ function frame(now) {
     for (const field of layers()) acc.up += field.upload();
     acc.frames++;
   } else simT += dt;
+  wind.update(dt, storm);
   clouds.advance(dt, sm(0, 0.41, starDirection[1]) * (1 - night), storm, simT, groundF.sheet);
   render(simT);
   if (!started) return;
   if (audio) {
     // what the ears get: the gust where you stand, how far the river and the lake are and which side they are on
-    const t = simT, gust = Math.sin(player.x * 0.31 + player.z * 0.18 + t * 1.25) * 0.55 + Math.sin((player.z * 0.41 - player.x * 0.23) * 1.7 + t * 2.3) * 0.3;
+    const gust = wind.sample(player.x,player.z);
     const rz = Math.max(spring.z, Math.min(-8, player.z)), rx = riverX(rz);
     const riverDistance = Math.hypot(player.x - rx, Math.max(0, spring.z - player.z, player.z + 8));
-    audio.update({ wind: (rain ? 1.15 : 0.7) + 0.9 * storm, gust, height: player.y, night, storm,
+    audio.update({ wind: windStrength(), gust, height: player.y, night, storm,
       river: [riverDistance, bearing(rx, rz)], lake: [Math.max(0, (lakeD(player.x, player.z) - 10.5) * 2.2), bearing(LAKE[0], LAKE[1])] });
   }
   acc.t += dt;
@@ -3433,8 +3507,8 @@ const VIEWS = {
   rose: skyView(skyBodies.rose),
   ocean: skyView(skyBodies.ocean),
   ice: skyView(skyBodies.ice),
-  // from the crest, 4.6 m above the lookout's centre, over the valley to the lake
-  summit: { eye: [-43.5, H(-43.5, -41.5) + 1.8, -41.5], yaw: Math.atan2(LAKE[0] + 43.5, -41.5 - LAKE[1]), pitch: -0.2 },
+  // Eye height on the lake-facing edge of the summit clearing.
+  summit: { eye: [-39.8, H(-39.8,-34.2)+1.65, -34.2], yaw: Math.atan2(LAKE[0]+39.8,-34.2-LAKE[1]), pitch: -0.2 },
   trail: { eye: [trail[0][0], H(...trail[0]) + 1.65, trail[0][1]], yaw: Math.atan2(trail[1][0] - trail[0][0], trail[0][1] - trail[1][1]), pitch: 0.02 },
   river: { eye: [riverX(-40) + 2.6, H(riverX(-40) + 2.6, -40) + 2.4, -40], yaw: -0.25, pitch: -0.32 },
   shore: { eye: [SHORE_CAM[0], H(...SHORE_CAM) + 2.6, SHORE_CAM[1]], yaw: -0.95, pitch: -0.24, motes: true },
@@ -3495,6 +3569,11 @@ function scripted(m, frames = 900, view = 'shore') {
 // ---------------------------------------------------------------- boot
 (async () => {
   engine = await loadEngine();
+  wind = createWind(engine.boxel, H);
+  gl.activeTexture(gl.TEXTURE0+16); gl.bindTexture(gl.TEXTURE_2D,gustTexture);
+  gl.texStorage2D(gl.TEXTURE_2D,1,gl.RGBA8,wind.size,wind.size);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   clouds = createClouds(gl, program, FSQ, engine.boxel, { mobile: touch, test: TEST,
     sources: [[...LAKE, 1], [spring.x, spring.z, 0.55]] });
   checkPrograms();

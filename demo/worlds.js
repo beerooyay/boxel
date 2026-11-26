@@ -105,34 +105,13 @@ vec3 roseClouds(vec3 n) {
 // The ocean world, in its own frame (x right, y up, z toward Tarn). It spins about the pole of its first ring.
 const vec3 OCEAN_POLE = vec3(-0.194, 0.951, 0.24);
 vec3 spin(vec3 v, vec3 k, float a) { return v * cos(a) + cross(k, v) * sin(a) + k * dot(k, v) * (1. - cos(a)); }
-// continents of red desert and pale green, deep seas that pale over their shelves, white caps at the poles
-vec3 oceanGround(vec3 p, float lat, out float sea) {
-  float land = fbm3(p.xy * 2.3 + 3.1) * 0.5 + fbm3(p.yz * 2.1 - 1.7) * 0.3 + fbm3(p.zx * 2.7 + 5.3) * 0.2;
-  land += 0.08 * (vnoise(p.xy * 9. + p.z * 3.) - 0.5);
-  sea = 1. - smoothstep(0.495, 0.515, land);
-  vec3 deep = mix(vec3(0.01, 0.045, 0.17), vec3(0.03, 0.2, 0.42), smoothstep(0.36, 0.5, land));
-  deep = mix(deep, vec3(0.07, 0.42, 0.52), smoothstep(0.47, 0.5, land) * 0.6);
-  float wet = fbm3(p.yx * 3.7 + 9.) + 0.25 * (1. - abs(lat));
-  vec3 ground = mix(vec3(0.56, 0.16, 0.08), vec3(0.66, 0.36, 0.16), smoothstep(0.35, 0.55, fbm3(p.zy * 6. + 2.)));
-  ground = mix(ground, vec3(0.46, 0.72, 0.34), smoothstep(0.55, 0.7, wet));
-  ground *= 0.86 + 0.24 * vnoise(p.xz * 18.);
-  vec3 c = mix(ground, deep, sea);
-  return mix(c, vec3(0.9, 0.93, 0.98), smoothstep(0.8, 0.9, abs(lat) + 0.05 * vnoise(p.xy * 12.)));
-}
-// weather: three cyclones wind the cloud deck into spirals around clear eyes, trade winds comb the rest into streaks
-float oceanClouds(vec3 p) {
-  vec3 c[3] = vec3[3](normalize(vec3(0.5, 0.35, 0.8)), normalize(vec3(-0.6, -0.3, 0.7)), normalize(vec3(0.1, -0.55, 0.85)));
-  float clumps = fbm3((p.xy + 0.33 * p.z) * 19.);
-  float eye = 1.;
-  for (int i = 0; i < 3; i++) {
-    float d = 1. - dot(p, c[i]), w = exp(-d * 28.);
-    p = spin(p, c[i], w * (5. + float(i)) * (i == 1 ? -1. : 1.));
-    eye *= 1. - exp(-d * 900.);
-  }
-  float lat = dot(p, OCEAN_POLE);
-  float deck = fbm3(vec2(p.x * 3.2 + p.z * 2.1, lat * 11.) + 1.3) * 0.65 + fbm3(vec2(p.z * 7. - p.x * 3., lat * 23.)) * 0.35;
-  float front = sin(lat * 22. + 1.4 * sin(p.x * 4.));
-  return smoothstep(0.40, 0.68, 0.82 * deck + 0.18 * clumps + 0.12 * front) * eye;
+uniform sampler2D uOceanAtlas;
+// Wrap the longitude derivative too. The seam has the same mip level as its neighbours.
+vec4 oceanAtlas(vec3 p) {
+  vec2 uv=vec2(atan(p.x,p.z)/(2.*PI)+0.5,asin(clamp(p.y,-1.,1.))/PI+0.5);
+  vec2 dx=dFdx(uv), dy=dFdy(uv);
+  dx.x-=round(dx.x); dy.x-=round(dy.x);
+  return textureGrad(uOceanAtlas,uv,dx,dy);
 }
 const float ringTilt = 0.24;
 const vec2 ringMinorH = vec2(-0.19866933, 0.98006658);
@@ -156,11 +135,26 @@ vec3 oceanWorld(vec3 n, vec3 normal, vec3 right, vec3 up, vec3 axis) {
   vec3 L = vec3(dot(uStarDir, right), dot(uStarDir, up), -dot(uStarDir, axis));
   vec3 pole = normalize(OCEAN_POLE);
   vec3 p = spin(n, pole, uTime * 0.01), pc = spin(n, pole, uTime * 0.016);
-  float sea, lat = dot(n, pole);
-  vec3 ground = oceanGround(p, lat, sea);
-  float cloud = oceanClouds(pc), shadow = oceanClouds(spin(normalize(n + 0.025 * (L - n * dot(n, L))), pole, uTime * 0.016));
-  ground *= 1. - 0.45 * shadow * (1. - cloud);
-  vec3 surf = mix(ground, vec3(0.96, 0.97, 1.), cloud * 0.92);
+  vec4 geography=oceanAtlas(p);
+  float relief=geography.r, wet=geography.g, ridge=geography.b;
+  float coast=0.498, aa=max(fwidth(relief)*0.65,0.003);
+  float sea=1.-smoothstep(coast-aa,coast+aa,relief);
+  vec3 ocean=mix(vec3(0.009,0.060,0.17),vec3(0.016,0.205,0.35),smoothstep(0.27,0.48,relief));
+  ocean=mix(ocean,vec3(0.043,0.41,0.43),smoothstep(0.466,coast,relief)*(0.36+0.52*wet));
+  vec3 dry=mix(vec3(0.30,0.094,0.043),vec3(0.62,0.31,0.11),0.29+0.61*ridge);
+  vec3 forest=mix(vec3(0.022,0.118,0.058),vec3(0.13,0.275,0.077),ridge);
+  vec3 land=mix(dry,forest,smoothstep(0.35,0.57,wet));
+  land=mix(land,vec3(0.38,0.32,0.22),smoothstep(0.62,0.77,relief)*ridge);
+  vec3 inland=spin(normalize(n+0.013*(L-n*dot(n,L))),pole,uTime*0.01);
+  land*=clamp(1.+4.6*(relief-oceanAtlas(inland).r),0.67,1.23);
+  vec3 ground=mix(land,ocean,sea);
+  float ice=smoothstep(0.91,0.983,abs(dot(n,pole))+0.034*ridge);
+  ground=mix(ground,vec3(0.62,0.76,0.79),ice);
+  float cloud=oceanAtlas(pc).a;
+  float shadow=oceanAtlas(spin(normalize(n+0.019*(L-n*dot(n,L))),pole,uTime*0.016)).a;
+  ground*=1.-0.49*shadow;
+  vec3 vapour=mix(vec3(0.54,0.64,0.70),vec3(0.98,0.95,0.88),clamp(0.32+0.65*cloud+1.26*(cloud-shadow),0.,1.));
+  vec3 surf=mix(ground,vapour,cloud*0.94);
   float rings = ringTransmission(n, L, ringMinorH) * ringTransmission(n, L, ringMinorV);
   float viewCos = n.z, incidence = dot(normal, uStarDir);
   vec3 fill = surf * nightFill + gBehind * 0.42;
@@ -221,3 +215,47 @@ vec3 companions(vec3 d, vec3 sky) {
   return companion(d, sky, OCEAN_DIR, 0.143, true);
 }
 `;
+
+// Bake continuous spherical terrain and weather once. The two layers then
+// turn independently; the sun and both rings still light them each frame.
+export const oceanAtlasFragment = `
+in vec2 vUv; out vec4 atlas;
+float lattice(vec3 p) {
+  p=fract(p*vec3(0.1031,0.11369,0.13787));
+  p+=dot(p,p.yzx+19.19);
+  return fract((p.x+p.y)*p.z);
+}
+float volume(vec3 q) {
+  vec3 i=floor(q), f=fract(q); f=f*f*(3.-2.*f);
+  vec2 z=vec2(0.,1.);
+  return mix(mix(mix(lattice(i),lattice(i+z.yxx),f.x),mix(lattice(i+z.xyx),lattice(i+z.yyx),f.x),f.y),
+    mix(mix(lattice(i+z.xxy),lattice(i+z.yxy),f.x),mix(lattice(i+z.xyy),lattice(i+1.),f.x),f.y),f.z);
+}
+float terrainNoise(vec3 p) {
+  float sum=0., weight=0.52;
+  for (int i=0;i<6;i++) {sum+=weight*volume(p); p=p.yzx*2.08+vec3(17.,8.1,23.); weight*=0.49;}
+  return sum;
+}
+void main() {
+  vec2 a=(vUv-0.5)*vec2(2.*PI,PI);
+  vec3 p=vec3(sin(a.x)*cos(a.y),sin(a.y),cos(a.x)*cos(a.y));
+  vec3 warp=vec3(volume(3.3*p),volume(3.1*p+8.),volume(3.6*p-4.))-0.5;
+  vec3 q=p+0.46*warp;
+  float relief=terrainNoise(q*2.9+vec3(2.7,4.1,8.3));
+  float ridge=1.-abs(2.*terrainNoise(q*20.+14.)-1.);
+  float detail=terrainNoise(q*53.+2.);
+  relief+=0.096*(ridge-0.7)+0.16*(detail-0.5);
+  float wet=terrainNoise(p*4.4+8.)+0.15*cos(dot(p,OCEAN_POLE)*7.)+0.16*(detail-0.5);
+  // Local shear turns a broken bank. Only air near the low curls around it.
+  vec3 centre=normalize(vec3(-0.35,0.28,0.90));
+  vec3 air=spin(p,centre,0.78*exp(-15.*dot(p-centre,p-centre)));
+  air=spin(air,OCEAN_POLE,0.095*sin(dot(air,OCEAN_POLE)*6.+warp.x*2.));
+  vec3 flow=air+0.14*warp;
+  float bank=terrainNoise(flow*5.7+18.);
+  float cells=terrainNoise(flow*30.+9.);
+  float wisps=terrainNoise(flow*vec3(19.,49.,16.)+27.);
+  float cloud=smoothstep(0.51,0.69,0.70*bank+0.30*cells);
+  cloud*=0.62+0.38*smoothstep(0.3,0.67,cells);
+  cloud+=0.19*smoothstep(0.53,0.69,wisps)*smoothstep(0.38,0.54,bank);
+  atlas=vec4(relief,wet,(ridge-0.54)*1.1+0.38*detail,clamp(cloud,0.,1.));
+}`;
