@@ -1,8 +1,9 @@
 import { createWind, windShader } from './wind.js';
 import { bakeTrailMaterial } from './trail-material.js';
+import { makeRockSurface, uploadRockSurface, ROCK_SURFACE_SCALE } from './rock-material.js';
 import { galaxyFragment } from './galaxy.js';
 import { FieldTexture } from './field-texture.js';
-import { bakeMeadow, BLADE_HEIGHT_RANGE } from './meadow.js';
+import { bakeMeadow, BLADE_HEIGHT_RANGE, CLUMP, clumpGLSL } from './meadow.js';
 import { BrushField } from './brush.js';
 import { waterBounds } from './water-view.js';
 import { seatStone, stoneSpacing } from './stone-bed.js';
@@ -793,7 +794,9 @@ void main(){
   vec2 dx=dFdx(p), dy=dFdy(p);
   float pathMask=smoothstep(0.075,0.93,vGround.x+(n2-0.5)*0.43);
   float soilCover = max(pathMask, mantleSoil);
-  if (vGround.x>0.01 || mantleSoil>0.) {
+  // where the meadow's floor still shows through what has been laid over it
+  float meadowFloor = fine * (1. - shore) * (1. - under) * (1. - rk) * (1. - cliff) * (1. - islandStone) * (1. - 0.6 * upland);
+  if (vGround.x>0.01 || mantleSoil>0. || meadowFloor>0.01) {
     mat2 rot = mat2(0.80,0.60,-0.60,0.80);
     vec2 soilUV = p*0.30+vec2(0.34*n1,0.17*n2);
     vec4 coarse = textureGrad(uTrailMaterial,soilUV,0.30*dx,0.30*dy);
@@ -803,12 +806,20 @@ void main(){
     vec3 clay=mix(vec3(0.102,0.069,0.051),vec3(0.38,0.239,0.151),0.19+0.48*n1+0.33*n2);
     float crumb = smoothstep(0.33,0.71,grains);
     vec3 tread = mix(clay*(0.52+0.97*crumb),shale(0.15+0.67*detail.a),grit);
-    vec3 verge=stand*mix(0.2,0.42,n2);
-    alb=mix(alb,verge*(0.55+0.8*grains),4.*pathMask*(1.-pathMask)*0.65);
+    // One soil runs under everything. The tread is that soil packed bare. Under the meadow it is the same soil,
+    // olive with old roots, and the stand's litter lies over it in drifts, thinnest toward the tread, so the path is
+    // where the cover ends rather than a different ground.
+    vec3 olive = mix(clay, vec3(0.15, 0.15, 0.1), 0.6) * (0.58 + 0.62 * crumb);
+    // the verge band, a metre or two beside the tread, where the litter thins out to bare soil
+    float beside = smoothstep(0., 0.2, vGround.x);
+    float litterCover = clamp(smoothstep(0.04, 0.42, thatch + 0.35 * (hummocks - 0.5) - 0.3 * (grains - 0.5) - 0.45 * beside), 0., 1.);
+    alb = mix(alb, mix(olive, moss, litterCover), meadowFloor * (1. - soilCover));
+    vec3 verge = mix(olive, stand * mix(0.24, 0.44, n2), 0.45 + 0.3 * litterCover);
+    alb=mix(alb,verge*(0.62+0.6*grains),4.*pathMask*(1.-pathMask)*0.65);
     vec3 loam=mix(tread*vec3(0.78,0.80,0.77),moss,0.47*hummocks*smoothstep(0.73,0.99,vN.y));
     alb=mix(alb,mix(loam,tread,pathMask),soilCover);
     vec2 relief=(2.*coarse.rg-1.)*0.65 + transpose(rot)*(2.*detail.rg-1.)*0.53;
-    N=normalize(N+vec3(relief.x,0.,relief.y)*soilCover*0.85);
+    N=normalize(N+vec3(relief.x,0.,relief.y)*max(soilCover, meadowFloor * (1. - litterCover) * 0.6)*0.85);
     rough=mix(rough,0.89-0.12*grit,soilCover);
   }
   float vein = rk * smoothstep(0.74, 0.8, n3) * (1. - smoothstep(12., 28., dist));
@@ -891,8 +902,8 @@ void main(){
 
 const ROCK = program(WORLD_VS + `
 in vec3 aPos, aPos1, aPos2, aNor, aNor1, aNor2; in vec4 aI, aS, aBed;
-flat out vec3 vBed; flat out float vKind;
-out vec3 vWP, vN, vLoc, vNl; out float vH, vToe, vCurv;
+flat out vec3 vBed; flat out float vKind; flat out vec3 vAlong, vUp, vScale;
+out vec3 vWP, vN, vLoc, vNl, vObj; out float vH, vToe, vCurv;
 void main(){
   // each stone takes one of its group's three shapes
   float shape = floor(fract(aS.w * 7.31) * 3.);
@@ -902,31 +913,35 @@ void main(){
   vec3 up = normalize(vec3(-aBed.x, 1., -aBed.y));
   vec3 along = normalize(vec3(c, dot(aBed.xy, vec2(c,s)), s));
   mat3 frame = mat3(along, up, cross(along,up));
-  vLoc = rp * aS.xyz; vNl = rn; vH = aS.w;
+  vLoc = rp * aS.xyz; vNl = rn; vH = aS.w; vObj = rp; vAlong = along; vUp = up; vScale = aS.xyz;
   vWP = aI.xyz + frame * vLoc; vN = normalize(frame * (rn / aS.xyz));
   vBed = vec3(aBed.zw, max(aS.x,aS.z)); vToe = rp.y;
   gl_Position = project(vWP);
 }`,
-`uniform float uClip; flat in vec3 vBed; flat in float vKind; in vec3 vWP, vN, vLoc, vNl; in float vH, vToe, vCurv; out vec4 o;
+`uniform float uClip; uniform sampler2D uRockSurface; flat in vec3 vBed; flat in float vKind; flat in vec3 vAlong, vUp, vScale;
+in vec3 vWP, vN, vLoc, vNl, vObj; in float vH, vToe, vCurv; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 N = normalize(vN); vec3 V = normalize(uCam - vWP);
-  vec3 facet = normalize(cross(dFdx(vWP),dFdy(vWP)));
-  N = normalize(mix(N, facet*sign(dot(N,facet)), mix(0.40,0.15,smoothstep(0.21,0.78,vBed.z))));
   vec2 uv = fieldUV(vWP.xz); float inf = inField(uv); float glow = texture(uGlow, uv).r * inf;
   float dist = length(uCam - vWP);
   vec3 col;
   {
     vec3 lp = vLoc * 1.6 + vec3(vH * 17.);
-    // a crack network laid on the stone from three sides (triplanar), so it never stretches
-    vec3 aw = abs(normalize(vNl)); aw /= aw.x + aw.y + aw.z;
+    // The valley's one rock surface, read from three sides in the stone's own frame so it rides with the stone and
+    // never stretches. Its slopes bend the normal, its cavity holds the cracks and pits, its tone varies the face.
+    vec3 Nl = normalize(vNl), aw = Nl * Nl; aw *= aw; aw /= aw.x + aw.y + aw.z;
+    vec3 sp = vObj * ${ROCK_SURFACE_SCALE.toFixed(2)};
+    vec4 sx = texture(uRockSurface, sp.zy), sy = texture(uRockSurface, sp.xz), sz = texture(uRockSurface, sp.xy);
+    vec4 surf = sx * aw.x + sy * aw.y + sz * aw.z;
+    vec3 tilt = aw.x * vec3(0., sx.g - 0.5, sx.r - 0.5) + aw.y * vec3(sy.r - 0.5, 0., sy.g - 0.5) + aw.z * vec3(sz.r - 0.5, sz.g - 0.5, 0.);
+    vec3 Nb = normalize(Nl + tilt * 1.5);
+    N = normalize(mat3(vAlong, vUp, cross(vAlong, vUp)) * (Nb / vScale));
     float near = 1. - smoothstep(10., 30., dist);
-    float crack = 0.;
+    float crack = smoothstep(0.25, 0.8, surf.b);
     if (near > 0.) {
-      float edge = cobble(lp.zy * 1.3).y * aw.x + cobble(lp.xz * 1.3).y * aw.y + cobble(lp.xy * 1.3).y * aw.z;
-      crack = (1. - smoothstep(0.0, 0.05, edge)) * near;
       vec2 grainSlope = noiseSlope(lp.xz * 3. + lp.y * 2.7).yz;
-      N = normalize(N - near * vec3(grainSlope.x, 0., grainSlope.y) * 0.07);
+      N = normalize(N - near * vec3(grainSlope.x, 0., grainSlope.y) * 0.05);
     }
     float n1 = vnoise(lp.xz * 0.9 + lp.y), n2 = vnoise(lp.xy * 6. + lp.z * 3.), speck = vnoise(lp.zx * 22. + lp.y * 9.);
     // three stones of the valley: pale speckled granite, the brown shale of the trails, dark fine basalt
@@ -937,10 +952,10 @@ void main(){
       alb = mix(vec3(0.27, 0.26, 0.245), vec3(0.4, 0.38, 0.35), n1) * (1. - 0.5 * mica * near) + vec3(0.11, 0.1, 0.09) * feldspar * near;
     } else if (litho > 0.82) alb = mix(vec3(0.07, 0.072, 0.08), vec3(0.15, 0.145, 0.14), n1);
     float grain = vnoise(vec2(dot(vLoc.xz,vec2(3.1,-1.8)) + n2, vLoc.y*9.2 + n1*2.1));
-    alb *= (0.82 + 0.30*speck) * (0.77 + 0.40*grain);
+    alb *= (0.82 + 0.30*speck) * (0.8 + 0.3*grain) * (0.62 + 0.76 * surf.a);
     alb = mix(alb,vec3(0.37,0.32,0.26),near * n2 * smoothstep(0.68,0.90,grain)*0.42);
     alb *= mix(0.72, 1.12, smoothstep(-0.4, 0.8, N.y));      // weathered tops pale, overhangs shadowed
-    alb *= 1. - 0.62 * crack;
+    alb *= 1. - 0.55 * crack;
     // the baked curvature: edges worn pale, hollows dark where light and rain reach least
     float edgeWear = smoothstep(0.08, 0.5, -vCurv), hollow = smoothstep(0.05, 0.45, vCurv);
     alb *= (1. + 0.3 * edgeWear) * (1. - 0.42 * hollow);
@@ -1131,12 +1146,26 @@ void main(){
 // rounded normals, rolling gust waves, a root-mid-tip ramp with patch noise and root AO, sun backlight through
 // the tips. Wired to the certified fields: wear tramples it flat, moisture droops and darkens it, glow lights
 // the tips you stirred. Instances are shuffled, so drawing a prefix is an even thinning (adaptive density).
-const GRASS = program(WORLD_VS + BRUSH_VS + `
+const GRASS = program(WORLD_VS + BRUSH_VS + clumpGLSL + `
 in vec4 aRoot, aDetail; uniform vec2 uGrassHeight; uniform bool uSimpleBlade;
 centroid out vec3 vWP; centroid out vec4 vGA; centroid out float vGH; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
+centroid out float vDry; centroid out float vClump;
 void main(){
   vec4 aG = vec4((aRoot.xy - 0.5) * uExtent, uGrassHeight.x + aRoot.z * uGrassHeight.y, aDetail.w);
-  vec4 aR = vec4(aDetail.xyz, aRoot.w * ${BLADE_HEIGHT_RANGE.toFixed(1)});
+  // twelve bits of height and four of nearness to the tread share the root's last word
+  float packed = floor(aRoot.w * 65535. + 0.5), edge = mod(packed, 16.) / 15.;
+  vec4 aR = vec4(aDetail.xyz, floor(packed / 16.) / 4095. * ${BLADE_HEIGHT_RANGE.toFixed(1)});
+  // Tufts: the nearest tuft centre, by the same hash the bake used to gather the sparse blades. A tuft shares its
+  // height, hue and dryness, and its blades fan out from its middle.
+  vec2 cq = aG.xy / ${CLUMP}; ivec2 ci = ivec2(floor(cq)); vec2 toTuft = vec2(0.); float cd = 9.; uint th = 0u;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    ivec2 c = ci + ivec2(i, j); uint h = clumpHash(c); vec2 d = vec2(c) + clumpOffset(h) - cq; float dd = dot(d, d);
+    if (dd < cd) { cd = dd; toTuft = d; th = h; }
+  }
+  float tuftDist = sqrt(cd), tuft = float((th * 747796405u) >> 8) / 16777216.;
+  // each blade its own: one number for its shape and one for whether it died last season
+  uint bh = clumpHash(ivec2(floor(aG.xy * 613.)));
+  float shape = float(bh & 0xffffu) / 65536., deadRoll = float(bh >> 16) / 65536.;
   int vid = gl_VertexID;
   if (uSimpleBlade && vid >= 2) vid += 2;
   float by = vid == 6 ? 1. : float(vid / 2) * 0.35;
@@ -1144,12 +1173,20 @@ void main(){
   float a = aR.x * 6.2831853; vec2 ax = vec2(cos(a), sin(a)); vec2 fd = vec2(-ax.y, ax.x);
   vec2 uv = fieldUV(aG.xy); vec2 gr = vec2(texture(uGround, uv).r, texture(uWear, uv).r); float glow = texture(uGlow, uv).r;
   float wet = min(1., gr.r + uSheet), trample = smoothstep(0.04, 0.45, gr.g);
-  float H = 0.52 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample);
   float reed = step(1.6, aR.w);
-  // Worn and sheltered blades along the tread stay slender as they get shorter.
-  float W0 = (0.045 + 0.032 * aR.z) * mix(0.15, 1., smoothstep(0., 0.36, H)) * mix(1., 0.4, reed) * uLodW;
+  // Three blades: most are ordinary, a quarter slender and tall, a sixth broad and short. The tuft sets the height
+  // around them, highest in its middle; by the tread they splay and stand a little lower.
+  float slender = step(shape, 0.25), broad = step(0.83, shape);
+  float H = 0.52 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample) * mix(1., 1.14, slender) * mix(1., 0.78, broad)
+          * mix(0.8, 1.2, tuft) * (1. - 0.28 * smoothstep(0.22, 0.68, tuftDist)) * (1. - 0.1 * edge);
+  float W0 = (0.045 + 0.032 * aR.z) * mix(0.15, 1., smoothstep(0., 0.36, H)) * mix(1., 0.4, reed) * uLodW
+           * mix(1., 0.62, slender) * mix(1., 1.3, broad);
   float wd = W0 * pow(max(1. - by, 0.), 0.92);
-  float lean = (0.12 + 0.42 * aR.z + 0.8 * trample + 0.22 * wet) * H;
+  // Rain weighs the blades: water held along a blade bends it from the foot and lays its tip over, and the stand
+  // rises again as the moisture field dries.
+  float soak = smoothstep(0.05, 0.75, wet) * (1. - trample);
+  float lean = (0.12 + 0.42 * aR.z + 0.8 * trample + 0.95 * soak + 0.3 * edge) * H * mix(1., 1.45, slender);
+  vec2 away = tuftDist > 0.02 ? -toTuft / tuftDist : vec2(0.);
   float load = windWave(aG.xy) * uWind * (1. - 0.74 * trample);
   float angle = by * clamp(load * (0.98 + 0.24 * aR.z), -0.4, 1.31);
   float bow = sin(angle), upright = cos(angle);
@@ -1157,24 +1194,30 @@ void main(){
   float twist = by * (aG.w - 0.5) * (1. - 0.7 * reed) + bow * dot(fd, WIND_DIR) * 0.32;
   vec2 across = ax + twist * fd;
   vec3 p = vec3(aG.x, aG.z, aG.y);
-  p.xz += across * side * wd + by * by * (fd + twist * ax) * lean;
+  vec2 leanDir = normalize(fd + twist * ax + away * 1.6 * smoothstep(0.08, 0.4, tuftDist));
+  p.xz += across * side * wd + by * by * leanDir * lean;
   p.xz += WIND_DIR * H * by * bow;
-  p.y += by * H * (1. - 0.14 * by * by) * (1. - 0.7 * trample) * mix(upright,1.,0.20);
+  p.y += by * H * (1. - 0.14 * by * by) * (1. - 0.7 * trample) * mix(upright,1.,0.20) * (1. - 0.55 * soak * by * by);
   vec3 bend = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
   p += bend * (0.88 * H * by * by);
   vN = normalize(vec3(fd.x, 0.52, fd.y) + vec3(across.x, 0., across.y) * side * 0.88
        + vec3(-WIND_DIR.x, 0.56, -WIND_DIR.y) * bow * 1.65 + bend * (0.62 * by));
   vGA = vec4(by, aR.z, 2. * side, bow); vGH = H; vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
+  // last season's blades still standing: a few everywhere, more in some tufts, many along the tread
+  vDry = step(deadRoll, 0.05 + 0.3 * tuft * tuft * tuft + 0.24 * edge); vClump = tuft;
   gl_Position = project(p);
 }`,
-`uniform float uClip; centroid in vec3 vWP; centroid in vec4 vGA; centroid in float vGH; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch; out vec4 o;
+`uniform float uClip; centroid in vec3 vWP; centroid in vec4 vGA; centroid in float vGH; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch;
+centroid in float vDry; centroid in float vClump; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   float y = clamp(vGA.x, 0., 1.);
   float g = pow(y, 1.45);
   g *= mix(0.72, 1., smoothstep(0.03, 0.3, vGH));
   g = mix(0.45, g, 0.85);
-  vec3 tip = meadowTip(vWP.xz, (vPatch - 0.5) * 0.06);
+  vec3 tip = meadowTip(vWP.xz, (vPatch - 0.5) * 0.06 + (vClump - 0.5) * 0.05) * mix(0.9, 1.12, vClump);
+  // a dead blade keeps a ghost of its colour in the straw
+  tip = mix(tip, mix(vec3(0.46, 0.38, 0.22), tip * 0.5 + vec3(0.2, 0.16, 0.11), 0.38), vDry);
   vec3 gc = floraRamp(tip, g);
   float pn = vnoise(vWP.xz * 0.28) * 0.6 + vnoise(vWP.xz * 1.1) * 0.4;
   gc *= mix(0.8, 1.2, pn);
@@ -1182,14 +1225,23 @@ void main(){
   // A blade rises out of the litter in the litter's own tone, so seen from above its foot is ground, not a black flag.
   // The dark foot stands for neighbours shading it, which is how a stand looks from the side; looking down into it,
   // the sun reaches the feet and the ground between them.
-  float down = smoothstep(0.35, 0.85, normalize(uCam - vWP).y);
-  gc = mix(tip * mix(0.2, 0.42, down) + vec3(0.01), gc, smoothstep(0., mix(0.32, 0.12, down), y));
+  float down = smoothstep(0.2, 0.7, normalize(uCam - vWP).y);
+  gc = mix(tip * mix(0.2, 0.46, down) + vec3(0.012, 0.012, 0.008), gc, smoothstep(0., mix(0.32, 0.1, down), y));
   gc *= (0.88 + 0.24 * vGA.y) * mix(mix(0.72, 0.95, down), 1., smoothstep(0., 0.55, y)) * (1. - 0.35 * vWet);
   // The central fold stays visible up close and blends out across subpixel blades.
   float footprint = max(fwidth(vGA.z), 0.012);
   float rib = (1. - smoothstep(0.035, 0.12 + footprint, abs(vGA.z))) * (1. - smoothstep(0.17, 0.72, footprint));
   gc *= 1. + 0.24 * rib * smoothstep(0.1, 0.45, y) * (1. - smoothstep(0.75, 1., y));
-  vec3 lit = floraLight(gc, vWP, normalize(vN), normalize(uCam - vWP), y, 0.12, glowI(vGlow));
+  vec3 lit = floraLight(gc, vWP, normalize(vN), normalize(uCam - vWP), y, 0.12 * (1. - vDry), glowI(vGlow));
+  // a wet blade is a mirror: the sun glints along its fold and the sky shows in its face
+  if (vWet > 0.03) {
+    vec3 V = normalize(uCam - vWP), Nw = normalize(vN);
+    if (dot(Nw, V) < 0.) Nw = -Nw;
+    float fres = 0.04 + 0.96 * pow(1. - max(dot(Nw, V), 0.), 5.);
+    float glint = pow(max(dot(Nw, normalize(uSunDir + V)), 0.), 70.);
+    lit += smoothstep(0.03, 0.6, vWet) * smoothstep(0.12, 0.5, y)
+         * (uSunCol * directLight(vWP) * glint * 1.6 + ambient(reflect(-V, Nw)) * (1.2 + 4.5 * fres));
+  }
   // Sky reflection on the exposed blade faces follows the crest across the stand.
   lit += tip * ambient(normalize(vN)) * (0.72 * max(vGA.w, 0.) * y * (1. - uNight));
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
@@ -1331,15 +1383,19 @@ void main(){
 in vec3 vWP; in float vDepth, vWave, vFlow; out vec4 o;
 // raindrops: in every cell a drop lands at its own moment and sends out one ring; two cell sizes, offset, so no
 // lattice shows
-vec2 rainRings(vec2 p){
-  vec2 g = vec2(0.);
-  for (int k = 0; k < 2; k++) {
-    float size = k == 0 ? 0.43 : 0.29;
+// Raindrops: in every cell a drop lands at its own moment and sends out one ring. Three cell sizes, offset, so no
+// lattice shows. Each ring bends the surface (xy) and its crest catches light, as does the little crown thrown up
+// where the drop went in (z).
+vec3 rainRings(vec2 p){
+  vec3 g = vec3(0.);
+  for (int k = 0; k < 3; k++) {
+    float size = k == 0 ? 0.43 : k == 1 ? 0.29 : 0.19;
     vec2 q = p / size + float(k) * 7.31, id = floor(q), f = fract(q) - 0.5, h = hash22(id + float(k) * 13.1);
     float t = fract(uTime * (1.05 + 0.6 * h.x) + h.y), ring = t * 0.27;
     vec2 d = f - (h - 0.5) * 0.3;
-    float r = length(d) + 1e-4, env = (1. - t) * (1. - t) * exp(-pow((r - ring) * 16., 2.));
-    g += d / r * cos((r - ring) * 42.) * env * 0.2;
+    float r = length(d) + 1e-4, band = exp(-pow((r - ring) * 16., 2.)), env = (1. - t) * (1. - t);
+    g.xy += d / r * cos((r - ring) * 42.) * env * band * 0.2;
+    g.z += env * band * smoothstep(0.02, 0.1, t) * 0.55 + exp(-r * r * 900.) * (1. - smoothstep(0., 0.07, t)) * 1.6;
   }
   return g;
 }
@@ -1353,7 +1409,7 @@ vec2 waveGrad(vec2 p){
   float gw = max(0., windWave(p)) * uWind;
   g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. - uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.023 * gw;
   g += vec2(-WIND_DIR.y, WIND_DIR.x) * cos(dot(p, vec2(-WIND_DIR.y, WIND_DIR.x)) * 13. + uTime * 6.1) * 0.006 * gw;
-  if (uStorm > 0.) g += uStorm * rainRings(p);
+  if (uStorm > 0.) g += uStorm * rainRings(p).xy;
   return g + impactWave(p).yz;
 }
 void main(){
@@ -1397,6 +1453,9 @@ void main(){
   float sunGlint = pow(clamp(dot(N, Hh), 0., 1.), 510.) * 3.5;
   col += tonemap(uSunCol * sun * sunGlint * F) * (1. - 0.85 * uNight);
 
+  // the crests of the rain rings and the crowns where the drops go in catch the sky's light
+  if (uStorm > 0.01) col += uStorm * rainRings(p).z * (skyBase(vec3(0., 1., 0.)) * 0.35 + 0.02) * (1. - 0.6 * uNight)
+    * (1. - smoothstep(18., 55., length(uCam - vWP)));
   float swash = 1. - smoothstep(0.025, 0.21, abs(depth - 0.06));
   float foam = (swash + 0.38 * stream * smoothstep(0.7, 1., sin(flow))) * shoreFroth(p);
   float light = uNight * uNight * glowI(glow);
@@ -1599,6 +1658,7 @@ function waterMesh(terrain) {
 //   block  freshly broken stone: many flat fracture faces meeting at sharp edges
 //   slab   bedded stone: squat, its sides stepped where the beds weather back at different rates
 //   tall   a standing monolith
+const rockSurface = makeRockSurface(rng(5501));
 const ROCK_STYLES = {
   round: { planes: [1, 3], cut: 0.5, reach: [0.66, 0.92], lumps: 0.26, ridge: 0.04, fine: 0.035, squash: 0.74, beds: 0 },
   block: { planes: [8, 12], cut: 0.98, reach: [0.4, 0.62], lumps: 0.16, ridge: 0.15, fine: 0.06, squash: 0.82, beds: 0 },
@@ -1650,6 +1710,24 @@ function rockMesh(seed, sub, style = 'round') {
     if (py < -0.22) py = -0.22 + (py + 0.22) * 0.25;
     return [px, py, pz];
   });
+  // The shared rock surface pushes the vertices out along their normals, so the silhouette carries the same facets
+  // and chips that light the face. Not under the seat, which stays flat on the ground.
+  {
+    const rough = pos.map(() => [0, 0, 0]);
+    for (const [a, b, c] of f) {
+      const A = pos[a], B = pos[b], C = pos[c];
+      const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], w = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
+      const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+      for (const q of [a, b, c]) { rough[q][0] += n[0]; rough[q][1] += n[1]; rough[q][2] += n[2]; }
+    }
+    const amount = sub >= 3 ? 0.11 : 0.06;
+    for (let i = 0; i < pos.length; i++) {
+      const l = Math.hypot(...rough[i]) || 1, n = rough[i].map(v => v / l), p = pos[i];
+      if (p[1] <= -0.215) continue;
+      const lift = amount * (rockSurface.triplanar(p, n) - 0.55) * sm(-0.22, -0.12, p[1]);
+      pos[i] = [p[0] + n[0] * lift, p[1] + n[1] * lift, p[2] + n[2] * lift];
+    }
+  }
   const nor = pos.map(() => [0, 0, 0]), around = pos.map(() => new Set());
   for (const [a, b, c] of f) {
     const A = pos[a], B = pos[b], C = pos[c];
@@ -2459,6 +2537,7 @@ function buildValley() {
       const tall = sm(0.5, 0.78, fbm(x * 0.028 + 21, z * 0.028 - 9, 3));
       const heath = 1 - sm(WORLD_HALF - 5 - 10 * tall, WORLD_HALF, edge);
       data[i] = Math.min(1, grow * 1.24) * (0.035 + 0.965 * moisture) * heath * (1-sm(0.12,0.96,tread));
+      data[i + 2] = 1 - sm(0.9, 2.7, trailDistance(x, z));
       data[i + 1] = (0.45 + 0.55 * Math.min(1, grow * 1.2)) * (0.8 + 0.75 * fbm(x * 0.06 + 11, z * 0.06 - 4, 3))
         * (1 + 0.65 * tall) * (0.82 + 0.18 * moisture) * (1 - 0.22 * tread);
     },
@@ -2525,7 +2604,7 @@ const rocks = [
   rockSet(3, [[1.3, 'round'], [5.9, 'block'], [3.3, 'slab']]),
   rockSet(3, [[4.1, 'block'], [8.6, 'round'], [6.2, 'slab']]),
   rockSet(3, [[7.7, 'tall'], [9.4, 'tall'], [2.8, 'block']]),
-  rockSet(1, [[2.2, 'round'], [5.1, 'slab'], [7.3, 'block']]),
+  rockSet(2, [[2.2, 'round'], [5.1, 'slab'], [7.3, 'block']]),
 ]
   .map((mesh, k) => rockBatches(mesh, sc.rv[k], sc.rs[k], sc.beds[k]));
 
@@ -2862,6 +2941,7 @@ function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
 let wind, uploadedWind = -1;
 const gustTexture = gl.createTexture();
 bakeTrailMaterial(gl, rng(440951));
+uploadRockSurface(gl, rockSurface, 19);
 let engine, glowF, groundF, wearF, mode = BOXEL;
 const brush = new BrushField();
 const bendTex = gl.createTexture();
@@ -3268,7 +3348,7 @@ function windStrength() { return (rain && !TEST ? 1.18 : 1.0) + 0.7 * storm; }
 function common(p, eye, VP, mirror, t) {
   gl.useProgram(p);
   if (p.worldFrame === undefined) {
-    gl.uniform1i(p.u('uOceanAtlas'),18); gl.uniform1i(p.u('uGusts'),16); gl.uniform1i(p.u('uTrailMaterial'),17);
+    gl.uniform1i(p.u('uOceanAtlas'),18); gl.uniform1i(p.u('uRockSurface'), 19); gl.uniform1i(p.u('uGusts'),16); gl.uniform1i(p.u('uTrailMaterial'),17);
     gl.uniform1i(p.u('uShadows'), 9); gl.uniform1i(p.u('uFloraSpill'), 10);
     gl.uniform1i(p.u('uClouds'), 11); gl.uniform1i(p.u('uCanopy'), 12);
     gl.uniform1i(p.u('uBendTex'), 13); gl.uniform1i(p.u('uValleyGround'), 14); gl.uniform2fv(p.u('uGroundRange'), heightRange);
@@ -3675,6 +3755,7 @@ const VIEWS = {
   trail: { eye: [trail[0][0], H(...trail[0]) + 1.65, trail[0][1]], yaw: Math.atan2(trail[1][0] - trail[0][0], trail[0][1] - trail[1][1]), pitch: 0.02 },
   river: { eye: [riverX(-40) + 2.6, H(riverX(-40) + 2.6, -40) + 2.4, -40], yaw: -0.25, pitch: -0.32 },
   stones: { eye: [OUTCROP[0] - 7, H(OUTCROP[0] - 7, OUTCROP[1] + 6) + 1.7, OUTCROP[1] + 6], yaw: Math.atan2(7, 6), pitch: -0.3 },
+  boulder: { eye: [OUTCROP[0] - 7, H(OUTCROP[0] - 7, OUTCROP[1] + 6) + 1.7, OUTCROP[1] + 6], yaw: Math.atan2(7, 6) - 0.62, pitch: -0.52 },
   verge: { eye: [trail[3][0] + 0.6, H(trail[3][0] + 0.6, trail[3][1]) + 1.65, trail[3][1]], yaw: Math.atan2(trail[4][0] - trail[3][0], trail[3][1] - trail[4][1]) + 0.35, pitch: -0.5 },
   shore: { eye: [SHORE_CAM[0], H(...SHORE_CAM) + 2.6, SHORE_CAM[1]], yaw: -0.95, pitch: -0.24, motes: true },
   planet: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 0.05, pitch: 0.12, motes: true },
@@ -3751,7 +3832,7 @@ function scripted(m, frames = 900, view = 'shore') {
   document.getElementById('status').textContent = `boxel ready: three surface fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
   if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw, spore rain, storm, night, day cycle, switch engine, readout</span>'; }
   window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
-    runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
+    runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
     const darkField = gl.createTexture();
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, darkField);
