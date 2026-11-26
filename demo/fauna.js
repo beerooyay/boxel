@@ -1,3 +1,4 @@
+import { windDirection } from './wind.js';
 // A sailwing has two pairs of hinged membranes, a segmented abdomen and paired streamers.
 // The same articulated mesh is instanced throughout the watershed and in its reflection.
 const TAU = 2 * Math.PI;
@@ -31,7 +32,7 @@ void main(){
     p.y += span * span * (0.04 + 0.09 * effort) * sin(beat * 0.48 - span * 3. - 1.);
   }
   vec2 heading = vec2(sin(aAngles.x), cos(aAngles.x));
-  float c = cos(aAngles.z), s = sin(aAngles.z);
+  float c=cos(aAngles.z), s=sin(aAngles.z);
   p.xy = mat2(c, s, -s, c) * p.xy;
   float pitch = aAngles.y + 0.022 * effort * cos(beat);
   p.zy = mat2(cos(pitch), sin(pitch), -sin(pitch), cos(pitch)) * p.zy;
@@ -266,7 +267,7 @@ function makeRoutes(groundAt, waterLevel, riverX, sc, random) {
   return routes;
 }
 
-export function createSailwings({ gl, program, vao, worldVertex, groundAt, waterLevel, riverX, sc, random, outsideView }) {
+export function createSailwings({ gl, program, vao, worldVertex, groundAt, waterLevel, riverX, sc, random, outsideView, windAt }) {
   const shader = program(worldVertex + vertexSource, fragmentSource);
   const mesh = sailwingMesh(), routes = makeRoutes(groundAt, waterLevel, riverX, sc, random);
   const instances = new Float32Array(routes.length * 9), buffer = gl.createBuffer();
@@ -338,13 +339,19 @@ export function createSailwings({ gl, program, vao, worldVertex, groundAt, water
           const pitch = 0.63 * Math.atan2(dy, horizontal), hz = 1.62 + (0.80 - size) * 0.95;
           const alarm = alarmAt(routes[i], t);
           const sail = Math.max(0, Math.sin(0.86 * t + phase * 2 + i) - 0.34) / 0.66;
-          instances[p + 1] += 0.94 * alarm;
+          // In a crosswind they bank into the front and ride its lift. Drift
+          // fades to zero at a skim, exactly where the water responds.
+          const gust=windAt(instances[p],instances[p+2])*lift;
+          const crosswind=(windDirection[0]*dz-windDirection[1]*dx)/horizontal;
+          instances[p] += 0.32*windDirection[0]*gust;
+          instances[p+2] += 0.32*windDirection[1]*gust;
+          instances[p + 1] += 0.94 * alarm + 0.10*Math.max(0,gust);
           instances[p + 3] = size * hue;
           instances[p + 4] = Math.atan2(dx, dz);
           instances[p + 5] = pitch + 0.22 * alarm;
-          instances[p + 6] = -0.52 * Math.tanh(turn * 0.55) * lift + 0.48 * routes[i].bank * alarm;
+          instances[p + 6] = -0.52 * Math.tanh(turn * 0.55) * lift + 0.48 * routes[i].bank * alarm + 0.19*crosswind*gust;
           instances[p + 7] = TAU * hz * t + 0.27 * Math.sin(1.9 * t + phase) + phase * 3 + i + 3.2 * alarm;
-          instances[p + 8] = Math.min(1.1, (0.83 - 0.72 * sail * sail + 0.18 * Math.max(0, pitch)) * lift + 0.88 * alarm);
+          instances[p + 8] = Math.min(1.1, (0.83 - 0.15*Math.max(0,gust) - 0.72 * sail * sail + 0.18 * Math.max(0, pitch)) * lift + 0.88 * alarm);
         }
         lastTime = t;
       }

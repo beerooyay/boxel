@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rangeWalks, riverFlow, riverX, spring, terrainHeight, trail, trailCover, trailDistance, valleyWalks, waterLevel } from '../demo/landmarks.js';
+import { inRestArea, overlooks, rangeWalks, riverFlow, riverX, spring, terrainHeight, trail, trailCover, trailDistance, valleyWalks, waterLevel } from '../demo/landmarks.js';
 
 test('the full tread of every valley walk survives spatial bin boundaries', () => {
   for (const route of [trail, ...Object.values(valleyWalks), ...Object.values(rangeWalks)]) {
@@ -62,4 +62,31 @@ test('the spring has a still surface and drains continuously to the original riv
   }
   assert.equal(riverFlow(-60, last), 1);
   assert.equal(riverFlow(0, 0), 0);
+});
+
+test('inner switchbacks allow a continuous climb in either direction', () => {
+  for (const route of [trail, ...Object.values(valleyWalks)]) {
+    for (let i = 1; i < route.length; i++) {
+      const [x, z] = route[i - 1], dx = route[i][0] - x, dz = route[i][1] - z;
+      const length = Math.hypot(dx, dz), steps = Math.ceil(length * 6);
+      let previous = terrainHeight(x, z, 8);
+      for (let j = 1; j <= steps; j++) {
+        const height = terrainHeight(x + dx * j / steps, z + dz * j / steps, 8);
+        assert.ok(Math.abs(height - previous) * steps / length < 0.40);
+        previous = height;
+      }
+    }
+  }
+});
+
+test('the level centre of each inner overlook stays clear of trees and boulders', () => {
+  for (const [x, z, y, rx, rz] of overlooks) {
+    if (Math.max(Math.abs(x), Math.abs(z)) > 56) continue;
+    for (let i = 0; i < 16; i++) {
+      const angle = 2 * Math.PI * i / 16;
+      const px = x + rx * 0.55 * Math.cos(angle), pz = z + rz * 0.55 * Math.sin(angle);
+      assert.ok(Math.abs(terrainHeight(px, pz, 8) - y) < 0.01);
+      assert.ok(inRestArea(px, pz));
+    }
+  }
 });
