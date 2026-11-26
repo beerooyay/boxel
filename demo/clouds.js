@@ -6,39 +6,24 @@ import { createWeather, cloudBase, CLOUD_WIND, WEATHER_METRES, WEATHER_SIZE, WEA
 export const cloudSky = `
 uniform highp sampler2DArray uClouds;
 uniform vec4 uCloudEye, uLastCloudEye;
-uniform vec2 uCloudLayerMix, uCloudEvolution;
+uniform vec3 uCloudLayerMix;
 vec2 cloudSkyUV(vec3 d) {
   // Longitude is immaterial at the zenith, where atan(0, 0) is undefined.
   float az = abs(d.x) + abs(d.z) < 0.00001 ? 0. : atan(d.x, -d.z);
   return vec2(az * 0.159154943 + 0.5, asin(clamp(d.y, 0., 1.)) * 0.636619772);
 }
-vec2 cloudProjection(vec3 origin, vec3 ray, vec4 anchor, vec2 drift) {
+vec2 cloudProjection(vec3 origin, vec3 ray, vec4 anchor) {
   vec3 delta = origin - anchor.xyz;
   float dist = max(60., (anchor.w - delta.y) / max(ray.y, 0.045));
-  vec3 offset = delta + dist * ray;
-  offset.xz += drift;
-  return cloudSkyUV(normalize(offset));
+  return cloudSkyUV(normalize(delta + dist * ray));
 }
 vec4 cloudColumn(vec3 origin, vec3 ray) {
-  vec2 drift = vec2(0.);
-  float growth = 0.;
-  if (uCloudEvolution.y > 0.01) {
-    // Evaluate the same moving air in the sky, water and terrain shadows.
-    // Between atlas renders these eddies still grow and erode the edges.
-    float t = uCloudEvolution.x, intensity = uCloudEvolution.y;
-    float reach = max(60., (uCloudEye.w + uCloudEye.y - origin.y) / max(ray.y, 0.06));
-    vec2 air = origin.xz + ray.xz * reach - vec2(${CLOUD_WIND.join(',')}) * t;
-    vec2 eddy = vec2(sin(air.y * 0.008 + air.x * 0.002 + t * 0.048),
-                     sin(air.x * 0.009 - air.y * 0.003 - t * 0.055));
-    drift = 62. * intensity * eddy;
-    growth = intensity * (0.33 * sin(dot(air, vec2(0.008, 0.006)) + t * 0.063) + 0.14 * eddy.x);
-  }
-  vec4 col = texture(uClouds, vec3(cloudProjection(origin, ray, uCloudEye, drift), uCloudLayerMix.x));
+  vec4 col = texture(uClouds, vec3(cloudProjection(origin, ray, uCloudEye), uCloudLayerMix.x));
   if (uCloudLayerMix.y < 1.) {
-    vec2 uv = cloudProjection(origin, ray, uLastCloudEye, drift);
-    col = mix(texture(uClouds, vec3(uv, 1. - uCloudLayerMix.x)), col, uCloudLayerMix.y);
+    vec2 uv = cloudProjection(origin, ray, uLastCloudEye);
+    col = mix(texture(uClouds, vec3(uv, uCloudLayerMix.z)), col, uCloudLayerMix.y);
   }
-  return col * (1. + growth * (1. - col.a));
+  return col;
 }
 vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
   float dusk = 1. - smoothstep(0.025, 0.39, uStarDir.y);
@@ -122,8 +107,10 @@ float density(vec3 p, out float height) {
   vec3 q = p - vec3(0.10, 0., 0.055) * (p.y - uBase);
   vec3 warp = textureLod(uBillows, q.zxy / 1690. + vec3(0.21, 0.38, 0.72), 0.).rgb;
   q += (warp - 0.68) * vec3(77., 46., 43.);
-  vec3 large = textureLod(uBillows, q / 1200., 0.).rgb;
-  vec3 fine = textureLod(uBillows, q.zxy / 480. + vec3(0.31, -uDriftTime * 0.00036, 0.53), 0.).rgb;
+  // New lobes rise through the moist column while the crown and base
+  // dissolve them. Move the smaller billows faster than the main body.
+  vec3 large = textureLod(uBillows, q / 1200. - vec3(0., uDriftTime * 0.00042, 0.), 0.).rgb;
+  vec3 fine = textureLod(uBillows, q.zxy / 480. + vec3(0.31, -uDriftTime * 0.00036, 0.53 - uDriftTime * 0.00175), 0.).rgb;
   // A nearest-feature field is steepest around a lobe's shoulders. Using
   // distance here keeps the fine turrets distinct on the sunlit faces.
   large = 1. - sqrt(max(vec3(0.), 1. - large));
@@ -208,7 +195,7 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
   }
   const atlas = gl.createTexture();
   gl.activeTexture(gl.TEXTURE11); gl.bindTexture(gl.TEXTURE_2D_ARRAY, atlas);
-  gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, width, height, 2);
+  gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, width, height, 3);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -226,6 +213,11 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
   const WEATHER_PERIOD = 4, BLEND_SECONDS = 0.8;
   let front = 0, shown, previous, pending, row = 0, swappedAt = 0, blend = 1, weatherAge = 0;
   let blendDuration = BLEND_SECONDS;
+  let lastLayer = 0;
+  function spareLayer() {
+    // The three layer indices sum to 3. Keep both sampled layers intact.
+    return previous ? 3 - front - lastLayer : (front + 1) % 3;
+  }
   function marchRows(state, first, count, dest, skip) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, atlas, 0, dest);
@@ -268,27 +260,33 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
     const displaced = shown && Math.hypot(eye[0] - shown.eye[0], eye[1] - shown.eye[1], eye[2] - shown.eye[2]) > 18;
     const weatherChanged = shown && Math.abs(rain - shown.rain) > 0.10;
     if (previous && (fixture || t - swappedAt >= blendDuration)) previous = null;
-    const changed = shown && (t - shown.t > 1.25 - 0.65 * motion || displaced || weatherChanged ||
+    const changed = shown && (t - shown.t > 1.25 - 1.03 * motion || displaced || weatherChanged ||
       (fixture && (alignment < 0.99999 || Math.abs(rain - shown.rain) > 0.001)));
-    if (reset || (!pending && !previous && changed)) {
+    // Build the next volume while the last two are still blending during a lapse.
+    if (reset || (!pending && changed && (!previous || motion > 0.1))) {
       upload(weatherAge / WEATHER_PERIOD);
       // Deep twilight lights the existing volume in the composite. Keep the
       // optical light ray above the horizon as the sun sets.
       const direction = [light[0], Math.max(0.14, light[1]), light[2]];
       const length = Math.hypot(...direction);
-      pending = { t, weatherTime, motion, eye: [...eye], light: [...light], rain,
+      pending = { t, weatherTime, motion, layer: spareLayer(), eye: [...eye], light: [...light], rain,
         base: cloudBase(sun, rain), direction: direction.map(x => x / length) };
       row = 0;
     }
-    if (pending) {
-      const count = Math.min(height - row, reset || fixture ? height : Math.ceil(height / (27 - 10 * pending.motion)));
-      marchRows(pending, row, count, 1 - front, true);
+    if (pending && row < height) {
+      const rowsPerFrame = Math.ceil(height / (27 - (mobile ? 7 : 10) * pending.motion));
+      const count = Math.min(height - row, reset || fixture ? height : rowsPerFrame);
+      marchRows(pending, row, count, pending.layer, true);
       row += count;
-      if (row >= height) {
-        previous = reset || fixture ? null : shown;
-        front = 1 - front; shown = pending; pending = null; swappedAt = t;
-        blendDuration = BLEND_SECONDS - 0.39 * shown.motion;
-      }
+    }
+    if (pending && row === height && (reset || !previous)) {
+      previous = reset || fixture ? null : shown;
+      lastLayer = front;
+      front = pending.layer;
+      shown = pending;
+      pending = null;
+      swappedAt = t;
+      blendDuration = BLEND_SECONDS - 0.49 * shown.motion;
     }
     const fraction = previous ? Math.min(1, Math.max(0, (t - swappedAt) / blendDuration)) : 1;
     blend = fraction * fraction * (3 - 2 * fraction);
@@ -308,7 +306,7 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
   // Read the spare layer only when the browser fixture compares marches.
   function readOptics(state, skip, rgba) {
     upload(weatherAge / WEATHER_PERIOD);
-    marchRows({ ...state, weatherTime: state.t }, 0, height, 1 - front, skip);
+    marchRows({ ...state, weatherTime: state.t }, 0, height, spareLayer(), skip);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     try {
       if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw Error('Cloud comparison framebuffer incomplete');
@@ -318,5 +316,5 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
       pending = null; previous = null; blend = 1;
     }
   }
-  return { update, advance, eyeUniform, lastEyeUniform, get front() { return front; }, get blend() { return blend; }, width, height, readOptics };
+  return { update, advance, eyeUniform, lastEyeUniform, get front() { return front; }, get lastLayer() { return lastLayer; }, get blend() { return blend; }, width, height, readOptics };
 }

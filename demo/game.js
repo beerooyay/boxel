@@ -3613,8 +3613,7 @@ function common(p, eye, VP, mirror, t) {
   if (p.worldFrame !== frameNumber) {
     p.worldFrame = frameNumber;
     gl.uniform4fv(p.u('uCloudEye'), clouds.eyeUniform); gl.uniform4fv(p.u('uLastCloudEye'), clouds.lastEyeUniform);
-    gl.uniform2f(p.u('uCloudLayerMix'), clouds.front, clouds.blend);
-    gl.uniform2f(p.u('uCloudEvolution'), t + weatherLead, cloudMotion);
+    gl.uniform3f(p.u('uCloudLayerMix'), clouds.front, clouds.blend, clouds.lastLayer);
     gl.uniform3fv(p.u('uSunDir'), lightDirection); gl.uniform3fv(p.u('uSunCol'), lightColor);
     gl.uniform3fv(p.u('uStarDir'), starDirection); gl.uniform3fv(p.u('uStarTint'), starTint); gl.uniform3fv(p.u('uCloudTint'), cloudTint);
     if (p.shadowVersion !== valleyShadows.version) {
@@ -3867,10 +3866,8 @@ function frame(now) {
   if (elapsed < 0.25) adaptDensity(elapsed);
   const dt = Math.min(0.1, elapsed);
   const skyDt = started ? advanceDay(dt) : dt;
-  // A photographed day covers far more atmospheric evolution than the
-  // default scenic wind. Keep its stronger turnover tied to the eased clock.
-  const weatherDt = dt + 2.05 * Math.max(0, skyDt - dt);
-  weatherLead += weatherDt - dt;
+  // Cloud drift, condensate and the sun advance on the same eased lapse clock.
+  weatherLead += skyDt - dt;
   const boost = dt > 0 ? sm(0.8, 9., (skyDt - dt) / dt) : 0;
   cloudMotion += (boost - cloudMotion) * (1 - Math.exp(-dt * 6.));
   night += (nightTarget - night) * Math.min(1, dt * 0.7);
@@ -3886,7 +3883,7 @@ function frame(now) {
   } else simT += dt;
   wind.update(dt, storm);
   const weatherSun = day === 'still' ? starDirection[1] : starAt(dayAngle)[1];
-  clouds.advance(weatherDt, sm(0, 0.41, weatherSun), storm, simT + weatherLead, groundF.sheet);
+  clouds.advance(skyDt, sm(0, 0.41, weatherSun), storm, simT + weatherLead, groundF.sheet);
   render(simT);
   capture?.frame(now);
   if (!started) return;
