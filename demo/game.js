@@ -944,13 +944,10 @@ void main(){
       N = normalize(N - near * vec3(grainSlope.x, 0., grainSlope.y) * 0.05);
     }
     float n1 = vnoise(lp.xz * 0.9 + lp.y), n2 = vnoise(lp.xy * 6. + lp.z * 3.), speck = vnoise(lp.zx * 22. + lp.y * 9.);
-    // three stones of the valley: pale speckled granite, the brown shale of the trails, dark fine basalt
-    float litho = fract(vH * 3.71);
-    vec3 alb = shale(n1);
-    if (litho < 0.36) {
-      float mica = smoothstep(0.7, 0.9, vnoise(lp.xz * 31. + lp.y * 17.)), feldspar = smoothstep(0.62, 0.86, vnoise(lp.zy * 23. - lp.x * 11.));
-      alb = mix(vec3(0.27, 0.26, 0.245), vec3(0.4, 0.38, 0.35), n1) * (1. - 0.5 * mica * near) + vec3(0.11, 0.1, 0.09) * feldspar * near;
-    } else if (litho > 0.82) alb = mix(vec3(0.07, 0.072, 0.08), vec3(0.15, 0.145, 0.14), n1);
+    // One stone, the valley's own: the shale the trails are worn from, warm where it weathers toward the trail's clay.
+    // Each stone keeps its own tone within it, so they differ as pieces of one bed do.
+    vec3 alb = shale(0.2 + 0.62 * n1 + 0.18 * (fract(vH * 3.71) - 0.5));
+    alb = mix(alb, vec3(0.33, 0.215, 0.14), 0.25 + 0.35 * smoothstep(0.3, 0.8, n2));
     float grain = vnoise(vec2(dot(vLoc.xz,vec2(3.1,-1.8)) + n2, vLoc.y*9.2 + n1*2.1));
     alb *= (0.82 + 0.30*speck) * (0.8 + 0.3*grain) * (0.62 + 0.76 * surf.a);
     alb = mix(alb,vec3(0.37,0.32,0.26),near * n2 * smoothstep(0.68,0.90,grain)*0.42);
@@ -963,12 +960,12 @@ void main(){
     // crustose lichen: rosettes in patches on the faces that see the sky, orange and sulphur crusts and pale leafy ones
     float rosette = vnoise(lp.xz * 9.5 + lp.y * 6.7) * 0.6 + vnoise(lp.zx * 24. - lp.y * 15.) * 0.4;
     float patches = smoothstep(0.5, 0.68, vnoise(lp.xz * 1.7 - lp.y * 2.3 + 5.));
-    float lich = colonised * patches * smoothstep(0.56, 0.61, rosette) * smoothstep(0.05, 0.55, N.y + 0.15) * (1. - crack) * (1. - hollow);
-    vec3 lichC = mix(vec3(0.6, 0.36, 0.07), vec3(0.47, 0.45, 0.17), smoothstep(0.55, 0.85, n2));
-    lichC = mix(lichC, vec3(0.45, 0.47, 0.42), smoothstep(0.72, 0.92, vnoise(lp.zx * 2.3)));
-    alb = mix(alb, lichC * (0.75 + 0.35 * speck), lich * 0.8);
+    // only a pale grey crust of lichen here and there, close to the stone's own colour
+    float lich = colonised * patches * smoothstep(0.58, 0.62, rosette) * smoothstep(0.05, 0.55, N.y + 0.15) * (1. - crack) * (1. - hollow);
+    vec3 lichC = mix(alb, vec3(0.4, 0.39, 0.35), 0.6);
+    alb = mix(alb, lichC * (0.85 + 0.25 * speck), lich * 0.35);
     float humus = vnoise(vWP.xz * 1.4 + vH * 5.);
-    float moss = colonised * smoothstep(0.34, 0.78, N.y + 0.38 * (humus - 0.5) + 0.3 * hollow) * smoothstep(0.36, 0.66, humus + 0.15 * speck + 0.2 * hollow);
+    float moss = colonised * hollow * smoothstep(0.45, 0.85, N.y + 0.38 * (humus - 0.5)) * smoothstep(0.45, 0.7, humus + 0.15 * speck) * 0.5;
     vec3 mossTint = mix(vec3(0.027, 0.08, 0.052), vec3(0.12, 0.215, 0.103), n2);
     moss *= 0.28 + 0.52 * (1.-smoothstep(0.30,2.9,abs(vWP.y-vBed.y)));
     alb = mix(alb, mossTint * (0.68 + 0.6 * speck), moss);
@@ -979,6 +976,9 @@ void main(){
     alb = mix(alb, vec3(0.15, 0.115, 0.085) * (0.8 + 0.4 * n2), (1. - smoothstep(-0.22, 0.02, vToe + 0.06 * (speck - 0.5))) * 0.55);
     alb *= (1. - 0.3 * wet) * mix(0.61, 1., smoothstep(-0.23, 0.15, vToe));
     col = pbr(alb, mix(0.8 - 0.15 * lich, 0.14, wet * 0.9), 0., N, V, vWP);
+    // light the sunlit soil around the stone throws back up onto its lower faces, warm as the trail it lies by
+    float below = clamp(0.55 - 0.65 * N.y, 0., 1.);
+    col += alb * vec3(0.95, 0.66, 0.42) * below * (0.12 + 0.3 * directLight(vWP + vec3(0., -0.3, 0.))) * (1. - uNight) * (1. - 0.7 * wet);
     col += mossTint * moss * uNight * (0.28 + glowI(glow));
     col += lichC * lich * (0.03 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
   }
