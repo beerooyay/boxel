@@ -1,3 +1,4 @@
+import { contactVolume, contactGLSL, CONTACT_SIZE } from './fox-contact.js';
 import { loadFox } from './fox.js';
 import { DAY_RATE, TIMELAPSE_SECONDS, timelapseTravel } from './sky-clock.js';
 import { bindCapture } from './capture.js';
@@ -44,6 +45,9 @@ const rockSurfaceReady = loadRockSurface();
 const leafSpraysReady = bakeLeafSpraysAsync(2024, matchMedia('(pointer: coarse)').matches ? 128 : 256);
 const qs = new URLSearchParams(location.search);
 const TEST = qs.has('test');
+const GRASS_LAB = !TEST && qs.has('grass-lab');
+const PLOT = { x: 15, z: 42, half: 5 };
+const plotDistance = (x, z) => Math.max(Math.abs(x-PLOT.x), Math.abs(z-PLOT.z));
 const touch = matchMedia('(pointer: coarse)').matches;
 if (touch) document.body.classList.add('touch');
 
@@ -90,6 +94,8 @@ const ISLET = [LAKE[0] + 6.8, LAKE[1] - 5.2], ISLET_WIDTH = 8.05, ISLET_DEPTH = 
 const OUTCROP = [34, -30];                                // a rocky rise north-east of the lake
 function outcrop(x, z) { return 1 - sm(9, 27, Math.hypot(x - OUTCROP[0], (z - OUTCROP[1]) * 1.25)); }
 function H(x, z, footprint = 0) {
+  const plot = GRASS_LAB ? plotDistance(x, z) : Infinity;
+  if (plot <= 5.6) return 1.8;
   // meadow: small undulation on rolling swells
   const meadow = 0.7 + 1.1 * fbm(x * 0.045 + 3, z * 0.045 - 1) + 0.25 * fbm(x * 0.22, z * 0.22, 3) + 3.2 * (fbm(x * 0.017 - 7, z * 0.017 + 5, 3) - 0.4);
   // Beyond this box even the longest possible lobe lies outside the bank.
@@ -134,7 +140,8 @@ function H(x, z, footprint = 0) {
     const shoulder = 12 * vnoise(mx * 0.0027 - 2.1, mz * 0.0027 + 4.7);
     h += m * m * (23 + shoulder + 106 * rg + 11 * crag * crag * rg) + foothills;
   }
-  return terrainHeight(x, z, h);
+  const height = terrainHeight(x, z, h);
+  return plot < 8.0 ? height + (1.8-height)*(1-sm(5.6, 8.0, plot)) : height;
 }
 function normalAt(x, z, e = 0.15) {
   const hx = H(x + e, z) - H(x - e, z), hz = H(x, z + e) - H(x, z - e);
@@ -1197,8 +1204,12 @@ void main(){
 // rounded normals, rolling gust waves, a root-mid-tip ramp with patch noise and root AO, sun backlight through
 // the tips. Wired to the certified fields: wear tramples it flat, moisture droops and darkens it, glow lights
 // the tips you stirred. Instances are shuffled, so drawing a prefix is an even thinning (adaptive density).
-const GRASS = program(WORLD_VS + BRUSH_VS + clumpGLSL + `
+const GRASS = program(WORLD_VS + BRUSH_VS + clumpGLSL + (GRASS_LAB ? '#define GRASS_LAB\n' + contactGLSL : '') + `
+#ifdef GRASS_LAB
+out float vContact;
+#else
 uniform vec4 uFoxGrass;
+#endif
 in vec4 aRoot, aDetail; uniform vec3 uCam; uniform vec2 uGrassHeight; uniform int uBladeRows;
 centroid out vec3 vWP; centroid out vec4 vGA; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
 flat out vec4 vGrassSite; centroid out float vDry;
@@ -1215,9 +1226,15 @@ void main(){
   // Selected roots carry a bundle of three leaves. The extra strips share
   // exactly the same origin and taper out before their close detail ends.
   int vid = gl_VertexID, rows = uBladeRows;
+#ifdef GRASS_LAB
+  int strip = 2*rows + 3;
+  int sibling = min(vid/strip, 2);
+  vid = max(0, vid - sibling*strip - (sibling > 0 ? 1 : 0));
+#else
   int sibling = vid >= 19 ? 2 : vid >= 10 ? 1 : 0;
+  if (sibling != 0) { vid = max(0, vid - (sibling == 2 ? 20 : 11)); rows = 3; }
+#endif
   bool sister = sibling != 0;
-  if (sister) { vid = max(0, vid - (sibling == 2 ? 20 : 11)); rows = 3; }
   vid = min(vid, 2*rows);
   float by = float(vid/2)/float(rows);
   float side = vid == 2*rows ? 0. : float(vid % 2) - 0.5;
@@ -1227,6 +1244,9 @@ void main(){
   vec2 ax = vec2(cos(a), sin(a)), fd = vec2(-ax.y, ax.x);
   vec2 uv = fieldUV(aG.xy); vec2 gr = vec2(texture(uGround, uv).r, texture(uWear, uv).r); float glow = texture(uGlow, uv).r;
   float wet = min(1., gr.r + uSheet), trample = smoothstep(0.04, 0.45, gr.g);
+#ifdef GRASS_LAB
+  trample = 0.;
+#endif
   float reed = step(1.6, aR.w);
   // Three blades: most are ordinary, many slender and tall, a few broad and short. The tuft sets the height
   // around them, highest in its middle; by the tread they splay and stand a little lower.
@@ -1258,6 +1278,10 @@ void main(){
   float sweep = 1.27 * force * shelter / sqrt(0.84 + force * force);
   float flutter = tipFlutter(aG.xy, uWindFrame.x, (shape + tuft) * 1.6);
   vec2 lateral = vec2(-WIND_DIR.y,WIND_DIR.x);
+#ifdef GRASS_LAB
+  if (uStillGrass) { sweep = 0.; flutter = 0.; }
+  vec3 brush = vec3(0.);
+#else
   vec3 brush = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
 
   vec2 foxDelta = aG.xy-uFoxGrass.xy;
@@ -1265,6 +1289,7 @@ void main(){
                  * (1. - smoothstep(0.23, 0.66, abs(aG.z-uFoxGrass.z)));
   brush.xz += foxDelta * foxTouch * 3.5;
   H *= 1. - foxTouch * 0.59;
+#endif
   vec2 rest = mix(fd, away, 0.66 * smoothstep(0.09, 0.45, tuftDist));
   vec2 steer = WIND_DIR * sweep + rest * (0.24 + 0.46 * aR.z + 0.68 * soak + 0.31 * trample + 0.17 * edge)
              + lateral * flutter * (0.07 + 0.18 * abs(sweep)) * (1. - 0.53 * crowded) + brush.xz * 1.12;
@@ -1287,6 +1312,27 @@ void main(){
   vec3 across = rotateFoliage(vec3(ax.x, 0., ax.y), hinge, vec2(upright, bow));
   vec3 centre = vec3(aG.x, aG.z, aG.y) + arc * by * vec3(lean.x * horizontal, vertical, lean.y * horizontal);
   vec3 p = centre + across * (side * wd);
+#ifdef GRASS_LAB
+  float hit = 0.;
+  vec3 root = vec3(aG.x, aG.z, aG.y);
+  vec3 local = transpose(uContactBasis) * (root - uContactOrigin);
+  vec2 reach = vec2(0.76 * arc + 0.07);
+  // Expanded bounds only select candidate blades. Every response below comes
+  // from a segment touching the animated body's sampled surface.
+  if (uContactEnabled && by > 0. && all(greaterThan(local.xz, CONTACT_MIN.xz-reach))
+      && all(lessThan(local.xz, CONTACT_MIN.xz+CONTACT_EXTENT.xz+reach))) {
+    vec3 bentTangent;
+    float halfWidth = 0.5 * W0 * (sister ? 0.79*sisters : 1.);
+    vec3 moved = aroundSurface(root, vec3(ax.x, 0., ax.y) * halfWidth, lean, arc,
+                               curvature, vid/2, rows, bentTangent, hit);
+    if (length(moved-centre) > 0.0001) {
+      across = normalize(across-bentTangent*dot(across,bentTangent));
+      tangent = bentTangent;
+      p = moved + across * (side * wd);
+    }
+  }
+  vContact = uMarkContact ? clamp(hit*23., 0., 1.) : 0.;
+#endif
   vec3 face = cross(tangent, across);
   vN = normalize(-face + tangent * (0.48 + 0.41 * by) + across * (side * 0.88));
   vGA = vec4(by, aR.z, 2. * side, bow); vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
@@ -1294,7 +1340,11 @@ void main(){
   vDry = step(deadRoll, 0.05 + 0.3 * tuft * tuft * tuft + 0.24 * edge); vGrassSite = vec4(aG.xy, tuft, aG.z);
   gl_Position = project(p);
 }`,
-`uniform float uClip; centroid in vec3 vWP; centroid in vec4 vGA; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch;
+(GRASS_LAB ? '#define GRASS_LAB\n' : '') + `
+#ifdef GRASS_LAB
+in float vContact;
+#endif
+uniform float uClip; centroid in vec3 vWP; centroid in vec4 vGA; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch;
 centroid in float vDry; flat in vec4 vGrassSite; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
@@ -1336,6 +1386,9 @@ void main(){
   }
   // Sky reflection on the exposed blade faces follows the crest across the stand.
   lit += tip * ambient(normalize(vN)) * (0.72 * max(vGA.w, 0.) * y * (1. - uNight));
+#ifdef GRASS_LAB
+  lit = mix(lit, vec3(0.14, 0.92, 0.72), vContact);
+#endif
   o = vec4(tonemap(fogged(lit, vWP)), 0.);
 }`);
 
@@ -1899,8 +1952,8 @@ function nearNy(near, x, z) {
 }
 // Blades per square metre in a full stand. bakeMeadow thins distant tiles.
 const GRASS_DENSITY = touch ? 60 : TEST ? 64 : 140;
-const START = [8, 30], SHORE_CAM = [19, 26];
-const clearOf = (x, z) => trailCover(x, z) < 0.02 && (waterLevel(x, z) === 0 || H(x, z) > waterLevel(x, z) + 0.2) && Math.hypot(x - START[0], z - START[1]) > 3.5 && Math.hypot(x - SHORE_CAM[0], z - SHORE_CAM[1]) > 3.5;
+const START = GRASS_LAB ? [PLOT.x-1.8, PLOT.z+2.5] : [8, 30], SHORE_CAM = [19, 26];
+const clearOf = (x, z) => (!GRASS_LAB || plotDistance(x, z) >= 7.8) && trailCover(x, z) < 0.02 && (waterLevel(x, z) === 0 || H(x, z) > waterLevel(x, z) + 0.2) && Math.hypot(x - START[0], z - START[1]) > 3.5 && Math.hypot(x - SHORE_CAM[0], z - SHORE_CAM[1]) > 3.5;
 const inMap = (x, z, m = 2) => Math.abs(x) < WORLD_HALF - m && Math.abs(z) < WORLD_HALF - m;
 
 function besideWalk(points, rand, inner = 1.8, width = 2.2) {
@@ -2737,9 +2790,14 @@ function buildValley() {
   const sc = scatter(near, fixed, stoneMeshes);
   const rocks = stoneMeshes.map((mesh, k) => rockBatches(mesh, sc.rv[k], sc.rs[k], sc.beds[k]));
   Object.assign(near, terrainPatches(near.pos, NEAR.S, NEAR.S, false, fixed));
-  const grass = bakeMeadow({ gl, shader: GRASS, half: WORLD_HALF, density: GRASS_DENSITY, heightRange: near.heightRange,
-    heightAt: (x, z) => nearH(near, x, z), outsideView, rng, touch,
+  const grass = bakeMeadow({ gl, shader: GRASS, half: WORLD_HALF, density: GRASS_LAB ? (touch ? 85 : 150) : GRASS_DENSITY, heightRange: near.heightRange,
+    heightAt: (x, z) => nearH(near, x, z), outsideView, rng, touch, plot: GRASS_LAB ? PLOT : null,
     habitatAt(x, z, data, i) {
+      if (GRASS_LAB) {
+        data[i] = 1;
+        data[i+1] = 0.68 + 0.48*(1-sm(PLOT.z-2, PLOT.z+4, z)) + 0.17*vnoise(x*0.38, z*0.38);
+        return;
+      }
       const y = nearH(near, x, z), water = waterLevel(x, z);
       const tread = trailCover(x,z);
       if (y < water - 0.12 || tread >= 0.98) return;
@@ -3318,6 +3376,18 @@ const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vx: 0, 
 player.y = H(player.x, player.z);
 let fox, thirdPerson = true;
 const chase = { height: player.y, arm: 3.55 };
+const contactGrid = GRASS_LAB ? contactVolume() : null;
+const contactTexture = GRASS_LAB ? gl.createTexture() : null;
+let contactOn = true, markContacts = false, stillGrass = true, contactMs = 0, labView = 0;
+if (contactTexture) {
+  gl.activeTexture(gl.TEXTURE21);
+  gl.bindTexture(gl.TEXTURE_3D, contactTexture);
+  gl.texStorage3D(gl.TEXTURE_3D, 1, gl.RGBA8, ...CONTACT_SIZE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  for (const axis of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R])
+    gl.texParameteri(gl.TEXTURE_3D, axis, gl.CLAMP_TO_EDGE);
+}
 const foxPose = { yaw: player.yaw, pitch: 0, roll: 0, height: player.y };
 const boulderCells = new Map();
 for (let group = 0; group < 3; group++) {
@@ -3389,6 +3459,12 @@ function foxCamera(dt = 0) {
 }
 
 function playerCamera(dt) {
+  if (GRASS_LAB && labView) {
+    if (labView === 2) return { eye: [PLOT.x, 15, PLOT.z+0.16], yaw: 0, pitch: -1.559 };
+    const pivot = [player.x, foxPose.height + 0.42, player.z];
+    const yaw = -1.30, pitch = -0.29, f = camBasis(yaw, pitch).f;
+    return { eye: pivot.map((p, i) => p - f[i] * (touch ? 2.8 : 2.45)), yaw, pitch };
+  }
   return thirdPerson && fox ? foxCamera(dt)
     : { eye: [player.x, player.y + 1.65 + player.bob, player.z], yaw: player.yaw, pitch: player.pitch };
 }
@@ -3422,7 +3498,8 @@ function viewProj(eye, b, fov, aspect) {
 
 function walkable(x, z, ground, priorDepth) {
   const depth = waterLevel(x, z) - ground;
-  return depth <= Math.max(fox ? 0.44 : 1.25, priorDepth) && inMap(x, z, 1);
+  return depth <= Math.max(fox ? 0.44 : 1.25, priorDepth) && inMap(x, z, 1)
+    && (!GRASS_LAB || plotDistance(x, z) < 6.4);
 }
 
 function crossSlope(dx, dz, ground) {
@@ -3743,6 +3820,7 @@ function common(p, eye, VP, mirror, t) {
     gl.uniform1f(p.u('uStorm'), storm); gl.uniform1f(p.u('uFlash'), flash * storm * (0.3 + 0.7 * night));
     gl.uniform1f(p.u('uSheet'), sheet); gl.uniformMatrix3fv(p.u('uSky'), false, skyTurn);
     gl.uniform1f(p.u('uWind'), windStrength());
+    if (p === GRASS && GRASS_LAB) gl.uniform1i(p.u('uFoxVolume'), 21);
     if (p === GRASS || p === JLEAF || p === PLANT) {
       gl.uniform3f(p.u('uBrush'), player.x, player.z, brush.cells.size ? 1 : 0);
     }
@@ -3804,10 +3882,16 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   if (coverage) { gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true, true, true, false); }
   leaves.draw(planes, eye, mirror < 0 ? 0.62 : 1);
   if (coverage) { gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true, true, true, true); }
-  common(PLANT, eye, VP, mirror, t); plants.draw(planes, eye, mirror < 0 ? 0.72 : 1);
+  if (!GRASS_LAB) { common(PLANT, eye, VP, mirror, t); plants.draw(planes, eye, mirror < 0 ? 0.72 : 1); }
   if (opts.grass) {
     common(GRASS, eye, VP, mirror, t);
-    gl.uniform4f(GRASS.u('uFoxGrass'), player.x, player.z, foxPose.height, opts.avatar ? 1 : 0);
+    if (GRASS_LAB) {
+      gl.uniform1i(GRASS.u('uContactEnabled'), Number(contactOn && Boolean(fox) && started));
+      gl.uniform1i(GRASS.u('uMarkContact'), Number(markContacts));
+      gl.uniform1i(GRASS.u('uStillGrass'), Number(stillGrass));
+      gl.uniformMatrix3fv(GRASS.u('uContactBasis'), false, foxBasis());
+      gl.uniform3f(GRASS.u('uContactOrigin'), player.x, foxPose.height, player.z);
+    } else gl.uniform4f(GRASS.u('uFoxGrass'), player.x, player.z, foxPose.height, opts.avatar ? 1 : 0);
     grassDrawn = grass.draw(planes, eye, grassDensity);
   }
   // Shade the sky only through gaps left in the opaque scene.
@@ -3836,16 +3920,20 @@ function drawWingGlass(eye, VP, mirror, t) {
   sailwings.drawWings();
 }
 
-function drawFox(eye, VP, mirror, t) {
-  const { yaw, pitch, roll, height } = foxPose;
+function foxBasis() {
+  const { yaw, pitch, roll } = foxPose;
   const { f, r, u } = camBasis(yaw, pitch);
   const c = Math.cos(roll), s = Math.sin(roll);
   // The asset faces +Z. A fox facing the camera's forward direction has
   // its local +X on the camera's left.
   const side = r.map((v, i) => -v*c - u[i]*s);
   const up = u.map((v, i) => v*c - r[i]*s);
+  return [...side, ...up, ...f];
+}
+
+function drawFox(eye, VP, mirror, t) {
   common(fox.shader, eye, VP, mirror, t);
-  fox.draw([player.x, height, player.z], [...side, ...up, ...f], player.wet);
+  fox.draw([player.x, foxPose.height, player.z], foxBasis(), player.wet);
 }
 
 function render(t, camOverride, glowTexture = texGlow, dt = 0) {
@@ -3854,7 +3942,15 @@ function render(t, camOverride, glowTexture = texGlow, dt = 0) {
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   const fov = 1.15, aspect = w / h, tanY = Math.tan(fov / 2), tanX = tanY * aspect;
   const cam = camOverride || playerCamera(dt);
-  const avatar = Boolean(fox && thirdPerson && !camOverride && started && chase.arm > 0.7);
+  const avatar = Boolean(fox && (thirdPerson || labView) && !camOverride && started && chase.arm > 0.7);
+  if (contactOn && contactGrid && fox && started) {
+    const began = performance.now();
+    const volume = contactGrid.update(fox.contactSurfaces());
+    gl.activeTexture(gl.TEXTURE21);
+    gl.bindTexture(gl.TEXTURE_3D, contactTexture);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, ...CONTACT_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, volume);
+    contactMs = 0.9*contactMs + 0.1*(performance.now()-began);
+  }
   const b = camBasis(cam.yaw, cam.pitch);
   ensurePost(w, h);
   const jitter = cameraJitter(post.previous, cam.eye, b.f, t, w, h);
@@ -4041,7 +4137,10 @@ function frame(now) {
       l.lastStepped = st[i].stepped;
       l.lastSteps = l.steps;
     });
-    hud.fps.textContent = Math.round(f / Math.max(1e-3, (now - wall) / 1000)) + ' fps'; wall = now;
+    const measuredFps = Math.round(f / Math.max(1e-3, (now - wall) / 1000));
+    hud.fps.textContent = measuredFps + ' fps'; wall = now;
+    if (GRASS_LAB) document.getElementById('labStats').textContent =
+      `${measuredFps} fps · ${fmt(grassDrawn)} roots · contact ${contactOn ? time(contactMs) : 'off'}`;
     hud.step.textContent = fmt(stepped / f);
     hud.dense.textContent = fmt(denseCells / f);
     hud.bar.style.width = Math.max(0.6, Math.min(100, stepped / Math.max(1, denseCells) * 100)) + '%';
@@ -4087,6 +4186,9 @@ function bindInput() {
     if (e.code === 'KeyC') toggleDay();
     if (e.code === 'KeyL') toggleTimelapse();
     if (e.code === 'KeyP') toggleCamera();
+    if (GRASS_LAB && e.code === 'KeyB') document.getElementById('labView').click();
+    if (GRASS_LAB && e.code === 'KeyX') document.getElementById('labContact').click();
+    if (GRASS_LAB && e.code === 'KeyK') document.getElementById('labMark').click();
   });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
   addEventListener('blur', resetMovement);
@@ -4147,10 +4249,35 @@ function bindInput() {
   document.getElementById('bMode').onclick = () => started && cycleMode();
   document.getElementById('bHud').onclick = toggleHud;
   document.getElementById('bNight').onclick = () => started && toggleNight();
+  if (GRASS_LAB) bindGrassLab();
   document.getElementById('bCamera').onclick = () => started && toggleCamera();
   document.getElementById('bDay').onclick = () => started && toggleDay();
   document.getElementById('bTimelapse').onclick = () => started && toggleTimelapse();
 }
+function bindGrassLab() {
+  document.body.classList.add('grass-lab');
+  document.getElementById('grassLab').hidden = false;
+  document.getElementById('labContact').onclick = (event) => {
+    contactOn = !contactOn;
+    event.currentTarget.setAttribute('aria-pressed', String(contactOn));
+  };
+  document.getElementById('labMark').onclick = (event) => {
+    markContacts = !markContacts;
+    event.currentTarget.setAttribute('aria-pressed', String(markContacts));
+  };
+  document.getElementById('labWind').onclick = (event) => {
+    stillGrass = !stillGrass;
+    event.currentTarget.setAttribute('aria-pressed', String(!stillGrass));
+  };
+  document.getElementById('labView').onclick = (event) => {
+    labView = (labView + 1) % 3;
+    event.currentTarget.textContent = ['Chase view', 'Side view', 'Overhead view'][labView];
+    post.previous = null;
+  };
+  document.querySelector('#intro p').textContent = 'Walk the fox through a 10 × 10 m patch. Compare mesh contact on and off, or mark the blade sections that touch.';
+  document.getElementById('go').textContent = 'Enter grass lab';
+}
+
 function look(dx, dy, s) { player.yaw += dx * s; player.pitch = Math.max(-1.35, Math.min(1.35, player.pitch - dy * s)); }
 function toggleRain() { rain = !rain; document.getElementById('bRain').setAttribute('aria-pressed', String(rain)); }
 function toggleNight() {
@@ -4233,7 +4360,7 @@ function scripted(m, frames = 900, view = 'shore') {
 
 // ---------------------------------------------------------------- boot
 (async () => {
-  const foxReady = TEST ? null : loadFox(gl, program, WORLD_VS).catch(error => {
+  const foxReady = TEST ? null : loadFox(gl, program, WORLD_VS, GRASS_LAB).catch(error => {
     console.warn(error);
     document.getElementById('bCamera').hidden = true;
     return null;
@@ -4267,7 +4394,9 @@ function scripted(m, frames = 900, view = 'shore') {
     runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, look: (view, pitch, yaw) => { const c = typeof view === 'string' ? VIEWS[view] : view; Object.assign(player, { x: c.eye[0], y: c.eye[1] - 1.65, z: c.eye[2], yaw: c.yaw + (yaw ?? 0), pitch: pitch ?? c.pitch, bob: 0, vx: 0, vz: 0 });
       foxPose.yaw = player.yaw; foxPose.pitch = foxPose.roll = 0; foxPose.height = chase.height = H(player.x, player.z);
       chase.arm = 3.55; post.previous = null;
-    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started, blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
+    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started,
+    ...(contactGrid && { grassLab: { occupied: contactOn ? contactGrid.occupied : 0, contactMs, markContacts, stillGrass, contactOn, view: labView } }),
+    blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
     const darkField = gl.createTexture();
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, darkField);
@@ -4303,7 +4432,7 @@ function scripted(m, frames = 900, view = 'shore') {
   document.getElementById('intro').addEventListener('click', () => {
     document.getElementById('intro').hidden = true; document.documentElement.classList.remove('intro'); started = true;
     audio = createAudio(); audio?.resume();
-    if (!touch) canvas.requestPointerLock?.()?.catch?.(() => {});
+    if (!touch && !GRASS_LAB) canvas.requestPointerLock?.()?.catch?.(() => {});
   });
   requestAnimationFrame((t) => { last = t; frame(t); });
 })().catch((e) => fail('The field engine did not start: ' + e.message));

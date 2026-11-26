@@ -68,7 +68,7 @@ function readFox(bytes) {
   return { model, fox, read, rest, order, bones, clips };
 }
 
-export async function loadFox(gl, program, vertexHeader) {
+export async function loadFox(gl, program, vertexHeader, contact = false) {
   const response = await fetch(new URL('./fox.glb', import.meta.url));
   if (!response.ok) throw Error('Could not load the fox model');
   const { model, fox, read, rest, order, bones, clips } = readFox(await response.arrayBuffer());
@@ -97,6 +97,7 @@ void main() {
   vec3 color = pbr(uFur * mix(1., .7, uFoxWet), mix(.88, .56, uFoxWet), 0., N, V, vWP);
   o = vec4(tonemap(fogged(color, vWP)), 0.);
 }`);
+  const surfaces = [];
   const slots = [
     ['POSITION', 'aPos', 3], ['NORMAL', 'aNor', 3],
     ['WEIGHTS_0', 'aWeights', 4], ['JOINTS_0', 'aJoints', 4],
@@ -116,6 +117,12 @@ void main() {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, read(primitive.indices), gl.STATIC_DRAW);
     const { count, componentType } = model.accessors[primitive.indices];
+    if (contact) {
+      const { POSITION, JOINTS_0, WEIGHTS_0 } = primitive.attributes;
+      const bind = read(POSITION);
+      surfaces.push({ bind, joints: read(JOINTS_0), weights: read(WEIGHTS_0),
+        indices: read(primitive.indices), positions: new Float32Array(bind.length) });
+    }
     const fur = model.materials[primitive.material].pbrMetallicRoughness.baseColorFactor.slice(0, 3);
     return { vao, count, componentType, fur };
   });
@@ -174,5 +181,24 @@ void main() {
       gl.drawElements(gl.TRIANGLES, part.count, part.componentType, 0);
     }
   }
-  return { shader, advance, draw, get gait() { return gait; } };
+  function contactSurfaces() {
+    if (dirty) palette();
+    for (const { bind, joints, weights, positions } of surfaces) {
+      for (let v = 0; v < bind.length/3; v++) {
+        const p = v*3, x = bind[p], y = bind[p+1], z = bind[p+2];
+        let px = 0, py = 0, pz = 0;
+        for (let k = 4*v; k < 4*v+4; k++) {
+          const w = weights[k];
+          if (w === 0) continue;
+          const b = skinMatrices[joints[k]];
+          px += w*(b[0]*x + b[4]*y + b[8]*z + b[12]);
+          py += w*(b[1]*x + b[5]*y + b[9]*z + b[13]);
+          pz += w*(b[2]*x + b[6]*y + b[10]*z + b[14]);
+        }
+        positions[p] = px*SCALE; positions[p+1] = py*SCALE; positions[p+2] = pz*SCALE;
+      }
+    }
+    return surfaces;
+  }
+  return { shader, advance, draw, contactSurfaces, get gait() { return gait; } };
 }

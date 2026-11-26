@@ -78,6 +78,18 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 @media (max-width: 560px) { #hud { font-size: 10.5px; } #hud .note { display: none; } #pad button { padding: 9px 12px; font-size: 11px; } }
 @media (prefers-reduced-motion: reduce) { #hud .bar i { transition: none; } }
 #pad #capture-record[aria-pressed="true"] { color: #ff9d9d; border-color: #ff8d8d; }
+#grassLab {
+  position: fixed; z-index: 10; top: calc(env(safe-area-inset-top, 0px) + 12px); left: 12px;
+  background: var(--glass); border: 1px solid var(--edge); border-radius: 10px;
+  padding: 10px 12px; max-width: calc(100vw - 24px); box-sizing: border-box;
+  backdrop-filter: blur(8px); font: 12px var(--body);
+}
+#grassLab h2 { margin: 0 0 7px; font: 600 14px var(--display); }
+#grassLab div { display: flex; flex-wrap: wrap; gap: 5px; }
+#grassLab button { color: var(--ink); background: var(--glass); border: 1px solid var(--edge); border-radius: 8px; padding: 7px 9px; cursor: pointer; }
+#grassLab button[aria-pressed="true"] { color: var(--glow); border-color: var(--glow); }
+#labStats { display: block; margin-top: 7px; color: var(--dim); font: 11px var(--mono); }
+.grass-lab #hud, .grass-lab #bHud, .grass-lab #bCamera, html.intro #grassLab { display: none !important; }
 #capture-status { position: fixed; z-index: 15; top: max(12px, env(safe-area-inset-top)); left: 50%;
   translate: -50%; max-width: 86vw; padding: 9px 14px; border-radius: 12px;
   background: #151727; color: var(--ink); font: 13px var(--body); pointer-events: none; }
@@ -123,6 +135,16 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
   <div class="note" id="hNote"></div>
 </div>
 
+<section id="grassLab" hidden aria-labelledby="labTitle">
+  <h2 id="labTitle">Grass lab · 10 × 10 m</h2>
+  <div>
+    <button type="button" id="labContact" aria-pressed="true" title="Toggle mesh contact (X)">Mesh contact</button>
+    <button type="button" id="labMark" aria-pressed="false" title="Highlight touching blade sections (K)">Mark contact</button>
+    <button type="button" id="labWind" aria-pressed="false">Wind</button>
+    <button type="button" id="labView" title="Cycle inspection cameras (B)">Chase view</button>
+  </div>
+  <output id="labStats"></output>
+</section>
 <div id="stick" aria-hidden="true"><i id="knob"></i></div>
 <div id="pad">
   <button class="throw" id="bThrow" type="button">Throw</button>

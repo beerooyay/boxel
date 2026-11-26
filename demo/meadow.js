@@ -34,7 +34,7 @@ uint clumpHash(ivec2 c){
 vec2 clumpOffset(uint h){ return 0.15 + 0.7 * vec2(float(h & 0xffffu), float(h >> 16)) / 65536.; }
 `;
 
-export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, habitatAt, outsideView, rng, touch }) {
+export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, habitatAt, outsideView, rng, touch, plot }) {
   const tileSize = MEADOW_TILE, extent = 2 * half, side = extent + 1;
   // Habitat varies over metres. Evaluate it once per metre rather than running
   // the ground, slope and noise queries for every candidate blade.
@@ -58,9 +58,11 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
   const tuft = { neighbour: 4, distance: 0 };
   let count = 0;
   for (let z0 = -half; z0 < half; z0 += tileSize) for (let x0 = -half; x0 < half; x0 += tileSize) {
+    if (plot && (x0 >= plot.x+plot.half || x0+tileSize <= plot.x-plot.half ||
+                 z0 >= plot.z+plot.half || z0+tileSize <= plot.z-plot.half)) continue;
     const minDistance = Math.max(x0, z0, -x0 - tileSize, -z0 - tileSize);
     const quality = Math.max(0.52, Math.min(1, 1 - (minDistance - 48) * 0.011));
-    const n = Math.ceil(maxSide * Math.sqrt(quality)), cells = n * n;
+    const n = plot ? maxSide : Math.ceil(maxSide * Math.sqrt(quality)), cells = n * n;
     let order = orders.get(n);
     if (!order) {
       order = Uint16Array.from({ length: cells }, (_, i) => i);
@@ -77,6 +79,7 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
       const cell = order[k];
       const x = x0 + ((cell % n + offsetX) % n + random()) * tileSize / n;
       const z = z0 + ((Math.floor(cell / n) + offsetZ) % n + random()) * tileSize / n;
+      if (plot && (Math.abs(x-plot.x) >= plot.half || Math.abs(z-plot.z) >= plot.half)) continue;
       const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
       const a = 3 * ((iz + half) * side + ix + half), b = a + 3 * side;
       const w0 = (1 - fx) * (1 - fz), w1 = fx * (1 - fz), w2 = (1 - fx) * fz, w3 = fx * fz;
@@ -123,14 +126,14 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
         const d = Math.sqrt(d2);
         const fade = Math.min(1, (far - d) / 22);
         // More blades near the eye, paid for by starting the thinning two metres sooner
-        const fraction = Math.min(1, (15 / Math.max(1, d)) ** 1.8) * fade * densityScale;
+        const fraction = plot ? 1 : Math.min(1, (15 / Math.max(1, d)) ** 1.8) * fade * densityScale;
         const n = Math.floor(tile.count * fraction);
         if (!n) continue;
         gl.bindVertexArray(tile.vao);
         gl.uniform1f(widthLoc, Math.min(2.2, 1 / Math.sqrt(fraction)));
-        const rows = d < 9 ? 4 : d < 24 ? 3 : 2;
+        const rows = plot ? 10 : d < 9 ? 4 : d < 24 ? 3 : 2;
         gl.uniform1i(rowsLoc, rows);
-        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, rows === 4 ? 27 : 2*rows + 1, n);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, plot ? 6*rows+8 : rows === 4 ? 27 : 2*rows + 1, n);
         drawn += n;
       }
       return drawn;
