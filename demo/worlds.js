@@ -31,6 +31,17 @@ vec3 bodyLight(vec3 albedo, vec3 normal, float viewCos, float atmosphere) {
        + atmosphere * (albedo + 0.12) * rim + gBehind * 0.42;
 }
 
+// Return depression, radial slope and ejecta for an eroded impact basin.
+vec3 impactBasin(vec2 p, vec2 centre, float radius, float seed, float footprint) {
+  float r = length(p - centre) / radius;
+  float aa = max(0.024, footprint / radius);
+  float inside = 1. - smoothstep(0.38, 0.92, r);
+  float rim = 1. - smoothstep(0.045, 0.18 + aa, abs(r - 0.91));
+  float ejecta = (1. - smoothstep(0.92, 1.38, r)) * smoothstep(0.47, 0.66, vnoise(p * 29. + seed));
+  float resolve = 1. - smoothstep(0.17, 0.55, aa);
+  return (vec3(-inside * 0.19 + rim * 0.14, rim * (0.91 - r) * 5.5, ejecta) * resolve);
+}
+
 // A moon of the body at P (T, B its axes on the sky, R its radius there): its orbit is a circle of orbit radii, seen
 // squashed to squash and turned by tilt; at phase ph it is on the far side when sin(ph) > 0, and the body hides it.
 vec3 moon(vec3 d, vec3 c, vec3 P, vec3 T, vec3 B, float R, float tilt, float orbit, float squash, float ph, float size, vec3 tint, float seed) {
@@ -48,8 +59,17 @@ vec3 moon(vec3 d, vec3 c, vec3 P, vec3 T, vec3 B, float R, float tilt, float orb
   if (surfaceDepth < nearestMoonDepth) return c;
   nearestMoonDepth = surfaceDepth;
   vec3 nm = disc.x * MT + disc.y * MB - viewCos * M;
-  float crater = smoothstep(0.62, 0.75, vnoise(disc * 4. + seed)) * 0.25 + smoothstep(0.55, 0.7, vnoise(disc * 9. - seed)) * 0.15;
-  vec3 mc = tint * (0.82 + 0.25 * vnoise(disc * 2.5 + seed * 3.)) * (1. - crater);
+  vec2 first = vec2(-0.34 + 0.18 * sin(seed), 0.30 * cos(seed * 1.6));
+  vec2 second = vec2(0.30 + 0.09 * cos(seed), -0.39 + 0.14 * sin(seed * 1.3));
+  float footprint = max(length(dFdx(disc)), length(dFdy(disc)));
+  vec3 a = impactBasin(disc, first, 0.29, seed, footprint);
+  vec3 b = impactBasin(disc, second, 0.18, seed + 2., footprint);
+  vec2 slope = (disc - first) * a.y + (disc - second) * b.y;
+  nm = normalize(nm + slope.x * MT + slope.y * MB);
+  float maria = smoothstep(0.34, 0.72, fbm3(disc * 3.2 + seed) + 0.12 * vnoise(disc * 9.5 - seed));
+  float regolith = mix(0.5, vnoise(disc * 39. + seed * 5.), 1. - smoothstep(0.012, 0.060, footprint));
+  vec3 mc = tint * (0.70 + 0.30 * maria + 0.15 * regolith + a.x + b.x)
+    + tint * 0.18 * min(1., a.z + b.z);
   // Cast the planet's shadow on moons passing through its anti-stellar direction.
   vec3 local = (mq.x * T + mq.y * B) / R - orbitDepth * P + size * nm;
   float separation = length(local - min(0., dot(local, uStarDir)) * uStarDir);
@@ -94,12 +114,13 @@ vec3 roseClouds(vec3 n) {
   float latitude = w.y;
   float flow = fbm3(vec2(w.x * 4. - t * 0.009, latitude * 8.) + n.z);
   // bands of uneven width whose edges break into waves and curls
-  float wave = sin(latitude * 20. + 1.25 * sin(w.x * 5. + latitude * 4.) + flow * 3. + 0.6 * sin(w.x * 17. - t * 0.05 + latitude * 9.) * smoothstep(0.2, 0.8, flow));
-  vec3 body = mix(vec3(0.68, 0.16, 0.36), vec3(0.96, 0.28, 0.055), smoothstep(-0.7, 0.68, wave));
-  body *= 0.86 + 0.24 * vnoise(w * 23. + flow);
+  float wave = sin(latitude * 15. + 1.25 * sin(w.x * 5. + latitude * 4.) + flow * 3. + 0.6 * sin(w.x * 17. - t * 0.05 + latitude * 9.) * smoothstep(0.2, 0.8, flow));
+  float belts = smoothstep(-0.78, 0.78, wave);
+  vec3 body = mix(vec3(0.36, 0.15, 0.21), vec3(0.70, 0.37, 0.24), belts);
+  body *= 0.81 + 0.29 * vnoise(w * 23. + flow);
   float clouds = fbm3(vec2(w.x * 11. - t * 0.014, latitude * 30. + flow * 3.)) * (0.75 + 0.5 * vnoise(w * 6. - t * 0.01));
-  body = mix(body, vec3(1., 0.53, 0.65), smoothstep(0.36, 0.74, clouds) * 0.72);
-  return mix(body, vec3(1., 0.75, 0.12), smoothstep(0.90, 1., wave) * smoothstep(0.40, 0.65, clouds));
+  vec3 decks = mix(vec3(0.65, 0.35, 0.38), vec3(0.89, 0.71, 0.55), smoothstep(0.3, 0.74, flow + 0.16 * wave));
+  return mix(body, decks, smoothstep(0.32, 0.75, clouds) * (0.42 + 0.49 * belts));
 }
 
 // The ocean world, in its own frame (x right, y up, z toward Tarn). It spins about the pole of its first ring.
@@ -153,7 +174,8 @@ vec3 oceanWorld(vec3 n, vec3 normal, vec3 right, vec3 up, vec3 axis) {
   float cloud=oceanAtlas(pc).a;
   float shadow=oceanAtlas(spin(normalize(n+0.019*(L-n*dot(n,L))),pole,uTime*0.016)).a;
   ground*=1.-0.49*shadow;
-  vec3 vapour=mix(vec3(0.54,0.64,0.70),vec3(0.98,0.95,0.88),clamp(0.32+0.65*cloud+1.26*(cloud-shadow),0.,1.));
+  float reliefLight = clamp(0.29 + 0.61 * cloud + 1.68 * (cloud - shadow), 0., 1.);
+  vec3 vapour = mix(vec3(0.44,0.53,0.65),vec3(1.02,0.99,0.91),reliefLight);
   vec3 surf=mix(ground,vapour,cloud*0.94);
   float rings = ringTransmission(n, L, ringMinorH) * ringTransmission(n, L, ringMinorV);
   float viewCos = n.z, incidence = dot(normal, uStarDir);
@@ -186,7 +208,14 @@ vec3 companion(vec3 d, vec3 sky, vec3 axis, float radius, bool ocean) {
     vec3 n = vec3(q, surfaceZ);
     vec3 normal = right * n.x + up * n.y - axis * n.z;
     if (ocean) sky = oceanWorld(n, normal, right, up, axis);
-    else sky = bodyLight(roseClouds(n), normal, n.z, 0.08);
+    else {
+      vec2 sheet = n.xy * vec2(7.8, 31.);
+      float macro = fbm3(sheet + vec2(0.13 * uTime, n.z * 4.8));
+      float whorls = vnoise(sheet * 2.1 + macro * 3.6);
+      float grain = mix(whorls, 0.5, smoothstep(0.18,0.62,max(fwidth(sheet.x),fwidth(sheet.y))));
+      vec3 auburn = roseClouds(n) * (0.73 + 0.46 * macro + 0.25 * grain);
+      sky = bodyLight(auburn, normal, n.z, 0.13);
+    }
   } else if (ocean) {
     // a thin edge of air just past the limb, on the side the star lights
     float lit = smoothstep(-0.2, 0.5, dot(normalize(right * q.x + up * q.y), uStarDir));

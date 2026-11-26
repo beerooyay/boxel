@@ -130,7 +130,7 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
         gl.uniform1f(widthLoc, Math.min(2.2, 1 / Math.sqrt(fraction)));
         const rows = d < 9 ? 4 : d < 24 ? 3 : 2;
         gl.uniform1i(rowsLoc, rows);
-        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, rows === 4 ? 18 : 2*rows + 1, n);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, rows === 4 ? 27 : 2*rows + 1, n);
         drawn += n;
       }
       return drawn;

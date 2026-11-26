@@ -76,12 +76,16 @@ const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
 // in half-size coordinates, so the lake is twice the size the noise was drawn for and keeps its shape.
 function lakeD(x, z) {
   x *= 0.5; z *= 0.5;
-  const dx = (x - LAKE[0] * 0.5) / 1.2, dz = (z - LAKE[1] * 0.5) / 0.95, th = Math.atan2(dz, dx);
+  const east = x - LAKE[0] * 0.5, north = z - LAKE[1] * 0.5;
+  // Spread the basin widest away from the south entrance and the east trail.
+  const dx = east / (east < 0 ? 1.40 : 1.32);
+  const dz = north / (north < 0 ? 1.12 : 1.015);
+  const th = Math.atan2(dz, dx);
   const wob = 1 + 0.17 * Math.sin(3 * th + 1.1) + 0.09 * Math.sin(5 * th - 0.4) + 0.05 * Math.sin(8 * th + 2.0)
     + 0.24 * (fbm(x * 0.07 + 31, z * 0.07 - 12, 3) - 0.5);
   return Math.hypot(dx, dz) / wob / 1.1;
 }
-const ISLET = [LAKE[0] + 6.8, LAKE[1] - 5.2];
+const ISLET = [LAKE[0] + 6.8, LAKE[1] - 5.2], ISLET_WIDTH = 8.05, ISLET_DEPTH = 5.95;
 const OUTCROP = [34, -30];                                // a rocky rise north-east of the lake
 function outcrop(x, z) { return 1 - sm(9, 27, Math.hypot(x - OUTCROP[0], (z - OUTCROP[1]) * 1.25)); }
 function H(x, z, footprint = 0) {
@@ -94,14 +98,14 @@ function H(x, z, footprint = 0) {
   const t = sm(9.6, 14, d);
   let h = bowl * (1 - t) + meadow * t;
   const ix = x - ISLET[0], iz = z - ISLET[1];
-  if (Math.abs(ix) < 12 && Math.abs(iz) < 10) {
+  if (Math.abs(ix) < 15 && Math.abs(iz) < 12) {
     // A bedding shelf with a low landing to the east and a scalloped western scarp.
     const a = Math.atan2(iz, ix), lip = 1 + 0.14*Math.sin(3*a+0.7) + 0.085*Math.sin(5*a-1.1);
     const weathering = vnoise(x*0.60+3.8, z*0.48-9) - 0.5;
-    const r = Math.hypot((ix+iz*0.21)/7.0, iz/5.1) / (lip + 0.105*weathering);
+    const r = Math.hypot((ix+iz*0.21)/ISLET_WIDTH, iz/ISLET_DEPTH) / (lip + 0.105*weathering);
     const apron = sm(-0.55,0.9,Math.cos(a-0.38));
     const crown = 2.05 - 0.035*ix + 0.13*(vnoise(x*0.65,z*0.65)-0.5);
-    const shelf = crown - (0.32+0.85*apron)*sm(0.48,0.86+0.09*weathering,r)
+    const shelf = crown - (0.32+0.85*apron)*sm(0.53,0.88+0.09*weathering,r)
       - (1.48-0.80*apron)*sm(0.72-0.14*weathering,1.05+0.16*apron,r);
     h += (shelf-h)*(1-sm(0.91,1.40,r));
   }
@@ -374,7 +378,11 @@ vec3 skyColor(vec3 d){
       pc = mix(pc, vec3(0.50, 0.22, 0.14), smoothstep(0.75, 0.95, abs(sin(lat * 7. + 1.3))) * 0.45);
       pc = mix(pc, vec3(0.92, 0.42, 0.28), (1. - smoothstep(0.012, 0.03, rs)) * 0.6);
       pc = mix(pc, vec3(0.34, 0.1, 0.06), (1. - smoothstep(0., 0.009, rs)) * 0.6);
-      pc *= 0.79+0.34*filaments+0.11*sin(lat*112.+filaments*8.);
+      float ribbons = sin(lat*112.+filaments*8.);
+      float fine = 1. - smoothstep(0.12,0.45,fwidth(lat*38.));
+      vec2 clouds = vec2(lat * 64., dot(nw, T) * 18.) + filaments * 6.;
+      pc *= 0.72 + 0.40 * filaments + 0.10 * ribbons + 0.20 * fine * vnoise(clouds + 11.);
+      pc = mix(pc, vec3(0.94,0.85,0.75), fine * 0.19 * smoothstep(0.62,0.85, vnoise(clouds)));
       float viewCos = max(0., -dot(nw, P));
       starTransmission = 0.;
       // Intersect the surface-to-sun ray with the same tilted ring plane.
@@ -412,8 +420,13 @@ vec3 skyColor(vec3 d){
         float a = abs(dot(sp, k) + 0.05 * sin(dot(sp, k.yzx) * 9. + fi));
         cracks = max(cracks, (1. - smoothstep(0.015, 0.05, a)) * (0.5 + 0.5 * vnoise(sp.xy * 5. + fi)));
       }
-      ic = mix(ic, vec3(0.45, 0.27, 0.18), cracks * 0.8);
-      ic = mix(ic, vec3(0.74, 0.86, 1.0), smoothstep(0.65, 0.88, dot(sp, ax)) * 0.7);
+      float chaos = fbm3(vec2(sp.x + sp.z * 0.77, sp.y - sp.z * 0.35) * 14. + 8.);
+      float ridges = 1. - abs(2. * vnoise(vec2(sp.y - sp.z * 0.42, sp.x + sp.z * 0.24) * 24.) - 1.);
+      float crust = (0.76 + 0.38 * chaos) * (0.82 + 0.21 * ridges);
+      ic *= crust;
+      ic = mix(ic, vec3(0.39, 0.19, 0.11), cracks * (0.45 + 0.52 * chaos));
+      ic += vec3(0.13,0.20,0.26) * smoothstep(0.55,0.82,ridges) * cracks * 0.48;
+      ic = mix(ic, vec3(0.72, 0.84, 1.0), smoothstep(0.65, 0.88, dot(sp, ax) + 0.054 * ridges) * 0.7);
       c = mix(c, bodyLight(ic, ns, z, 0.06), cov);
       starTransmission *= 1. - cov;
     }
@@ -756,8 +769,11 @@ void main(){
   vec3 bed = mix(vec3(0.060, 0.096, 0.082), vec3(0.24, 0.23, 0.16), n2) * (0.74 + 0.48 * n3);
   vec3 rock = mix(vec3(0.095, 0.103, 0.117), vec3(0.33, 0.28, 0.25), n2 * 0.65 + n1 * 0.35);
   vec3 alb = moss; float rough = 0.88, metal = 0.;
-  float shore = 1. - smoothstep(0.12, 0.52 + 0.35 * n1, bank);
-  alb = mix(alb, sand, shore); rough = mix(rough, 0.72, shore);
+  float wrack = vnoise(p * vec2(2.7, 1.4) + n1 * 2.);
+  float shore = 1. - smoothstep(0.12, 0.39 + 0.34 * wrack, bank);
+  float tide = smoothstep(-0.24, -0.04, bank) * (1. - smoothstep(0.04, 0.37 + 0.21 * wrack, bank));
+  sand *= mix(vec3(1.), vec3(0.60, 0.67, 0.66), tide);
+  alb = mix(alb, sand, shore); rough = mix(rough, 0.75 - 0.25 * tide, shore);
   float under = 1. - smoothstep(-0.35, -0.05, bank);
   alb = mix(alb, bed, under);
   float upland = smoothstep(54., 79., max(abs(p.x), abs(p.y)));
@@ -787,7 +803,7 @@ void main(){
     N = normalize(N + cliff * (vec3(0., 1., 0.) - N * N.y) * (0.68 * ledge - 0.26 - runnel * 0.20));
   }
   vec2 isle=p-vec2(${ISLET[0].toFixed(3)},${ISLET[1].toFixed(3)});
-  float islandDist=length(vec2((isle.x+0.21*isle.y)/7.,isle.y/5.1));
+  float islandDist=length(vec2((isle.x+0.21*isle.y)/${ISLET_WIDTH},isle.y/${ISLET_DEPTH}));
   float islandStone=(1.-smoothstep(1.07,1.50,islandDist))*smoothstep(-0.35,0.28,y);
   float mantleSoil = islandStone * smoothstep(0.42,0.93,vN.y);
   if (islandStone>0.) {
@@ -825,8 +841,10 @@ void main(){
     // on a little of the stand's pigment even where the live blades fan apart.
     float bare = smoothstep(0.11,0.66,pathMask + 0.22 * smoothstep(0.04,0.55,wear));
     vec3 rootMat = stand * mix(0.23,0.57,thatch) * (0.72 + 0.4 * clump);
-    vec3 duff = mix(mix(moss, rootMat, 0.65), loam * 0.62, 0.17 + 0.51 * bare);
-    vec3 meadow = mix(loam, duff, cover);
+    float litterBits = smoothstep(0.38, 0.69, thatch + 0.08 * detail.a);
+    vec3 chaff = mix(rootMat, NEW_GROWTH * vec3(0.41, 0.32, 0.23), 0.22);
+    vec3 duff = mix(loam * 0.48, chaff * (0.70 + 0.33 * detail.a), 0.46 + 0.43 * litterBits);
+    vec3 meadow = mix(loam * (0.87 + 0.18 * hummocks), duff, cover * (1. - bare * 0.73));
     alb = mix(alb, meadow, meadowFloor);
     alb = mix(alb, mix(meadow, tread, smoothstep(0.03,0.91,soilCover)), soilCover);
     vec2 relief=(2.*coarse.rg-1.)*0.65 + transpose(rot)*(2.*detail.rg-1.)*0.53;
@@ -869,13 +887,21 @@ void main(){
   }
   vec3 schist = mix(vec3(0.052, 0.069, 0.095), vec3(0.37, 0.33, 0.30), 0.12 * bench + 0.30 * crag + 0.58 * chute);
   // Broad cross-beds and displaced seams read from the opposite side of the lake.
-  float fault=sin(0.69*bedding+3.8*chute+1.2*seam);
-  float lamina=smoothstep(0.48,0.90,fault)*(0.40+0.6*crag);
-  schist *= (0.86 + 0.43 * lamina) * (0.64 + 0.82 * stoneGrain);
+  // Bedding is displaced and broken at a scale that survives the lake view.
+  float beds = bedding * 0.42 + 4.1 * seam + 1.5 * chute;
+  float layer = fract(beds);
+  float strataAA = clamp(fwidth(beds), 0.015, 0.32);
+  float lamina = smoothstep(0.12, 0.23 + strataAA, layer) * (1. - smoothstep(0.43, 0.67 + strataAA, layer));
+  float spall = smoothstep(0.34, 0.72, stoneGrain + 0.22 * chute - 0.09);
+  float fracture = smoothstep(0.08, 0.31, abs(seam - 0.48) + 0.24 * chute);
+  schist *= (0.53 + 0.75 * fracture) * (0.78 + 0.52 * lamina) * (0.60 + 0.88 * spall);
+  schist += vec3(0.035, 0.030, 0.023) * lamina * spall;
   alb = mix(alb, schist, alpine);
   vec3 frost = mix(vec3(0.50, 0.64, 0.78), vec3(0.86, 0.86, 0.92), smoothstep(-0.01, 0.22, mantle));
   float scoured = smoothstep(0.04, 0.17, mantle) * smoothstep(0.33, 0.70, chute);
-  frost *= mix(0.86 + 0.26 * stoneGrain, 1., scoured);
+  frost *= mix(0.72 + 0.34 * stoneGrain + 0.14 * lamina, 1., scoured);
+  // Cornices expose stone at broken edges and hold bright snow in sheltered ribs.
+  snow *= 1. - 0.27 * lamina * (1. - spall) * (1. - scoured);
   alb = mix(alb, frost, snow); rough = mix(rough, 0.60, snow);
   // Sand sorts into pockets of shingle. Loose cobbles here are actual settled meshes.
   float cobZ = smoothstep(0.34, 0.72, normalize(vN).y) * (1. - smoothstep(0.30, 0.83, bank)) * smoothstep(-1.6, -0.9, bank) * (1. - smoothstep(14., 32., dist)) * (1. - 0.6 * rk);
@@ -963,7 +989,10 @@ void main(){
     // A metre of mineral grain has the same scale on a pebble and a boulder.
     // Each piece exposes another cut through the bed.
     vec3 Nl = normalize(vNl), aw = Nl*Nl; aw *= aw; aw /= aw.x + aw.y + aw.z;
-    vec3 sp = vLoc * (0.56 + 0.17*vH) + vec3(7.9, 15.1, 8.7)*vH;
+    // Individual fissures widen into visible bands at the far-side scale.
+    float broadRock = smoothstep(16., 53., dist);
+    vec3 sp = vLoc * mix(0.56 + 0.17*vH, 0.21 + 0.06*vH, broadRock)
+              + vec3(7.9, 15.1, 8.7)*vH;
     vec4 sx = texture(uRockSurface, sp.zy), sy = texture(uRockSurface, sp.xz), sz = texture(uRockSurface, sp.xy);
     vec4 surf = sx*aw.x + sy*aw.y + sz*aw.z;
     vec3 grad = aw.x*vec3(0., sx.g-0.5, sx.r-0.5) + aw.y*vec3(sy.r-0.5, 0., sy.g-0.5) + aw.z*vec3(sz.r-0.5, sz.g-0.5, 0.);
@@ -979,7 +1008,8 @@ void main(){
     alb *= 0.48 + 1.02 * mineral;
     alb = mix(alb, vec3(0.42,0.36,0.30), near * 0.38 * smoothstep(0.63,0.89,mineral));
     alb *= mix(0.72, 1.12, smoothstep(-0.4, 0.8, N.y));      // weathered tops pale, overhangs shadowed
-    alb *= 1. - 0.38 * crack;
+    float beds = smoothstep(0.28, 0.64, vnoise(lp.xy * vec2(0.8, 1.88) + n2 * 0.52));
+    alb *= (1. - (0.38 + 0.20 * broadRock) * crack) * mix(1., 0.70 + 0.52 * beds, 0.72 * broadRock);
     // the baked curvature: edges worn pale, hollows dark where light and rain reach least
     float edgeWear = smoothstep(0.08, 0.5, -vCurv), hollow = smoothstep(0.05, 0.45, vCurv);
     alb *= (1. + 0.3 * edgeWear) * (1. - 0.42 * hollow);
@@ -1093,7 +1123,7 @@ void main(){
   upper = normalize(cross(tang, across));
   // Each leaf slot holds a card: a whole leafy spray (or, for the ground plants, one strap leaf) grown into the atlas.
   // The card keeps one width from stalk to tip so the picture lies on it undistorted.
-  float width = L * (kind >= 1.5 ? ${SPRAY_ASPECT[2]} : kind >= 0.5 ? ${SPRAY_ASPECT[0]} : ${SPRAY_ASPECT[1]}) * (0.9 + 0.2 * seed) * uLodW;
+  float width = L * (kind >= 2.5 ? ${SPRAY_ASPECT[3]} : kind >= 1.5 ? ${SPRAY_ASPECT[2]} : kind >= 0.5 ? ${SPRAY_ASPECT[0]} : ${SPRAY_ASPECT[1]}) * (0.9 + 0.2 * seed) * uLodW;
   p += sd * (seed - 0.5) * L * u * u * (0.09 + 0.34 * min(kind, 1.));
   float fold = (0.26 + 0.20 * min(kind, 1.) + 0.10 * curve) * 0.6;
   p += across * side * width;
@@ -1116,6 +1146,8 @@ void main(){
   float cover = clamp((spray.a - 0.5) / max(fwidth(spray.a), 1e-4) + 0.5, 0., 1.);
   if (uCoverage ? cover < 0.02 : spray.a < 0.5) discard;
   vec3 tint = crownPigment(vLeaf.x) * mix(vec3(0.83,0.92,0.87),vec3(1.12,1.02,0.92),seed);
+  if (kind > 2.5) tint = mix(tint * vec3(0.93,0.62,0.77), BLOSSOM_TIP, smoothstep(0.53,0.91,spray.b));
+  if (vLeaf.x >= 0.95 && vLeaf.x < 0.985) tint = mix(tint, mix(APRICOT, GOLD, smoothstep(0.35,0.85,spray.b)), 0.56);
   // Moist leaves deepen within the same pigment family as the dry tissue.
   tint *= mix(vec3(1.),vec3(0.91,0.95,0.94),wet);
   // the leaf's own surface from the atlas: cupped, creased at the midrib, veined
@@ -1171,17 +1203,18 @@ void main(){
   uint th = clumpHash(ci);
   vec2 toTuft = vec2(ci) + clumpOffset(th) - cq;
   float tuftDist = length(toTuft), tuft = float((th * 747796405u) >> 8)/16777216.;
-  // Two individual leaves share a sheath up close. Degenerate vertices join
-  // their strips. Fade the second into the tuft before dropping its geometry.
+  // Selected roots carry a bundle of three leaves. The extra strips share
+  // exactly the same origin and taper out before their close detail ends.
   int vid = gl_VertexID, rows = uBladeRows;
-  bool sister = rows == 4 && vid >= 10;
-  if (sister) { vid = max(0, vid-11); rows = 3; }
+  int sibling = vid >= 19 ? 2 : vid >= 10 ? 1 : 0;
+  bool sister = sibling != 0;
+  if (sister) { vid = max(0, vid - (sibling == 2 ? 20 : 11)); rows = 3; }
   vid = min(vid, 2*rows);
   float by = float(vid/2)/float(rows);
   float side = vid == 2*rows ? 0. : float(vid % 2) - 0.5;
-  uint bh = clumpHash(ivec2(floor(aG.xy*613.)) + (sister ? ivec2(31,-17) : ivec2(0)));
+  uint bh = clumpHash(ivec2(floor(aG.xy*613.)) + ivec2(sibling * 31, sibling * -17));
   float shape = float(bh & 0xffffu)/65536., deadRoll = float(bh >> 16)/65536.;
-  float a = aR.x*6.2831853 + (sister ? 1.35 + 2.1*aG.w : 0.);
+  float a = aR.x*6.2831853 + (float(sibling) * (1.53 + 1.18 * aG.w));
   vec2 ax = vec2(cos(a), sin(a)), fd = vec2(-ax.y, ax.x);
   vec2 uv = fieldUV(aG.xy); vec2 gr = vec2(texture(uGround, uv).r, texture(uWear, uv).r); float glow = texture(uGlow, uv).r;
   float wet = min(1., gr.r + uSheet), trample = smoothstep(0.04, 0.45, gr.g);
@@ -1191,12 +1224,16 @@ void main(){
   float slender = step(shape, 0.43), broad = step(0.91, shape);
   float H = 0.52 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample) * mix(1., 1.14, slender) * mix(1., 0.78, broad)
           * mix(0.8, 1.2, tuft) * (1. - 0.28 * smoothstep(0.22, 0.68, tuftDist)) * (1. - 0.1 * edge);
-  float sisters = 1. - smoothstep(5.5, 8.8, length(aG.xy-uCam.xz));
-  if (sister) H *= (0.63 + 0.24*shape)*sisters;
+  float distanceToRoot = length(aG.xy-uCam.xz);
+  float sisters = (1. - smoothstep(5.5, 8.8, distanceToRoot)) * smoothstep(0.28, 0.48, aG.w);
+  if (sister) {
+    if (sibling == 2) sisters *= (1. - smoothstep(3.8, 7.0, distanceToRoot)) * smoothstep(0.52, 0.70, aG.w);
+    H *= (sibling == 2 ? 0.44 + 0.25 * shape : 0.63 + 0.24 * shape) * sisters;
+  }
   // Corey's proportions (ceeboozwah/grass): a short blade is a broad one, and a blade holds its width most of the way
   // up, narrowing a little into its sheath at the foot.
   float W0 = (0.05 + 0.03*aR.z)*mix(1.6, 1., clamp(H / 0.2, 0., 1.))*mix(1.,0.48,reed)*uLodW
-           * mix(1.,0.68,slender)*mix(1.,1.19,broad)*mix(1.22,1.,sisters);
+           * mix(1.,0.68,slender)*mix(1.,1.19,broad)*mix(1.12,1.,sisters);
   float wd = W0 * (0.43 + 0.57*smoothstep(0.,0.27,by)) * pow(1.-by,0.75);
   if (sister) wd *= 0.79*sisters;
   // Each blade answers the same moving front with its own spring angle and
@@ -1455,7 +1492,7 @@ vec2 rainSlope(vec2 p, float pixelMetres){
   }
   return slope;
 }
-vec2 waveGrad(vec2 p){
+vec2 waveGrad(vec2 p, float pixelMetres){
   vec2 g = waterWave(p, uTime).yz;
   // Cross-winds shear the small surface trains into short, uneven crests.
   float shear = vnoise(p*0.31 + vec2(-0.12,0.09)*uTime) - 0.5;
@@ -1465,8 +1502,10 @@ vec2 waveGrad(vec2 p){
   g += vec2(-0.9, -0.3) * cos(dot(p, vec2(-0.9, -0.3)) * 6.3 + uTime * 3.1 - shear*4.2) * 0.004;
   // wind gust patches ("cat's paws"): the same rolling waves that move the grass roughen the water as they pass
   float gw = max(0., windWave(p)) * uWind;
-  g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. - uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.023 * gw;
-  g += vec2(-WIND_DIR.y, WIND_DIR.x) * cos(dot(p, vec2(-WIND_DIR.y, WIND_DIR.x)) * 13. + uTime * 6.1) * 0.006 * gw;
+  float gusts = smoothstep(0.17, 1.3, gw);
+  float capillary = 1. - smoothstep(0.15, 0.49, pixelMetres);
+  g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. - uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.048 * gusts * capillary;
+  g += vec2(-WIND_DIR.y, WIND_DIR.x) * cos(dot(p, vec2(-WIND_DIR.y, WIND_DIR.x)) * 13. + uTime * 6.1) * 0.012 * gusts * capillary;
   return g + impactWave(p).yz;
 }
 void main(){
@@ -1480,7 +1519,7 @@ void main(){
   vec2 rain = vec2(0.);
   if (uStorm > 0.005 && pixelMetres < 0.065)
     rain = rainSlope(p, pixelMetres) * (1. - smoothstep(0.025, 0.065, pixelMetres));
-  vec2 g = waveGrad(p) + rain;
+  vec2 g = waveGrad(p, pixelMetres) + rain;
   float flow = p.y * 3.3 - uTime * 3.1 + vnoise(p * 1.3 - vec2(0., uTime * 0.21)) * 3.8;
   g += stream * vec2(0.012 * sin(flow * 0.71), 0.028 * cos(flow));
   vec3 N = normalize(vec3(-g.x, 1., -g.y));
@@ -1520,7 +1559,9 @@ void main(){
     float tilt = dot(rain, skyDirection);
     col += tilt * (0.70 + 0.45*NdV) * (0.39*refl + 0.71*ambient(vec3(0.,1.,0.)));
   }
-  float swash = 1. - smoothstep(0.025, 0.21, abs(depth - 0.06));
+  float wash = vnoise(p * 1.8 + uTime * 0.13);
+  float swash = (1. - smoothstep(0.018, 0.12 + 0.10 * wash, abs(depth - 0.047 - 0.025 * wash)))
+    * smoothstep(0.24, 0.68, wash);
   float foam = (swash + 0.38 * stream * smoothstep(0.7, 1., sin(flow))) * shoreFroth(p);
   float light = uNight * uNight * glowI(glow);
   col = mix(col, tonemap(vec3(0.68, 0.78, 0.81) * (ambient(N) * 2.4 + uSunCol * sun * 0.16)), foam * 0.48);
@@ -1692,7 +1733,7 @@ function terrainFar() {
 }
 function waterMesh(terrain) {
   const cols = 256, rows = 352, stride = cols + 1, tileCells = 16;
-  const x0 = LAKE[0] - 46, z0 = spring.z - 23, w = 92, d = LAKE[1] + 40 - z0;
+  const x0 = LAKE[0] - 52, z0 = spring.z - 23, w = 101, d = LAKE[1] + 44 - z0;
   const xz = new Float32Array(2 * stride * (rows + 1)), water = new Float32Array(3 * stride * (rows + 1));
   for (let j = 0; j <= rows; j++) for (let i = 0; i <= cols; i++) {
     const v = j * stride + i, x = x0 + i * w / cols, z = z0 + j * d / rows, level = waterLevel(x, z);
@@ -1878,7 +1919,7 @@ function scatter(near, fixed, meshes) {
     const reach = Math.max(sx, sz);
     if (v !== 3 && (trailDistance(x,z) < 0.85+1.2*reach || inRestArea(x,z,reach))) return;
     const iz = z - ISLET[1], ix = x - ISLET[0] + 0.21*iz;
-    if (Math.hypot(ix/7, iz/5.1) < 1.28 + reach/5.1) return;
+    if (Math.hypot(ix/ISLET_WIDTH, iz/ISLET_DEPTH) < 1.28 + reach/ISLET_DEPTH) return;
     const seat = stoneBed(groundAt, x, z, sx, sy, sz, yaw, v);
     if (!seat) return;
     const contact = drop(meshes[v], x, z, sx, sy, sz, yaw, tint, seat);
@@ -2099,7 +2140,7 @@ function twig(wood, root, tip, radius, base, flex, seed) {
 
 // Spend each crown's existing leaf budget along real shoots. Lower shoots
 // spread out, younger shoots rise, and alternate leaves open on opposite sides.
-function leafSprays(wood, leaves, center, parent, radius, flex, parentFlex, base, random, count, broad, yaw) {
+function leafSprays(wood, leaves, center, parent, radius, flex, parentFlex, base, random, count, broad, yaw, blossom = false) {
   const groups = Math.max(3, Math.round(count/(broad ? 8 : 11)));
   const phase = yaw + 6.2832*random();
   for (let j = 0; j < groups; j++) {
@@ -2126,7 +2167,7 @@ function leafSprays(wood, leaves, center, parent, radius, flex, parentFlex, base
       leaves.D.push(Math.cos(ph)*horizontal, slope*horizontal, Math.sin(ph)*horizontal, len);
       const width = broad ? len*(0.34+0.16*random()) : Math.min(0.19,len*(0.14+0.10*random()));
       leaves.M.push(0.12+0.15*random(),0.17+0.23*random(),width,
-        Number(broad)+0.04+0.41*bud+0.31*tier+0.21*random());
+        (blossom ? 3 : Number(broad))+0.04+0.41*bud+0.31*tier+0.21*random());
       leaves.B.push(...base);
     }
   }
@@ -2168,11 +2209,12 @@ function growJuniper(x, y, z, h, seed, W, Lf, leanTo) {
   }
 }
 // Broadleaf groves have low, spreading forks and a windward slope to the whole crown.
-function growBroadleaf(x, y, z, h, seed, wood, leaves) {
+function growBroadleaf(x, y, z, h, seed, wood, leaves, shade) {
   const rand = rng(Math.floor(seed * 1e9) ^ 0x72ac);
   const angle = (rand() - 0.5) * 1.6 + 0.5;
   const dx = Math.cos(angle), dz = Math.sin(angle);
-  const hue = rand();
+  const originalHue = rand(), hue = shade ?? originalHue;
+  const blossom = hue >= 0.91 && hue < 0.95;
   const base = [x, z, h, hue];
   const trunk = [[x, y, z], [x - dx * h * 0.025, y + h * 0.12, z - dz * h * 0.025],
     [x + dx * h * 0.05, y + h * 0.32, z + dz * h * 0.05],
@@ -2191,7 +2233,7 @@ function growBroadleaf(x, y, z, h, seed, wood, leaves) {
 
   function crown(center, parent, radius, flex, parentFlex) {
     const count = Math.ceil((touch ? 66 : 88) * (0.65 + Math.min(radius, 2) * 0.32));
-    leafSprays(wood, leaves, center, parent, radius, flex, parentFlex, base, rand, count, true, angle);
+    leafSprays(wood, leaves, center, parent, radius, flex, parentFlex, base, rand, count, true, angle, blossom);
   }
 
   crown(trunk[4], trunk[3], h * 0.34, 0.76, 0.57);
@@ -2199,9 +2241,9 @@ function growBroadleaf(x, y, z, h, seed, wood, leaves) {
   for (let i = 0; i < branches; i++) {
     const joint = 1 + i % 3, start = trunk[joint], flex = joint * 0.19;
     const az = angle + i * 2.39996 + rand() * 0.5;
-    const reach = h * (0.28 + rand() * 0.14);
+    const reach = h * (blossom ? 0.40 + rand() * 0.21 : 0.28 + rand() * 0.14);
     const bx = reach * (Math.cos(az) + 0.38 * dx), bz = reach * (Math.sin(az) + 0.38 * dz);
-    const lift = h * (0.20 + 0.12 * rand());
+    const lift = h * (blossom ? 0.15 + 0.15 * rand() : 0.20 + 0.12 * rand());
     const elbow = [start[0] + bx * 0.58, start[1] + lift * 0.27, start[2] + bz * 0.58];
     const end = [start[0] + bx, start[1] + lift, start[2] + bz];
     tube(wood, [start, elbow, end], [0.048 * h, 0.032 * h, 0.009 * h], 7, flex, flex + 0.26, base, seed + i);
@@ -2270,17 +2312,54 @@ function growRosettes(sc, near, leaves) {
     }
   }
 }
+// A taller conifer with irregular whorls. Each branch ends in a tapered
+// fan of needle sprays, using the same wood and leaf batches as the grove.
+function growEvergreen(x, y, z, h, seed, wood, leaves, hue) {
+  const rand = rng(Math.floor(seed * 1e9) ^ 0x571b);
+  const a = rand() * 6.2832, lean = [Math.cos(a), Math.sin(a)];
+  const base = [x, z, h, hue], trunk = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    trunk.push([x + 0.12 * lean[0] * h * t * t, y + t * h, z + 0.12 * lean[1] * h * t * t]);
+  }
+  tube(wood, trunk, trunk.map((_, i) => h * (0.006 + 0.046 * (1 - i / 8) ** 1.2)), 8, 0, 0.68, base, seed);
+  for (let tier = 2; tier <= 8; tier++) {
+    const start = trunk[tier], proportion = tier / 8, count = tier === 8 ? 2 : 4;
+    for (let i = 0; i < count; i++) {
+      const angle = a + i * (6.2832 / count) + 2.39996 * tier + 0.33 * rand();
+      const radius = h * (0.052 + 0.36 * (1 - proportion)) * (0.78 + 0.44 * rand());
+      const dx = radius * Math.cos(angle), dz = radius * Math.sin(angle);
+      const elbow = [start[0] + 0.60 * dx, start[1] - 0.13 * radius, start[2] + 0.60 * dz];
+      const end = [start[0] + dx, start[1] + 0.14 * radius, start[2] + dz];
+      const flex = 0.085 * tier;
+      tube(wood, [start, elbow, end], [h * 0.015, h * 0.009, h * 0.0025], 5, flex, flex + 0.23, base, seed + i);
+      leafSprays(wood, leaves, end, elbow, radius * 0.52, flex + 0.23, flex + 0.12, base, rand, 11, false, angle);
+    }
+  }
+}
 function growForest(sc, near) {
   const W = { pos: [], nor: [], w: [], b: [], idx: [] }, Lf = { R: [], D: [], M: [], B: [] };
   const stands = new Map(), patches = [];
-  function addTree(x, y, z, height, seed, yaw) {
+  function addTree(x, y, z, height, seed, yaw, accent) {
     const key = Math.floor(x / TILE_M) + TILES * Math.floor(z / TILE_M);
     if (!stands.has(key)) stands.set(key, []);
-    stands.get(key).push({ x, y, z, height, seed, yaw });
+    stands.get(key).push({ x, y, z, height, seed, yaw, accent });
+  }
+  // The three new crown shapes each get a specimen along the main approach.
+  const accents = new Map();
+  for (const [x, z, hue] of [[-30, -3, 0.967], [10, -19, 0.936], [31, 3, 0.884]]) {
+    let slot = -1, distance = 19 ** 2;
+    for (let i = 0; i < sc.trees.length; i += 5) {
+      const d = (sc.trees[i] - x) ** 2 + (sc.trees[i + 2] - z) ** 2;
+      if (d >= distance || sc.trees[i + 4] < 2.8 || accents.has(i)) continue;
+      slot = i;
+      distance = d;
+    }
+    if (slot >= 0) accents.set(slot, hue);
   }
   for (let q = 0; q < sc.trees.length; q += 5) {
     const [x, y, z, seed, height] = sc.trees.subarray(q, q + 5);
-    addTree(x, y, z, height, seed);
+    addTree(x, y, z, height, seed, undefined, accents.get(q));
   }
   const sx = ISLET[0]-1.15, sz = ISLET[1]+0.55;
   addTree(sx, nearH(near,sx,sz)-0.08, sz, 4.35, 0.7317, Math.atan2(LAKE[1]-sz, LAKE[0]-sx)+2.4);
@@ -2289,9 +2368,20 @@ function growForest(sc, near) {
   // and its water reflection can discard whole stands before drawing.
   for (const stand of stands.values()) {
     const start = W.pos.length, first = W.idx.length;
-    for (const { x, y, z, height, seed, yaw } of stand) {
-      const grow = height > 3 && seed < 0.54 ? growBroadleaf : growJuniper;
-      grow(x, y, z, height, seed, W, Lf, yaw);
+    for (const { x, y, z, height, seed, yaw, accent } of stand) {
+      const broad = height > 3 && seed < 0.54;
+      const pigment = rng(Math.floor(seed * 1e9) ^ (broad ? 0x72ac : 0x5bd1));
+      if (broad) pigment();
+      const hue = accent ?? pigment();
+      if (yaw === undefined && hue >= 0.85 && hue < 0.91) {
+        growEvergreen(x, y, z, Math.max(4.7, height * 1.48), seed, W, Lf, hue);
+      } else if (yaw === undefined && hue >= 0.91 && hue < 0.95) {
+        growBroadleaf(x, y, z, Math.max(5.5, height * 1.54), seed, W, Lf, hue);
+      } else if (broad || accent !== undefined) {
+        growBroadleaf(x, y, z, height, seed, W, Lf, hue);
+      } else {
+        growJuniper(x, y, z, height, seed, W, Lf, yaw);
+      }
     }
     let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
     for (let i = start; i < W.pos.length; i += 3) {
@@ -2638,7 +2728,7 @@ function buildValley() {
       const y = nearH(near, x, z), water = waterLevel(x, z);
       const tread = trailCover(x,z);
       if (y < water - 0.12 || tread >= 0.98) return;
-      const island = Math.hypot((x-ISLET[0]+0.21*(z-ISLET[1]))/7, (z-ISLET[1])/5.1);
+      const island = Math.hypot((x-ISLET[0]+0.21*(z-ISLET[1]))/ISLET_WIDTH, (z-ISLET[1])/ISLET_DEPTH);
       if (island < 1.6) {
         data[i] = 0.36*(1-sm(0.43,0.87,island))*sm(0.8,1.6,y);
         data[i+1] = 0.52+0.28*vnoise(x*0.8,z*0.8);
@@ -3404,7 +3494,7 @@ const SHADOW_STEP = 0.012, TIMELAPSE_SHADOW_STEP = 0.094, EXTINCTION = [0.06, 0.
 // relative air mass toward a star `y` (the sine of its elevation) above the horizon (Kasten and Young, 1989)
 const airMass = (y) => 1 / (Math.max(y, 0) + 0.50572 * Math.pow(96.07995 - Math.asin(Math.max(-1, Math.min(1, y))) * 180 / Math.PI, -1.6364));
 const SET_AIR = airMass(SUN[1]);
-let day = 'still', dayAngle = 0, skyOffset = 0, timelapseElapsed = null, weatherLead = 0;
+let day = 'still', dayAngle = 0, skyOffset = 0, timelapseElapsed = null, weatherLead = 0, cloudMotion = 0;
 let starDirection = SUN, starColor = SUNCOL, starTint = [1, 1, 1], cloudTint = starTint;
 // the two star layers in use (fading from, fading to), the clock angles they were baked for, and whether they must be
 // baked afresh (the clock jumped) or the hand-set star restored to layer 0
@@ -3461,7 +3551,6 @@ function advanceDay(dt) {
   if (timelapseElapsed !== null) {
     const end = Math.min(TIMELAPSE_SECONDS, timelapseElapsed + dt);
     skyDt = timelapseTravel(end) - timelapseTravel(timelapseElapsed);
-    weatherLead += skyDt - (end - timelapseElapsed);
     if (end === TIMELAPSE_SECONDS) {
       day = 'paused';
       skyDt += dt - (end - timelapseElapsed);
@@ -3525,6 +3614,7 @@ function common(p, eye, VP, mirror, t) {
     p.worldFrame = frameNumber;
     gl.uniform4fv(p.u('uCloudEye'), clouds.eyeUniform); gl.uniform4fv(p.u('uLastCloudEye'), clouds.lastEyeUniform);
     gl.uniform2f(p.u('uCloudLayerMix'), clouds.front, clouds.blend);
+    gl.uniform2f(p.u('uCloudEvolution'), t + weatherLead, cloudMotion);
     gl.uniform3fv(p.u('uSunDir'), lightDirection); gl.uniform3fv(p.u('uSunCol'), lightColor);
     gl.uniform3fv(p.u('uStarDir'), starDirection); gl.uniform3fv(p.u('uStarTint'), starTint); gl.uniform3fv(p.u('uCloudTint'), cloudTint);
     if (p.shadowVersion !== valleyShadows.version) {
@@ -3663,7 +3753,7 @@ function render(t, camOverride, glowTexture = texGlow) {
   frameNumber++;
   lightDirection = norm(starDirection.map((v, i) => v * (1 - night) + PLANET[i] * night));
   lightColor = starColor.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
-  clouds.update(t, cam.eye, starDirection, sm(0, 0.41, starDirection[1]), storm, Boolean(camOverride), t + weatherLead);
+  clouds.update(t, cam.eye, starDirection, sm(0, 0.41, starDirection[1]), storm, Boolean(camOverride), t + weatherLead, cloudMotion);
   const waterPlanes = prepareViewPlanes(VP, 1);
   const waterInView = waterBounds(wm.patches, VP, waterPlanes, outsideView, depthRange[0], w, h);
   if (waterInView) {
@@ -3777,6 +3867,12 @@ function frame(now) {
   if (elapsed < 0.25) adaptDensity(elapsed);
   const dt = Math.min(0.1, elapsed);
   const skyDt = started ? advanceDay(dt) : dt;
+  // A photographed day covers far more atmospheric evolution than the
+  // default scenic wind. Keep its stronger turnover tied to the eased clock.
+  const weatherDt = dt + 2.05 * Math.max(0, skyDt - dt);
+  weatherLead += weatherDt - dt;
+  const boost = dt > 0 ? sm(0.8, 9., (skyDt - dt) / dt) : 0;
+  cloudMotion += (boost - cloudMotion) * (1 - Math.exp(-dt * 6.));
   night += (nightTarget - night) * Math.min(1, dt * 0.7);
   // Finish the crossfade so day-only and night-only passes can go idle again.
   if (Math.abs(nightTarget - night) < 0.0001) night = nightTarget;
@@ -3790,7 +3886,7 @@ function frame(now) {
   } else simT += dt;
   wind.update(dt, storm);
   const weatherSun = day === 'still' ? starDirection[1] : starAt(dayAngle)[1];
-  clouds.advance(skyDt, sm(0, 0.41, weatherSun), storm, simT + weatherLead, groundF.sheet);
+  clouds.advance(weatherDt, sm(0, 0.41, weatherSun), storm, simT + weatherLead, groundF.sheet);
   render(simT);
   capture?.frame(now);
   if (!started) return;
@@ -3951,7 +4047,7 @@ const VIEWS = {
   sunset: { eye: [12, H(12, 4) + 1.7, 4], yaw: -1.5, pitch: 0.08, motes: true },
   outcrop: { eye: [12, H(12, -14) + 1.7, -14], yaw: 0.9, pitch: 0.05, motes: true },
   beach: { eye: [12.5, H(12.5, 28) + 1.5, 28], yaw: -1.9, pitch: -0.32, motes: false },
-  stack: { eye: [ISLET[0] + 9, 1.4, ISLET[1] + 6], yaw: -0.98, pitch: -0.08, motes: false },
+  stack: { eye: [ISLET[0] + 11, 1.5, ISLET[1] + 7.4], yaw: -0.98, pitch: -0.08, motes: false },
   galaxy: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 2.75, pitch: 0.48, motes: false },
   coil: coilView,
   lantern: lanternView,
@@ -4017,7 +4113,7 @@ function scripted(m, frames = 900, view = 'shore') {
   gl.generateMipmap(gl.TEXTURE_2D);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   clouds = createClouds(gl, program, FSQ, engine.boxel, { mobile: touch, test: TEST,
-    sources: [[...LAKE, 1], [spring.x, spring.z, 0.55]] });
+    sources: [[...LAKE, 1.27], [spring.x, spring.z, 0.55]] });
   checkPrograms();
   const t0 = performance.now();
   glowF = new Layer(engine.boxel, SPECS.glow, texGlow);

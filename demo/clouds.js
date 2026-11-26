@@ -6,24 +6,39 @@ import { createWeather, cloudBase, CLOUD_WIND, WEATHER_METRES, WEATHER_SIZE, WEA
 export const cloudSky = `
 uniform highp sampler2DArray uClouds;
 uniform vec4 uCloudEye, uLastCloudEye;
-uniform vec2 uCloudLayerMix;
+uniform vec2 uCloudLayerMix, uCloudEvolution;
 vec2 cloudSkyUV(vec3 d) {
   // Longitude is immaterial at the zenith, where atan(0, 0) is undefined.
   float az = abs(d.x) + abs(d.z) < 0.00001 ? 0. : atan(d.x, -d.z);
   return vec2(az * 0.159154943 + 0.5, asin(clamp(d.y, 0., 1.)) * 0.636619772);
 }
-vec2 cloudProjection(vec3 origin, vec3 ray, vec4 anchor) {
+vec2 cloudProjection(vec3 origin, vec3 ray, vec4 anchor, vec2 drift) {
   vec3 delta = origin - anchor.xyz;
   float dist = max(60., (anchor.w - delta.y) / max(ray.y, 0.045));
-  return cloudSkyUV(normalize(delta + dist * ray));
+  vec3 offset = delta + dist * ray;
+  offset.xz += drift;
+  return cloudSkyUV(normalize(offset));
 }
 vec4 cloudColumn(vec3 origin, vec3 ray) {
-  vec4 col = texture(uClouds, vec3(cloudProjection(origin, ray, uCloudEye), uCloudLayerMix.x));
+  vec2 drift = vec2(0.);
+  float growth = 0.;
+  if (uCloudEvolution.y > 0.01) {
+    // Evaluate the same moving air in the sky, water and terrain shadows.
+    // Between atlas renders these eddies still grow and erode the edges.
+    float t = uCloudEvolution.x, intensity = uCloudEvolution.y;
+    float reach = max(60., (uCloudEye.w + uCloudEye.y - origin.y) / max(ray.y, 0.06));
+    vec2 air = origin.xz + ray.xz * reach - vec2(${CLOUD_WIND.join(',')}) * t;
+    vec2 eddy = vec2(sin(air.y * 0.008 + air.x * 0.002 + t * 0.048),
+                     sin(air.x * 0.009 - air.y * 0.003 - t * 0.055));
+    drift = 62. * intensity * eddy;
+    growth = intensity * (0.33 * sin(dot(air, vec2(0.008, 0.006)) + t * 0.063) + 0.14 * eddy.x);
+  }
+  vec4 col = texture(uClouds, vec3(cloudProjection(origin, ray, uCloudEye, drift), uCloudLayerMix.x));
   if (uCloudLayerMix.y < 1.) {
-    vec2 uv = cloudProjection(origin, ray, uLastCloudEye);
+    vec2 uv = cloudProjection(origin, ray, uLastCloudEye, drift);
     col = mix(texture(uClouds, vec3(uv, 1. - uCloudLayerMix.x)), col, uCloudLayerMix.y);
   }
-  return col;
+  return col * (1. + growth * (1. - col.a));
 }
 vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
   float dusk = 1. - smoothstep(0.025, 0.39, uStarDir.y);
@@ -210,6 +225,7 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
   const waterMix = weather.water.slice(), maxMix = weather.maxima.slice();
   const WEATHER_PERIOD = 4, BLEND_SECONDS = 0.8;
   let front = 0, shown, previous, pending, row = 0, swappedAt = 0, blend = 1, weatherAge = 0;
+  let blendDuration = BLEND_SECONDS;
   function marchRows(state, first, count, dest, skip) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, atlas, 0, dest);
@@ -246,13 +262,13 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
     out[0] = state.eye[0] + CLOUD_WIND[0] * dt; out[1] = state.eye[1];
     out[2] = state.eye[2] + CLOUD_WIND[1] * dt; out[3] = state.base + 165 - state.eye[1];
   }
-  function update(t, eye, light, sun, rain, fixture, weatherTime = t) {
+  function update(t, eye, light, sun, rain, fixture, weatherTime = t, motion = 0) {
     const alignment = shown ? light[0] * shown.light[0] + light[1] * shown.light[1] + light[2] * shown.light[2] : 0;
     const reset = !shown || t < shown.t;
     const displaced = shown && Math.hypot(eye[0] - shown.eye[0], eye[1] - shown.eye[1], eye[2] - shown.eye[2]) > 18;
     const weatherChanged = shown && Math.abs(rain - shown.rain) > 0.10;
-    if (previous && (fixture || t - swappedAt >= BLEND_SECONDS)) previous = null;
-    const changed = shown && (t - shown.t > 1.25 || displaced || weatherChanged ||
+    if (previous && (fixture || t - swappedAt >= blendDuration)) previous = null;
+    const changed = shown && (t - shown.t > 1.25 - 0.65 * motion || displaced || weatherChanged ||
       (fixture && (alignment < 0.99999 || Math.abs(rain - shown.rain) > 0.001)));
     if (reset || (!pending && !previous && changed)) {
       upload(weatherAge / WEATHER_PERIOD);
@@ -260,19 +276,21 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
       // optical light ray above the horizon as the sun sets.
       const direction = [light[0], Math.max(0.14, light[1]), light[2]];
       const length = Math.hypot(...direction);
-      pending = { t, weatherTime, eye: [...eye], light: [...light], rain, base: cloudBase(sun, rain), direction: direction.map(x => x / length) };
+      pending = { t, weatherTime, motion, eye: [...eye], light: [...light], rain,
+        base: cloudBase(sun, rain), direction: direction.map(x => x / length) };
       row = 0;
     }
     if (pending) {
-      const count = Math.min(height - row, reset || fixture ? height : Math.ceil(height / 27));
+      const count = Math.min(height - row, reset || fixture ? height : Math.ceil(height / (27 - 10 * pending.motion)));
       marchRows(pending, row, count, 1 - front, true);
       row += count;
       if (row >= height) {
         previous = reset || fixture ? null : shown;
         front = 1 - front; shown = pending; pending = null; swappedAt = t;
+        blendDuration = BLEND_SECONDS - 0.39 * shown.motion;
       }
     }
-    const fraction = previous ? Math.min(1, Math.max(0, (t - swappedAt) / BLEND_SECONDS)) : 1;
+    const fraction = previous ? Math.min(1, Math.max(0, (t - swappedAt) / blendDuration)) : 1;
     blend = fraction * fraction * (3 - 2 * fraction);
     anchor(shown, weatherTime, eyeUniform);
     if (previous) anchor(previous, weatherTime, lastEyeUniform);

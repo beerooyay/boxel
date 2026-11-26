@@ -8,6 +8,11 @@ const swatches = {
   SCARLET: '#D94456',
   GOLD: '#F3CB59',
   BLUE: '#568FDC',
+  EVERGREEN: '#287149',
+  BLOSSOM: '#FF9EC6',
+  BLOSSOM_TIP: '#FFD4E1',
+  HONEY: '#FFC358',
+  APRICOT: '#FF9B55',
 };
 function linear(channel) {
   const s = parseInt(channel,16)/255;
@@ -44,9 +49,9 @@ vec3 understoryPigment(float type, float hue) {
 vec3 crownPigment(float seed){
   if (seed < 0.78) return mix(LEAF,NEW_GROWTH,0.19*seed/0.78);
   if (seed < 0.85) return PETAL_PINK;
-  if (seed < 0.91) return ORCHID;
-  if (seed < 0.95) return BLUE;
-  if (seed < 0.985) return SCARLET;
+  if (seed < 0.91) return mix(EVERGREEN, LEAF, 0.22 * (seed - 0.85)/0.06);
+  if (seed < 0.95) return mix(BLOSSOM, BLOSSOM_TIP, 0.72 * (seed - 0.91)/0.04);
+  if (seed < 0.985) return mix(HONEY, APRICOT, (seed - 0.95)/0.035);
   return GOLD;
 }
 vec3 meadowTip(vec2 p, float elevation, float jitter){
@@ -54,6 +59,8 @@ vec3 meadowTip(vec2 p, float elevation, float jitter){
   float variation = vnoise(p*0.052+12.);
   float dry = smoothstep(0.4,8.,elevation);
   vec3 green = mix(LEAF, NEW_GROWTH, 0.14+0.37*variation+0.12*dry);
-  float rose = smoothstep(0.62,0.72,habitat+0.022*dry);
-  return mix(green,PRAIRIE_ROSE,rose) * mix(0.76,1.03,variation);
+  float ground = habitat + 0.022*dry;
+  float fringe = smoothstep(0.50,0.59,ground) * (1. - smoothstep(0.65,0.74,ground));
+  vec3 spring = mix(green, NEW_GROWTH, fringe * (0.58 + 0.32 * variation));
+  return mix(spring,PRAIRIE_ROSE,smoothstep(0.62,0.74,ground)) * mix(0.76,1.03,variation);
 }`;

@@ -3,14 +3,14 @@
 // leaves. Here the picture is grown at load rather than photographed: a stem, alternate leaflets that shrink toward
 // the tip and a terminal leaflet, each cupped, creased along its midrib and veined, the upper ones shading the lower.
 //
-// The atlas holds three families of four, a family to a row: broadleaf sprays, fine sprays for the junipers, and single
-// strap leaves for the ground plants. Each texel stores the leaf surface's slope across and along the card (red,
+// The atlas holds four families of four, a family to a row: broadleaf sprays, fine sprays for the junipers, single
+// strap leaves for the ground plants, and clusters of five-petalled blossoms. Each texel stores the leaf surface's slope across and along the card (red,
 // green), its tone (blue: 0 is the stem, then shade, veins and edges) and its coverage (alpha). Coverage-preserving
 // mips keep distant crowns as full as near ones.
 
-export const SPRAY_COLUMNS = 4, SPRAY_ROWS = 3, SPRAY_MAX_LEVEL = 6;
+export const SPRAY_COLUMNS = 4, SPRAY_ROWS = 4, SPRAY_MAX_LEVEL = 6;
 // card half-width over card length, per family: the vertex shader builds each card in the same proportion
-export const SPRAY_ASPECT = [0.56, 0.42, 0.2];
+export const SPRAY_ASPECT = [0.56, 0.42, 0.2, 0.58];
 
 export function makeLeafSprays(random, tile = 256) {
   const width = tile * SPRAY_COLUMNS, height = tile * SPRAY_ROWS, count = width * height;
@@ -40,6 +40,19 @@ export function makeLeafSprays(random, tile = 256) {
       const [tx, ty] = stemAt(stem.end);
       leaflets.push({ x: tx, y: ty - 0.02, dx: Math.sin(lean * 2), dy: Math.cos(lean * 2), length: Math.min(0.22, 1 - ty) * (broad ? 1 : 0.85), ratio: broad ? 0.38 : 0.16,
         ovate: broad, curl: (random() - 0.5) * 0.15, tilt: (random() - 0.5) * 0.3, shade: 0.72 + 0.2 * random() });
+    } else if (row === 3) {
+      const lean = (random() - 0.5) * 0.14;
+      stem = { at: y => [lean * y, y], end: 0.91, thick: 0.011 };
+      for (let i = 0; i < 12; i++) {
+        const y = 0.14 + 0.75 * (i + 0.6 * random()) / 12;
+        const x = (i % 2 ? 1 : -1) * (0.045 + random() * 0.24) * (1.18 - 0.60 * y) + lean * y;
+        const head = 0.074 + 0.052 * random(), turn = 6.283 * random();
+        for (let petal = 0; petal < 5; petal++) {
+          const a = turn + petal * 1.256637;
+          leaflets.push({ x, y, dx: Math.cos(a), dy: Math.sin(a), length: head * (0.88 + 0.2 * random()),
+            ratio: 0.44, ovate: true, curl: 0, tilt: 0.22, shade: 0.64 + 0.32 * random() });
+        }
+      }
     } else {
       // a single strap leaf, a little asymmetric, from stalk to point
       const lean = (random() - 0.5) * 0.12;
@@ -162,7 +175,7 @@ export function uploadLeafSprays(gl, sprays, unit) {
 export const sprayGLSL = `
 uniform sampler2D uLeafSprays;
 vec2 sprayUV(float u, float side, float kind, float seed){
-  float col = floor(fract(seed * 7.131) * ${SPRAY_COLUMNS}.), row = kind >= 1.5 ? 2. : kind >= 0.5 ? 0. : 1.;
+  float col = floor(fract(seed * 7.131) * ${SPRAY_COLUMNS}.), row = kind >= 2.5 ? 3. : kind >= 1.5 ? 2. : kind >= 0.5 ? 0. : 1.;
   vec2 t = vec2(side * 0.5 + 0.5, u) * 0.96 + 0.02;
   return (vec2(col, row) + t) / vec2(${SPRAY_COLUMNS}., ${SPRAY_ROWS}.);
 }`;
