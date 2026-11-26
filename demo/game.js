@@ -510,6 +510,15 @@ vec3 floraRamp(vec3 tip, float u){
   vec3 root = tip * 0.04 + vec3(0.008, 0.012, 0.02), body = tip * vec3(0.30, 0.31, 0.36);
   return u < 0.5 ? mix(root, body, u * 2.) : mix(body, tip * 0.9, (u - 0.5) * 2.);
 }
+// The meadow's colour at a place: broad jade swaths and scattered plum heath. The blades take their tips from it and
+// the litter under them, last season's blades, takes it too, so the ground between stems is the stand's own colour.
+vec3 meadowTip(vec2 p, float jitter){
+  float heath = vnoise(p * 0.03 + 3.) * 0.8 + vnoise(p * 0.09 - 5.) * 0.2;
+  float variation = vnoise(p * 0.052 + 12.);
+  vec3 jade = mix(vec3(0.042, 0.32, 0.13), vec3(0.10, 0.54, 0.37), variation);
+  vec3 plum = mix(vec3(0.21, 0.13, 0.34), vec3(0.43, 0.22, 0.51), variation);
+  return mix(jade, plum, smoothstep(0.49, 0.68, heath + jitter));
+}
 // The midrib forks outward toward the tip. Fade the finest veins as a leaf becomes subpixel.
 float leafVeins(float u, float side, float seed){
   float v = abs(side);
@@ -720,7 +729,19 @@ void main(){
     n2 = mix(n2, grain.x, fine); n3 = mix(n3, grain.y, fine * fine);
   }
   float hummocks = smoothstep(0.24, 0.68, n1 + (n2 - 0.5) * 0.36);
-  vec3 moss = mix(vec3(0.034, 0.047, 0.041), vec3(0.088, 0.18, 0.092), hummocks) * (0.74 + 0.55 * n3);
+  // Under the meadow lies its own litter: last season's blades flat in fine strokes over dark soil, the colour of the
+  // stand above it, so purple heath has purple ground and the jade swaths jade.
+  vec3 stand = meadowTip(p, 0.);
+  float thatch = 0.5, clump = vnoise(p * 2.3 + 4.1);
+  if (fine > 0.) {
+    // strokes of fallen blades lying every which way in tufts, and specks of bare soil between them
+    vec2 q = mat2(0.8, 0.6, -0.6, 0.8) * p, r = mat2(0.34, -0.94, 0.94, 0.34) * p;
+    float strokes = mix(vnoise(q * vec2(17., 2.6) + n1 * 2.), vnoise(r * vec2(19., 2.9) - 3.), smoothstep(0.3, 0.7, clump));
+    float soil = smoothstep(0.62, 0.8, vnoise(p * 7.3 - 2.));
+    thatch = mix(0.5, clamp(strokes * 1.25 - 0.12 - 0.45 * soil, 0., 1.), fine);
+  }
+  vec3 litter = stand * mix(0.16, 0.52, smoothstep(0.18, 0.85, thatch)) * (0.8 + 0.4 * clump) + vec3(0.012, 0.010, 0.009);
+  vec3 moss = mix(litter * 0.78, litter * 1.12 + vec3(0.01, 0.02, 0.008), hummocks) * (0.82 + 0.36 * n3);
   vec3 sand = mix(vec3(0.16, 0.12, 0.083), vec3(0.41, 0.34, 0.22), n1) * (0.75 + 0.42 * n2);
   vec3 bed = mix(vec3(0.060, 0.096, 0.082), vec3(0.24, 0.23, 0.16), n2) * (0.74 + 0.48 * n3);
   vec3 rock = mix(vec3(0.095, 0.103, 0.117), vec3(0.33, 0.28, 0.25), n2 * 0.65 + n1 * 0.35);
@@ -731,8 +752,8 @@ void main(){
   alb = mix(alb, bed, under);
   float upland = smoothstep(54., 79., max(abs(p.x), abs(p.y)));
   vec3 heath = mix(vec3(0.045, 0.12, 0.095), vec3(0.15, 0.13, 0.083), smoothstep(-50., 70., p.x + p.y * 0.35));
-  alb = mix(alb, heath * (0.68 + 0.55 * hummocks + 0.15 * n3), upland * (1. - shore) * 0.64);
-  float rk = max(smoothstep(0.23, 0.53, mix(slopeG, slope, 0.22) + 0.13 * n2), smoothstep(6. + 11. * upland, 12. + 16. * upland, y) * 0.8);
+  alb = mix(alb, mix(heath, litter, 0.5) * (0.68 + 0.55 * hummocks + 0.15 * n3), upland * (1. - shore) * 0.64);
+  float rk = max(smoothstep(0.34, 0.58, mix(slopeG, slope, 0.22) + 0.13 * n2), smoothstep(6. + 11. * upland, 12. + 16. * upland, y) * 0.8);
   alb = mix(alb, rock, rk); rough = mix(rough, 0.62, rk);
   // Discontinuous beds and runoff flutes break up the exposed valley cliffs at the scale
   // visible across the lake. The height coordinate keeps detail on near-vertical faces.
@@ -782,7 +803,7 @@ void main(){
     vec3 clay=mix(vec3(0.102,0.069,0.051),vec3(0.38,0.239,0.151),0.19+0.48*n1+0.33*n2);
     float crumb = smoothstep(0.33,0.71,grains);
     vec3 tread = mix(clay*(0.52+0.97*crumb),shale(0.15+0.67*detail.a),grit);
-    vec3 verge=mix(vec3(0.054,0.086,0.040),vec3(0.159,0.186,0.055),n2);
+    vec3 verge=stand*mix(0.2,0.42,n2);
     alb=mix(alb,verge*(0.55+0.8*grains),4.*pathMask*(1.-pathMask)*0.65);
     vec3 loam=mix(tread*vec3(0.78,0.80,0.77),moss,0.47*hummocks*smoothstep(0.73,0.99,vN.y));
     alb=mix(alb,mix(loam,tread,pathMask),soilCover);
@@ -869,20 +890,24 @@ void main(){
 }`);
 
 const ROCK = program(WORLD_VS + `
-in vec3 aPos; in vec3 aNor; in vec4 aI, aS, aBed;
-flat out vec3 vBed;
-out vec3 vWP, vN, vLoc, vNl; out float vH, vToe;
+in vec3 aPos, aPos1, aPos2, aNor, aNor1, aNor2; in vec4 aI, aS, aBed;
+flat out vec3 vBed; flat out float vKind;
+out vec3 vWP, vN, vLoc, vNl; out float vH, vToe, vCurv;
 void main(){
+  // each stone takes one of its group's three shapes
+  float shape = floor(fract(aS.w * 7.31) * 3.);
+  vec3 rp = shape < 0.5 ? aPos : shape < 1.5 ? aPos1 : aPos2, rn = shape < 0.5 ? aNor : shape < 1.5 ? aNor1 : aNor2;
+  vCurv = (length(rn) - 1.) / 0.45; vKind = shape;
   float c = cos(aI.w), s = sin(aI.w);
   vec3 up = normalize(vec3(-aBed.x, 1., -aBed.y));
   vec3 along = normalize(vec3(c, dot(aBed.xy, vec2(c,s)), s));
   mat3 frame = mat3(along, up, cross(along,up));
-  vLoc = aPos * aS.xyz; vNl = aNor; vH = aS.w;
-  vWP = aI.xyz + frame * vLoc; vN = normalize(frame * (aNor / aS.xyz));
-  vBed = vec3(aBed.zw, max(aS.x,aS.z)); vToe = aPos.y;
+  vLoc = rp * aS.xyz; vNl = rn; vH = aS.w;
+  vWP = aI.xyz + frame * vLoc; vN = normalize(frame * (rn / aS.xyz));
+  vBed = vec3(aBed.zw, max(aS.x,aS.z)); vToe = rp.y;
   gl_Position = project(vWP);
 }`,
-`uniform float uClip; flat in vec3 vBed; in vec3 vWP, vN, vLoc, vNl; in float vH, vToe; out vec4 o;
+`uniform float uClip; flat in vec3 vBed; flat in float vKind; in vec3 vWP, vN, vLoc, vNl; in float vH, vToe, vCurv; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 N = normalize(vN); vec3 V = normalize(uCam - vWP);
@@ -904,28 +929,43 @@ void main(){
       N = normalize(N - near * vec3(grainSlope.x, 0., grainSlope.y) * 0.07);
     }
     float n1 = vnoise(lp.xz * 0.9 + lp.y), n2 = vnoise(lp.xy * 6. + lp.z * 3.), speck = vnoise(lp.zx * 22. + lp.y * 9.);
+    // three stones of the valley: pale speckled granite, the brown shale of the trails, dark fine basalt
+    float litho = fract(vH * 3.71);
     vec3 alb = shale(n1);
+    if (litho < 0.36) {
+      float mica = smoothstep(0.7, 0.9, vnoise(lp.xz * 31. + lp.y * 17.)), feldspar = smoothstep(0.62, 0.86, vnoise(lp.zy * 23. - lp.x * 11.));
+      alb = mix(vec3(0.27, 0.26, 0.245), vec3(0.4, 0.38, 0.35), n1) * (1. - 0.5 * mica * near) + vec3(0.11, 0.1, 0.09) * feldspar * near;
+    } else if (litho > 0.82) alb = mix(vec3(0.07, 0.072, 0.08), vec3(0.15, 0.145, 0.14), n1);
     float grain = vnoise(vec2(dot(vLoc.xz,vec2(3.1,-1.8)) + n2, vLoc.y*9.2 + n1*2.1));
     alb *= (0.82 + 0.30*speck) * (0.77 + 0.40*grain);
     alb = mix(alb,vec3(0.37,0.32,0.26),near * n2 * smoothstep(0.68,0.90,grain)*0.42);
     alb *= mix(0.72, 1.12, smoothstep(-0.4, 0.8, N.y));      // weathered tops pale, overhangs shadowed
     alb *= 1. - 0.62 * crack;
+    // the baked curvature: edges worn pale, hollows dark where light and rain reach least
+    float edgeWear = smoothstep(0.08, 0.5, -vCurv), hollow = smoothstep(0.05, 0.45, vCurv);
+    alb *= (1. + 0.3 * edgeWear) * (1. - 0.42 * hollow);
     float colonised = (1.-smoothstep(0.03,0.55,vBed.x))*smoothstep(0.20,0.80,vBed.z);
-    float lich = colonised * smoothstep(0.7, 0.76, vnoise(lp.xz * 7. + lp.y * 5.)) * smoothstep(0.35, 0.6, vnoise(lp.zx * 1.1)) * (1. - crack);
-    vec3 lichC = mix(vec3(0.22,0.19,0.12),vec3(0.17,0.20,0.12),n1);
-    alb = mix(alb, lichC * (0.7 + 0.3 * speck), lich * 0.5);
+    // crustose lichen: rosettes in patches on the faces that see the sky, orange and sulphur crusts and pale leafy ones
+    float rosette = vnoise(lp.xz * 9.5 + lp.y * 6.7) * 0.6 + vnoise(lp.zx * 24. - lp.y * 15.) * 0.4;
+    float patches = smoothstep(0.5, 0.68, vnoise(lp.xz * 1.7 - lp.y * 2.3 + 5.));
+    float lich = colonised * patches * smoothstep(0.56, 0.61, rosette) * smoothstep(0.05, 0.55, N.y + 0.15) * (1. - crack) * (1. - hollow);
+    vec3 lichC = mix(vec3(0.6, 0.36, 0.07), vec3(0.47, 0.45, 0.17), smoothstep(0.55, 0.85, n2));
+    lichC = mix(lichC, vec3(0.45, 0.47, 0.42), smoothstep(0.72, 0.92, vnoise(lp.zx * 2.3)));
+    alb = mix(alb, lichC * (0.75 + 0.35 * speck), lich * 0.8);
     float humus = vnoise(vWP.xz * 1.4 + vH * 5.);
-    float moss = colonised * smoothstep(0.28, 0.72, N.y + 0.38 * (humus - 0.5)) * smoothstep(0.29, 0.63, humus + 0.15 * speck);
+    float moss = colonised * smoothstep(0.34, 0.78, N.y + 0.38 * (humus - 0.5) + 0.3 * hollow) * smoothstep(0.36, 0.66, humus + 0.15 * speck + 0.2 * hollow);
     vec3 mossTint = mix(vec3(0.027, 0.08, 0.052), vec3(0.12, 0.215, 0.103), n2);
     moss *= 0.28 + 0.52 * (1.-smoothstep(0.30,2.9,abs(vWP.y-vBed.y)));
     alb = mix(alb, mossTint * (0.68 + 0.6 * speck), moss);
     float shoreWet;
     alb = waterline(alb, vWP, vBed.y, shoreWet);
     float wet = clamp(max(shoreWet, (texture(uGround, uv).r + uSheet) * inf), 0., 1.);
+    // soil splashed up the foot, and the foot darker where the ground hides it from the sky
+    alb = mix(alb, vec3(0.15, 0.115, 0.085) * (0.8 + 0.4 * n2), (1. - smoothstep(-0.22, 0.02, vToe + 0.06 * (speck - 0.5))) * 0.55);
     alb *= (1. - 0.3 * wet) * mix(0.61, 1., smoothstep(-0.23, 0.15, vToe));
     col = pbr(alb, mix(0.8 - 0.15 * lich, 0.14, wet * 0.9), 0., N, V, vWP);
     col += mossTint * moss * uNight * (0.28 + glowI(glow));
-    col += lichC * lich * (0.075 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
+    col += lichC * lich * (0.03 * uNight) * (0.6 + 0.4 * sin(uTime * 0.8 + vH * 30.));
   }
   o = vec4(tonemap(fogged(col, vWP)), 0.);
 }`);
@@ -1104,7 +1144,7 @@ void main(){
   float a = aR.x * 6.2831853; vec2 ax = vec2(cos(a), sin(a)); vec2 fd = vec2(-ax.y, ax.x);
   vec2 uv = fieldUV(aG.xy); vec2 gr = vec2(texture(uGround, uv).r, texture(uWear, uv).r); float glow = texture(uGlow, uv).r;
   float wet = min(1., gr.r + uSheet), trample = smoothstep(0.04, 0.45, gr.g);
-  float H = 0.40 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample);
+  float H = 0.52 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample);
   float reed = step(1.6, aR.w);
   // Worn and sheltered blades along the tread stay slender as they get shorter.
   float W0 = (0.045 + 0.032 * aR.z) * mix(0.15, 1., smoothstep(0., 0.36, H)) * mix(1., 0.4, reed) * uLodW;
@@ -1134,17 +1174,17 @@ void main(){
   float g = pow(y, 1.45);
   g *= mix(0.72, 1., smoothstep(0.03, 0.3, vGH));
   g = mix(0.45, g, 0.85);
-  // The meadow grows in broad jade swaths with scattered plum heath.
-  float heath = vnoise(vWP.xz * 0.03 + 3.) * 0.8 + vnoise(vWP.xz * 0.09 - 5.) * 0.2;
-  float meadowVariation = vnoise(vWP.xz * 0.052 + 12.);
-  vec3 jade = mix(vec3(0.042, 0.32, 0.13), vec3(0.10, 0.54, 0.37), meadowVariation);
-  vec3 plum = mix(vec3(0.21, 0.13, 0.34), vec3(0.43, 0.22, 0.51), meadowVariation);
-  vec3 tip = mix(jade, plum, smoothstep(0.49, 0.68, heath + (vPatch - 0.5) * 0.06));
+  vec3 tip = meadowTip(vWP.xz, (vPatch - 0.5) * 0.06);
   vec3 gc = floraRamp(tip, g);
   float pn = vnoise(vWP.xz * 0.28) * 0.6 + vnoise(vWP.xz * 1.1) * 0.4;
   gc *= mix(0.8, 1.2, pn);
   gc = mix(gc, tip, smoothstep(0.55, 0.95, pn) * 0.2 * y);
-  gc *= (0.88 + 0.24 * vGA.y) * mix(0.42, 1., smoothstep(0., 0.55, y)) * (1. - 0.35 * vWet);
+  // A blade rises out of the litter in the litter's own tone, so seen from above its foot is ground, not a black flag.
+  // The dark foot stands for neighbours shading it, which is how a stand looks from the side; looking down into it,
+  // the sun reaches the feet and the ground between them.
+  float down = smoothstep(0.35, 0.85, normalize(uCam - vWP).y);
+  gc = mix(tip * mix(0.2, 0.42, down) + vec3(0.01), gc, smoothstep(0., mix(0.32, 0.12, down), y));
+  gc *= (0.88 + 0.24 * vGA.y) * mix(mix(0.72, 0.95, down), 1., smoothstep(0., 0.55, y)) * (1. - 0.35 * vWet);
   // The central fold stays visible up close and blends out across subpixel blades.
   float footprint = max(fwidth(vGA.z), 0.012);
   float rib = (1. - smoothstep(0.035, 0.12 + footprint, abs(vGA.z))) * (1. - smoothstep(0.17, 0.72, footprint));
@@ -1553,11 +1593,27 @@ function waterMesh(terrain) {
   }
   return { xz, water, idx: new Uint32Array(idx), patches };
 }
-function rockMesh(seed, sub, tall) {
-  const rr = rng(Math.floor(seed * 100003));
+// Rock shapes. Every shape in a scatter group is the same subdivided icosahedron pushed into a different form, so the
+// group shares one index buffer and each stone picks its form in the vertex shader: more shapes, the same draws.
+//   round  a weathered boulder or river pebble: soft lumps, an old break or two worn back to a bevel
+//   block  freshly broken stone: many flat fracture faces meeting at sharp edges
+//   slab   bedded stone: squat, its sides stepped where the beds weather back at different rates
+//   tall   a standing monolith
+const ROCK_STYLES = {
+  round: { planes: [1, 3], cut: 0.5, reach: [0.66, 0.92], lumps: 0.26, ridge: 0.04, fine: 0.035, squash: 0.74, beds: 0 },
+  block: { planes: [8, 12], cut: 0.98, reach: [0.4, 0.62], lumps: 0.16, ridge: 0.15, fine: 0.06, squash: 0.82, beds: 0 },
+  slab: { planes: [4, 7], cut: 0.94, reach: [0.48, 0.74], lumps: 0.14, ridge: 0.08, fine: 0.05, squash: 0.52, beds: 0.07 },
+  tall: { planes: [6, 9], cut: 0.92, reach: [0.46, 0.72], lumps: 0.3, ridge: 0.14, fine: 0.06, squash: 1, beds: 0.03 },
+};
+function rockMesh(seed, sub, style = 'round') {
+  const kind = ROCK_STYLES[style], rr = rng(Math.floor(seed * 100003));
   // fracture planes: the stone is cut flat where it broke, so lumps meet facets
   const planes = [];
-  for (let q = 0, np = sub < 2 ? 3 : 7 + Math.floor(rr() * 4); q < np; q++) { const a = rr() * 6.2832, el = (rr() - 0.35) * 1.4; const n = [Math.cos(a) * Math.cos(el), Math.sin(el), Math.sin(a) * Math.cos(el)]; planes.push([n, 0.5 + rr() * 0.3]); }
+  const np = sub < 2 ? Math.min(3, kind.planes[0] + 1) : kind.planes[0] + Math.floor(rr() * (kind.planes[1] - kind.planes[0] + 1));
+  for (let q = 0; q < np; q++) {
+    const a = rr() * 6.2832, el = (rr() - 0.35) * 1.4;
+    planes.push([[Math.cos(a) * Math.cos(el), Math.sin(el), Math.sin(a) * Math.cos(el)], kind.reach[0] + rr() * (kind.reach[1] - kind.reach[0])]);
+  }
   const t = (1 + Math.sqrt(5)) / 2;
   let v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t], [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map((p) => { const l = Math.hypot(...p); return p.map((c) => c / l); });
   let f = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
@@ -1579,32 +1635,52 @@ function rockMesh(seed, sub, tall) {
     for (const [a, b, c] of f) { const ab = mid(a, b), bc = mid(b, c), ca = mid(c, a); nf.push([a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]); }
     f = nf;
   }
-  // big lumps, a ridge or two, ledged strata, a flat seat on the ground
+  // big lumps, a ridge or two, the breaks, bedding steps, a flat seat on the ground
   const pos = v.map(([x, y, z]) => {
-    let k = 1 + 0.3 * (fbm(x * 1.3 + seed * 7, z * 1.3 + y * 1.7 - seed, 3) - 0.5) + 0.14 * (ridged(x * 0.9 + seed, z * 0.9 + y) - 0.45) + 0.06 * (vnoise(x * 6 + seed, z * 6 + y * 5) - 0.5);
+    let k = 1 + kind.lumps * 1.15 * (fbm(x * 1.3 + seed * 7, z * 1.3 + y * 1.7 - seed, 3) - 0.5) + kind.ridge * (ridged(x * 0.9 + seed, z * 0.9 + y) - 0.45)
+      + kind.fine * (vnoise(x * 6 + seed, z * 6 + y * 5) - 0.5);
     k *= 0.97 + 0.07 * vnoise(x * 1.6 + seed, y * 6.3 + z * 1.7);
-    let px = x * k, py = y * k * (tall ? 1 : 0.72), pz = z * k;
-
-    for (const [n, d] of planes) { const dp = px * n[0] + py * n[1] + pz * n[2]; if (dp > d) { const f = (dp - d) * 0.9; px -= n[0] * f; py -= n[1] * f; pz -= n[2] * f; } }
-
+    let px = x * k, py = y * k * kind.squash, pz = z * k;
+    for (const [n, d] of planes) { const dp = px * n[0] + py * n[1] + pz * n[2]; if (dp > d) { const c = (dp - d) * kind.cut; px -= n[0] * c; py -= n[1] * c; pz -= n[2] * c; } }
+    if (kind.beds) {
+      // the softer beds weather back into grooves between the harder ones
+      const layer = py * 9 + 0.8 * vnoise(x * 2.1 + seed, z * 2.1 - seed), groove = sm(0.72, 0.96, layer - Math.floor(layer));
+      px *= 1 - kind.beds * groove; pz *= 1 - kind.beds * groove;
+    }
     if (py < -0.22) py = -0.22 + (py + 0.22) * 0.25;
     return [px, py, pz];
   });
-  const nor = pos.map(() => [0, 0, 0]);
+  const nor = pos.map(() => [0, 0, 0]), around = pos.map(() => new Set());
   for (const [a, b, c] of f) {
     const A = pos[a], B = pos[b], C = pos[c];
     const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], w = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
     const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
     for (const q of [a, b, c]) { nor[q][0] += n[0]; nor[q][1] += n[1]; nor[q][2] += n[2]; }
+    around[a].add(b).add(c); around[b].add(a).add(c); around[c].add(a).add(b);
   }
+  // Curvature from each vertex to the middle of its neighbours, along the normal: hollows positive, edges negative.
+  // It rides in the normal's length (1 + 0.45 c), so the shader gets worn edges and dark crevices for nothing.
+  const unit = nor.map(n => { const length = Math.hypot(...n) || 1; return n.map(v => v / length); });
+  const curvature = pos.map((p, i) => {
+    let mx = 0, my = 0, mz = 0, reach = 0;
+    for (const j of around[i]) { mx += pos[j][0]; my += pos[j][1]; mz += pos[j][2]; reach += Math.hypot(pos[j][0] - p[0], pos[j][1] - p[1], pos[j][2] - p[2]); }
+    const n = around[i].size || 1, d = [mx / n - p[0], my / n - p[1], mz / n - p[2]];
+    return Math.max(-1, Math.min(1, 6 * (d[0] * unit[i][0] + d[1] * unit[i][1] + d[2] * unit[i][2]) / (reach / n || 1)));
+  });
   // Both levels share vertex normals. Measure the actual shape removed by the last subdivision.
   let detailError = 0;
   for (const [a, b, m] of detailEdges) {
     const delta = pos[m].map((c, i) => c - (pos[a][i] + pos[b][i]) / 2);
     detailError = Math.max(detailError, Math.hypot(...delta));
   }
-  return { pos: new Float32Array(pos.flat()), nor: new Float32Array(nor.map(n => { const length = Math.hypot(...n) || 1; return n.map(v => v / length); }).flat()),
+  return { pos: new Float32Array(pos.flat()), nor: new Float32Array(unit.map((n, i) => n.map(v => v * (1 + 0.45 * curvature[i]))).flat()),
     idx: new Uint16Array(f.flat()), coarseIdx: new Uint16Array(coarseFaces.flat()), detailError };
+}
+/** Three shapes with one topology: what one scatter group draws. */
+function rockSet(sub, shapes) {
+  const meshes = shapes.map(([seed, style]) => rockMesh(seed, sub, style));
+  return { pos: meshes.map(m => m.pos), nor: meshes.map(m => m.nor), idx: meshes[0].idx, coarseIdx: meshes[0].coarseIdx,
+    detailError: Math.max(...meshes.map(m => m.detailError)) };
 }
 // ---------------------------------------------------------------- scatter
 // terrain height and slope from the near mesh (fast, for a million blades)
@@ -1621,7 +1697,7 @@ function nearNy(near, x, z) {
   return near.nor[(j * (S + 1) + i) * 3 + 1];
 }
 // Blades per square metre in a full stand. bakeMeadow thins distant tiles.
-const GRASS_DENSITY = touch ? 54 : TEST ? 64 : 118;
+const GRASS_DENSITY = touch ? 60 : TEST ? 64 : 140;
 const START = [8, 30], SHORE_CAM = [19, 26];
 const clearOf = (x, z) => trailCover(x, z) < 0.02 && (waterLevel(x, z) === 0 || H(x, z) > waterLevel(x, z) + 0.2) && Math.hypot(x - START[0], z - START[1]) > 3.5 && Math.hypot(x - SHORE_CAM[0], z - SHORE_CAM[1]) > 3.5;
 const inMap = (x, z, m = 2) => Math.abs(x) < WORLD_HALF - m && Math.abs(z) < WORLD_HALF - m;
@@ -2384,7 +2460,7 @@ function buildValley() {
       const heath = 1 - sm(WORLD_HALF - 5 - 10 * tall, WORLD_HALF, edge);
       data[i] = Math.min(1, grow * 1.24) * (0.035 + 0.965 * moisture) * heath * (1-sm(0.12,0.96,tread));
       data[i + 1] = (0.45 + 0.55 * Math.min(1, grow * 1.2)) * (0.8 + 0.75 * fbm(x * 0.06 + 11, z * 0.06 - 4, 3))
-        * (1 + 0.65 * tall) * (0.2 + 0.8 * moisture) * (1-0.80*tread);
+        * (1 + 0.65 * tall) * (0.82 + 0.18 * moisture) * (1 - 0.22 * tread);
     },
   });
   const forest = growForest(sc, near);
@@ -2445,15 +2521,20 @@ function drawHighCanopy(planes, mirror = 1, eye) {
     }
   }
 }
-const rocks = [rockMesh(1.3, 3, false), rockMesh(4.1, 3, false), rockMesh(7.7, 3, true), rockMesh(2.2, 1, false)]
+const rocks = [
+  rockSet(3, [[1.3, 'round'], [5.9, 'block'], [3.3, 'slab']]),
+  rockSet(3, [[4.1, 'block'], [8.6, 'round'], [6.2, 'slab']]),
+  rockSet(3, [[7.7, 'tall'], [9.4, 'tall'], [2.8, 'block']]),
+  rockSet(1, [[2.2, 'round'], [5.1, 'slab'], [7.3, 'block']]),
+]
   .map((mesh, k) => rockBatches(mesh, sc.rv[k], sc.rs[k], sc.beds[k]));
 
 function rockBatches(mesh, sites, sizes, beds) {
   const width = 16, cells = new Map();
   let footprint = 0, bottom = Infinity, top = -Infinity;
-  for (let k = 0; k < mesh.pos.length; k += 3) {
-    footprint = Math.max(footprint, Math.hypot(mesh.pos[k], mesh.pos[k + 2]));
-    bottom = Math.min(bottom, mesh.pos[k + 1]); top = Math.max(top, mesh.pos[k + 1]);
+  for (const shape of mesh.pos) for (let k = 0; k < shape.length; k += 3) {
+    footprint = Math.max(footprint, Math.hypot(shape[k], shape[k + 2]));
+    bottom = Math.min(bottom, shape[k + 1]); top = Math.max(top, shape[k + 1]);
   }
   for (let k = 0; k < sites.length; k += 4) {
     const x = Math.floor(sites[k] / width), z = Math.floor(sites[k + 2] / width), key = x + ',' + z;
@@ -2468,7 +2549,8 @@ function rockBatches(mesh, sites, sizes, beds) {
   }
   const poses = new Float32Array(sites.length), scales = new Float32Array(sizes.length), contacts = new Float32Array(beds.length);
   const attrs = [
-    { loc: loc(ROCK, 'aPos'), size: 3, data: mesh.pos }, { loc: loc(ROCK, 'aNor'), size: 3, data: mesh.nor },
+    ...mesh.pos.map((data, i) => ({ loc: loc(ROCK, 'aPos' + (i || '')), size: 3, data })),
+    ...mesh.nor.map((data, i) => ({ loc: loc(ROCK, 'aNor' + (i || '')), size: 3, data })),
     { loc: loc(ROCK, 'aI'), size: 4, data: poses, div: 1 }, { loc: loc(ROCK, 'aS'), size: 4, data: scales, div: 1 },
     { loc: loc(ROCK, 'aBed'), size: 4, data: contacts, div: 1 },
   ];
@@ -3592,6 +3674,8 @@ const VIEWS = {
   summit: { eye: [-39.8, H(-39.8,-34.2)+1.65, -34.2], yaw: Math.atan2(LAKE[0]+39.8,-34.2-LAKE[1]), pitch: -0.2 },
   trail: { eye: [trail[0][0], H(...trail[0]) + 1.65, trail[0][1]], yaw: Math.atan2(trail[1][0] - trail[0][0], trail[0][1] - trail[1][1]), pitch: 0.02 },
   river: { eye: [riverX(-40) + 2.6, H(riverX(-40) + 2.6, -40) + 2.4, -40], yaw: -0.25, pitch: -0.32 },
+  stones: { eye: [OUTCROP[0] - 7, H(OUTCROP[0] - 7, OUTCROP[1] + 6) + 1.7, OUTCROP[1] + 6], yaw: Math.atan2(7, 6), pitch: -0.3 },
+  verge: { eye: [trail[3][0] + 0.6, H(trail[3][0] + 0.6, trail[3][1]) + 1.65, trail[3][1]], yaw: Math.atan2(trail[4][0] - trail[3][0], trail[3][1] - trail[4][1]) + 0.35, pitch: -0.5 },
   shore: { eye: [SHORE_CAM[0], H(...SHORE_CAM) + 2.6, SHORE_CAM[1]], yaw: -0.95, pitch: -0.24, motes: true },
   planet: { eye: [START[0], H(...START) + 1.7, START[1]], yaw: 0.05, pitch: 0.12, motes: true },
   sunset: { eye: [12, H(12, 4) + 1.7, 4], yaw: -1.5, pitch: 0.08, motes: true },
