@@ -79,7 +79,7 @@ them. Peak allocations, event records and the certificate table also contribute 
 
 Tarn spans 256 × 256 metres, about 16 acres. Four connected upland walks add about 730 metres of trail
 around the original lake. Follow the river north to a spring, take the west walk through the coilferns,
-climb the eastern crystal shelf or look back across the lake from the amber fans on the southern ridge.
+climb the eastern rock shelf or look back across the lake from the amber fans on the southern ridge.
 Grass and low leaves part as you pass. Wading, skimming sailwings and thrown stones send ripples
 across the lake and downstream with the river current. Disturb the moss with a footstep or
 glowstone and its filaments pick up the local glow field. Cloud shadows cross the valley by
@@ -91,11 +91,18 @@ Water and foliage show through the thinner parts of their wings.
 Mist gathers over wet ground and water. At night, a fresh disturbance lights the mist above it
 from the same Boxel field that lights the surface.
 Four worlds share the same stellar light direction above the mountains. Press **N** for night
-and **M** to restart the fields under the other engine. Press **C** to let the day run: the star
+and **M** to restart the three surface fields under the other engine. Press **C** to let the day run: the star
 crosses the sky about the same pole the stars turn on, its light reddens through the air toward a
 sunset, and its shadows are baked again as it moves. Press **T** for a storm: rain rings the
 water, lightning flashes the glow field and thunder arrives as late as the distance says. **V**
 turns the sound, made as it plays, on or off. Touch controls offer each of these.
+
+Above the valley, a separate Boxel field tracks cloud water in 32-metre cells. Humidity and
+temperature set the condensation level. Heating drives the updrafts, and evaporation from the lake and spring feeds them downwind.
+Broad updrafts grow taller crowns. The renderer integrates density toward the eye and toward the light. It reuses
+that sky for the planets’ foreground, water reflections and moving shadows. Boxel reports its error bound for
+horizontal condensate against the dense solver, with a target of 1/255. A separate browser test compares all four
+rendered cloud channels with empty-space skipping enabled and disabled in three weather states.
 
 The browser renderer uses WebGL2 and the Rust field engine compiled to WebAssembly.
 Pages builds the engine from the published revision with Rust 1.92.0 and checks its native replay before deployment.

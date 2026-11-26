@@ -44,11 +44,11 @@ export const trail = Array.from({ length: 57 }, (_, i) => {
   return [summit[0] + r * Math.cos(a), summit[1] + r * Math.sin(a)];
 });
 // The fern walk threads the low saddle, the fan terrace makes a circuit, and
-// the crystal walk climbs the long shoulder of the eastern outcrop.
+// the eastern walk climbs the long shoulder of the eastern outcrop.
 export const valleyWalks = {
   fern: [[-32, 4], [-36, 7], [-40, 10], [-41, 14], [-40, 18], [-42, 22], [-46, 25], [-49, 30]],
   fan: [[20, 31], [25, 33], [28, 37], [30, 42], [35, 45], [40, 43], [43, 39], [40, 36], [35, 36], [30, 38], [28, 37]],
-  crystal: [[19, -11], [23, -13], [27, -16], [29, -20], [28, -24], [30, -28], [34, -30], [39, -29]],
+  shelf: [[19, -11], [23, -13], [27, -16], [29, -20], [28, -24], [30, -28], [34, -30], [39, -29]],
 };
 // Terrain, grazing cover and tree placement all query these treads. Index only
 // segments that can affect each eight-metre square, including room for boulders.

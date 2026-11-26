@@ -22,6 +22,17 @@ async function main() {
     assert.equal(sky.glError, 0);
     assert.ok(sky.referencePeak > 80 && sky.referenceFloor < 35, 'The reference sky must contain both galaxy light and dark sky');
     assert.equal(sky.different, 0, 'Every stored sky texel must match the full evaluation');
+    const coverage = [];
+    for (const rain of [0, 0.18, 1]) {
+      const cloud = await page.evaluate(r => window.__game.verifyClouds(r), rain);
+      console.log('Cloud optics', rain, cloud);
+      assert.equal(cloud.glError, 0);
+      assert.equal(cloud.different, 0, 'Skipping must preserve all four optical channels');
+      assert.ok(cloud.opaque > cloud.pixels * 0.03 && cloud.shaded > 100, 'Clouds must have thick shaded interiors');
+      if (!rain) assert.ok(cloud.clear > cloud.pixels * 0.2 && cloud.sunlit > 100, 'Fair weather needs blue gaps and lit turrets');
+      coverage.push(cloud.opaque);
+    }
+    assert.ok(coverage[2] > coverage[0] * 2, 'A storm must close the fair-weather gaps');
     assert.deepEqual(errors, []);
     assert.equal(result.glError, 0);
     assert.ok(result.withinBound && result.boundWithinTolerance && result.withinTolerance);
