@@ -170,6 +170,16 @@ export function createSwimWake(surface, levelAt, emitLight) {
       minX=Math.min(minX,x-r); minZ=Math.min(minZ,z-r);
       maxX=Math.max(maxX,x+r); maxZ=Math.max(maxZ,z+r);
     }
+    if (bowForce>0.004) {
+      // Include the full curved crest, including the wider cattle rigs.
+      const radius=0.15+bowWidth, across=2.8*radius;
+      const aft=1.27*(Math.hypot(across,radius)-radius);
+      const margin=0.32+0.25*bowWidth;
+      const dx=Math.abs(forwardX)*margin+Math.abs(forwardZ)*across;
+      const dz=Math.abs(forwardZ)*margin+Math.abs(forwardX)*across;
+      minX=Math.min(bowX,bowX-aft*forwardX)-dx; maxX=Math.max(bowX,bowX-aft*forwardX)+dx;
+      minZ=Math.min(bowZ,bowZ-aft*forwardZ)-dz; maxZ=Math.max(bowZ,bowZ-aft*forwardZ)+dz;
+    }
     for (let i=0; i<PARTS; i++) {
       const part=parts[i], start=i*SAMPLES*4;
       write(output,start,part,part.wet ? part.force : 0);
