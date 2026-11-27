@@ -67,15 +67,30 @@ float canopyCover(vec3 wp) {
 
 // Approximate how much overhead sky remains visible below each crown. Use the
 // actual area and height of the leaves, then blur over a few metres of sky.
-export function bakeCanopy(gl, forest, extent) {
-  const size = extent, cellsPerMetre = size / extent, area = new Float32Array(size * size), moment = new Float32Array(area.length);
-  const { R, D, M } = forest;
+export function bakeCanopy(gl, groundLeaves, forest, extent) {
+  const size = extent, area = new Float32Array(size * size), moment = new Float32Array(area.length);
+  function deposit(x, y, z, cover) {
+    const ix = Math.floor(x + size / 2), iz = Math.floor(z + size / 2);
+    if (ix < 0 || ix >= size || iz < 0 || iz >= size) return;
+    const k = iz * size + ix;
+    area[k] += cover; moment[k] += cover * y;
+  }
+  const { R, D, M } = groundLeaves;
   for (let i = 0; i < R.length; i += 4) {
-    const x = Math.floor((R[i] + 0.45 * D[i] * D[i + 3]) * cellsPerMetre + size / 2);
-    const z = Math.floor((R[i + 2] + 0.45 * D[i + 2] * D[i + 3]) * cellsPerMetre + size / 2);
-    if (x < 0 || x >= size || z < 0 || z >= size) continue;
-    const cover = D[i + 3] * M[i + 2], k = z * size + x;
-    area[k] += cover; moment[k] += cover * R[i + 1];
+    deposit(R[i] + 0.45 * D[i] * D[i + 3], R[i + 1],
+      R[i + 2] + 0.45 * D[i + 2] * D[i + 3], D[i + 3] * M[i + 2]);
+  }
+  for (const tile of forest.tiles) {
+    const shoots = forest.meshes[tile.variant].foliage;
+    for (let i = 4 * tile.start; i < 4 * (tile.start + tile.count); i += 4) {
+      const x = forest.sites[i], y = forest.sites[i+1], z = forest.sites[i+2], h = forest.sites[i+3];
+      const c = forest.styles[i], s = forest.styles[i+1], w = h * forest.styles[i+2];
+      if (Math.abs(x) > size/2 + 1.3*w || Math.abs(z) > size/2 + 1.3*w) continue;
+      for (let k = 0; k < shoots.length; k += 4) {
+        const dx = w * shoots[k], dz = w * shoots[k+2];
+        deposit(x+c*dx-s*dz, y+h*shoots[k+1], z+s*dx+c*dz, w*w*shoots[k+3]);
+      }
+    }
   }
   const data = new Uint8Array(area.length * 2);
   for (let z = 0; z < size; z++) for (let x = 0; x < size; x++) {
@@ -97,4 +112,16 @@ export function bakeCanopy(gl, forest, extent) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   for (const axis of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, axis, gl.CLAMP_TO_EDGE);
+  // Match the GPU texture's half-texel centres and linear filter when placing grass.
+  return (x, z) => {
+    if (Math.abs(x) > size/2 || Math.abs(z) > size/2) return 0;
+    const px = Math.max(0, Math.min(size-1, x + size/2 - 0.5));
+    const pz = Math.max(0, Math.min(size-1, z + size/2 - 0.5));
+    const x0 = Math.floor(px), z0 = Math.floor(pz);
+    const x1 = Math.min(x0+1, size-1), z1 = Math.min(z0+1, size-1);
+    const fx = px-x0, fz = pz-z0;
+    const a = data[2*(z0*size+x0)]*(1-fx) + data[2*(z0*size+x1)]*fx;
+    const b = data[2*(z1*size+x0)]*(1-fx) + data[2*(z1*size+x1)]*fx;
+    return (a*(1-fz) + b*fz)/255;
+  };
 }

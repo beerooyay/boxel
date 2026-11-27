@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readTuft, CLUMP } from '../demo/meadow.js';
+import { forestStands } from '../demo/high-canopy.js';
+import { bakeCanopy } from '../demo/atmosphere.js';
 
 test('a root encodes its nearest tuft across cell boundaries, including in negative coordinates', () => {
   const result = {};
@@ -30,4 +32,53 @@ test('leaf sprays are the same for the same seed, and distant mips keep the crow
   const full = share(a.levels[0]);
   assert.ok(full > 0.15 && full < 0.7, `cover ${full}`);
   for (const level of a.levels.slice(1, 4)) assert.ok(Math.abs(share(level) - full) < 0.06, `level cover ${share(level)} vs ${full}`);
+  // At two texels across, each tree shoot still needs its own piece of canopy.
+  const tiny = a.levels.find(level => level.width === 2*SPRAY_COLUMNS);
+  for (let col = 0; col < SPRAY_COLUMNS; col++) {
+    const visible = [0,1,tiny.width,tiny.width+1].filter(offset => tiny.bytes[4*(2*col + offset)+3] >= 128);
+    assert.equal(visible.length, 1);
+  }
+});
+
+test('valley, upland and island trees share an anchored crown at both viewing distances', () => {
+  const valley = [3,0,4,0.43,4, -18,2,36,0.63,7], upland = [78,11,31,14], island = [-6,1.3,8,4.35,0.7317];
+  const forest = forestStands(valley, upland, island, () => 0.5, seeded);
+  const sites = new Set();
+  for (const tile of forest.tiles) {
+    const mesh = forest.meshes[tile.variant];
+    for (let i = 4*tile.start; i < 4*(tile.start+tile.count); i += 4) {
+      const [x,y,z,h] = forest.sites.subarray(i,i+4);
+      sites.add([x,z].join(','));
+      assert.ok(tile.y0 <= y+h*mesh.bottom && tile.y1 >= y+h*mesh.top);
+      assert.ok(tile.pad >= h*forest.styles[i+2]*mesh.radius);
+    }
+  }
+  assert.deepEqual([...sites].sort(), ['3,4','-18,36','78,31','-6,8'].sort());
+  for (const mesh of forest.meshes) {
+    const near = new Set(mesh.index.subarray(0,mesh.nearCount)), far = new Set(mesh.index.subarray(mesh.nearCount));
+    assert.equal(mesh.index.length,mesh.nearCount+mesh.farCount);
+    const stems = new Set();
+    for (const vertex of near) {
+      if (mesh.tissue[vertex]<0 || mesh.blade[3*vertex]!==0) continue;
+      // Every leaf keeps the same anchoring stalk when its centre span retires.
+      assert.ok(far.has(vertex));
+      stems.add(mesh.stalk.subarray(3*vertex,3*vertex+3).join(','));
+    }
+    assert.equal(stems.size,mesh.foliage.length/4);
+    for (const vertex of far) assert.ok(near.has(vertex));
+  }
+});
+
+test('meadow shelter follows the rotated, scaled leaf area even away from the trunk', () => {
+  const gl = { activeTexture() {}, bindTexture() {}, createTexture() {}, texImage2D() {}, texParameteri() {} };
+  const forest = {
+    meshes: [{foliage:[1,0.8,0,0.5]}], tiles: [{variant:0,start:0,count:1}],
+    sites: [1,0,2,4], styles: [0,1,2,0.4],
+  };
+  const shelter = bakeCanopy(gl, {R:[],D:[],M:[]}, forest, 32);
+  assert.ok(shelter(1.5,10.5)>0.75);
+  assert.ok(shelter(1,10)>0 && shelter(1,10)<shelter(1.5,10.5));
+  assert.equal(shelter(9,2),0);
+  assert.equal(shelter(1,2),0);
+  assert.equal(shelter(51,51),0);
 });

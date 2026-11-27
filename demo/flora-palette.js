@@ -58,9 +58,17 @@ vec3 meadowTip(vec2 p, float elevation, float jitter){
   float habitat = 0.78*vnoise(p*0.030+3.) + 0.22*vnoise(p*0.09-5.) + jitter;
   float variation = vnoise(p*0.052+12.);
   float dry = smoothstep(0.4,8.,elevation);
-  vec3 green = mix(LEAF, NEW_GROWTH, 0.14+0.37*variation+0.12*dry);
+  vec3 green = mix(LEAF, NEW_GROWTH, 0.22+0.39*variation+0.09*dry);
   float ground = habitat + 0.022*dry;
-  float fringe = smoothstep(0.50,0.59,ground) * (1. - smoothstep(0.65,0.74,ground));
-  vec3 spring = mix(green, NEW_GROWTH, fringe * (0.58 + 0.32 * variation));
-  return mix(spring,PRAIRIE_ROSE,smoothstep(0.62,0.74,ground)) * mix(0.76,1.03,variation);
+  float fringe = smoothstep(0.51,0.72,ground);
+  vec3 spring = mix(green, NEW_GROWTH, fringe * (0.28 + 0.18 * variation));
+  // The rose meadows follow two sheltered banks. Within each, shoots of both
+  // colours interleave along an irregular margin. The open lakeshore stays green.
+  vec2 fen = (p - vec2(-31.,-6.)) / vec2(8.,12.);
+  vec2 bench = (p - vec2(33.,-24.)) / vec2(11.,7.);
+  float rim = min(dot(fen,fen),dot(bench,bench)) + (0.5-habitat)*0.9;
+  float colony = (1.-smoothstep(0.26,1.15,rim))*smoothstep(0.32,0.69,habitat);
+  float upland = smoothstep(57.,78.,max(abs(p.x),abs(p.y)));
+  float rose = max(colony, upland*smoothstep(0.77,0.88,ground));
+  return mix(spring,PRAIRIE_ROSE,rose) * mix(0.79,1.04,variation);
 }`;

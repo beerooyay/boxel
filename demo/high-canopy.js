@@ -1,5 +1,15 @@
-// A tall, forked crown. Both mesh levels have the same branch ends and leaf tips.
-export function highCanopyMesh(random) {
+// The valley and the outer forest grow from the same fluted trunk and alternating
+// broadleaf shoots. Templates change the branching habit, instances set size and pigment.
+const habits = [
+  { fork: 0.26, spread: 0.49, lift: 0.3, lean: 0.32, taper: 0.44, shoulder: 0.02 }, // spreading
+  { fork: 0.19, spread: 0.37, lift: 0.17, lean: 0.06, taper: 0.78, shoulder: 0.05 }, // upright
+  { fork: 0.32, spread: 0.37, lift: 0.27, lean: 0.13, taper: 0.46, shoulder: 0.32 }, // rounded
+];
+const treeSeeds = [9942, 2113, 8605, 981, 7139, 3029];
+
+export function highCanopyMesh(random, variant = 0) {
+  const habit = habits[variant % habits.length],
+    foliage = [];
   const position = [],
     normal = [],
     tissue = [],
@@ -8,11 +18,11 @@ export function highCanopyMesh(random) {
     near = [],
     far = [];
   const tau = 2 * Math.PI;
-  function vertex(p, n, shade, u = 0, side = 0, root = p) {
+  function vertex(p, n, shade, u = 0, side = 0, root = p, angle = 0) {
     position.push(...p);
     normal.push(...n);
     tissue.push(shade);
-    blade.push(u, side);
+    blade.push(u, side, angle);
     stalk.push(...root);
     return tissue.length - 1;
   }
@@ -43,7 +53,8 @@ export function highCanopyMesh(random) {
           c = Math.cos(a),
           s = Math.sin(a);
         const n = tx.map((v, j) => v * c + tz[j] * s);
-        const r = radii[k] * (0.87 + 0.23 * flares[i] + (buttress && k === 0 ? 1.35 * flares[i] ** 2 : 0));
+        const flare = buttress && k < 2 ? (k === 0 ? 1.48 : 0.28) * flares[i] ** 2 : 0;
+        const r = radii[k] * (0.87 + 0.23 * flares[i] + flare);
         vertex(
           p.map((v, j) => v + r * n[j]),
           n,
@@ -60,89 +71,100 @@ export function highCanopyMesh(random) {
     }
   }
 
-  // Two faces fold off the keel. A different roll and shoulder on each side
-  // lets a whole spray catch the light without reading as one flat card.
-  function leaf(root, angle, length, halfWidth, up, drop, shade) {
+  // A card carries a whole twig of veined leaves. Near and far share its four
+  // corners and stalk. The closer mesh also resolves the arch along its spine.
+  function frond(root, angle, length, slope, droop, tone) {
     const c = Math.cos(angle),
-      s = Math.sin(angle),
-      curl = (random() - 0.5) * 0.83;
-    const roll = (random() - 0.5) * 1.08,
-      asym = 0.8 + 0.36 * random(),
-      fold = 0.28 + 0.45 * random();
-    function point(t, side, width) {
-      const breadth = side * halfWidth * width * (side < 0 ? asym : 1);
-      const drift = curl * t * t * length + breadth;
-      const slope = up - 2 * drop * t;
-      const bank = roll * (0.35 + 0.65 * t) - side * fold;
-      const p = [
-        root[0] + c * length * t - s * drift,
-        root[1] + length * (up * t - drop * t * t) + breadth * roll * (0.35 + 0.65 * t) - Math.abs(breadth) * fold,
-        root[2] + s * length * t + c * drift,
-      ];
-      const n = normalise(-c * slope + s * bank, 1, -s * slope - c * bank);
-      return vertex(p, n, shade, t, side, root);
+      s = Math.sin(angle);
+    const roll = (random() - 0.5) * 1.48,
+      curl = (random() - 0.5) * 0.27;
+    const breadth = length * (0.49 + 0.1 * random());
+    const start = tissue.length;
+    function row(t) {
+      const drift = curl * t * t * length;
+      for (const side of [-1, 1]) {
+        const lateral = drift + side * breadth;
+        const y = length * (slope * t - droop * t * t) + side * breadth * roll;
+        const tilt = slope - 2 * droop * t;
+        vertex(
+          [root[0] + c * length * t - s * lateral, root[1] + y, root[2] + s * length * t + c * lateral],
+          normalise(-c * tilt + s * roll, 1, -s * tilt - c * roll),
+          tone,
+          t,
+          side,
+          root,
+          angle,
+        );
+      }
     }
-    const base = point(0, 0, 0),
-      l = point(0.39, -1, 1),
-      m = point(0.4, 0, 0),
-      r = point(0.45, 1, 0.95);
-    const ll = point(0.74, -0.6, 0.96),
-      mm = point(0.77, 0, 0),
-      rr = point(0.72, 0.68, 1);
-    const tip = point(1, 0, 0);
-    near.push(base, l, m, base, m, r, l, ll, m, m, ll, mm, m, mm, r, r, mm, rr, ll, tip, mm, mm, tip, rr);
-    far.push(base, l, m, base, m, r, l, tip, m, m, tip, r);
+    row(0);
+    row(0.5);
+    row(1);
+    for (let k = start; k < start + 4; k += 2) near.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+    far.push(start, start + 4, start + 1, start + 1, start + 4, start + 5);
+    foliage.push(
+      root[0] + 0.54 * c * length,
+      root[1] + length * (0.54 * slope - 0.29 * droop),
+      root[2] + 0.54 * s * length,
+      0.45 * length * breadth,
+    );
   }
 
-  function spray(root, angle, reach, lift, outer) {
-    const turn = (random() - 0.5) * 0.78;
-    const mid = extend(root, angle, 0.55 * reach, lift * 0.74 + 0.018);
-    const tip = extend(mid, angle + turn, 0.46 * reach, 0.26 * lift - 0.015);
-    wood([root, mid, tip], [0.0065, 0.004, 0.0014], 4);
-    const pairs = 4 + Math.floor(2 * random()),
-      hue = 0.39 + 0.35 * random(),
-      fall = outer ? 0.78 : 0.57;
+  function shoot(root, angle, reach, lift) {
+    const turn = (random() - 0.5) * 0.86;
+    const mid = extend(root, angle, reach * 0.54, lift * 0.76 + 0.02);
+    const tip = extend(mid, angle + turn, reach * 0.46, lift * 0.24 - 0.014);
+    wood([root, mid, tip], [0.005, 0.0032, 0.0009], 4);
+    const pairs = 3 + Math.floor(2 * random()),
+      tone = random();
     for (let j = 0; j < 2 * pairs; j++) {
-      const t = 0.06 + (0.88 * (j + 0.42 * random())) / (2 * pairs);
-      const p = t < 0.55 ? mix(root, mid, t / 0.55) : mix(mid, tip, (t - 0.55) / 0.45);
-      const side = j % 2 ? 1 : -1,
-        spin = angle + turn * t + side * (0.56 + 0.4 * random() + 0.28 * (1 - t));
-      const length = (0.095 + 0.084 * random()) * (0.81 + 0.25 * Math.sin(Math.PI * t));
-      leaf(
-        p,
-        spin,
-        length,
-        length * (0.21 + 0.09 * random()),
-        0.38 + 0.64 * random(),
-        fall + 0.76 * random(),
-        hue + 0.16 * random(),
-      );
+      const t = (j + 0.45 + 0.3 * random()) / (2 * pairs);
+      const p = t < 0.54 ? mix(root, mid, t / 0.54) : mix(mid, tip, (t - 0.54) / 0.46);
+      const az = angle + turn * t + (j % 2 ? 1 : -1) * (0.8 + 0.49 * (1 - t) + 0.23 * random());
+      const length = (0.18 + 0.085 * random()) * (1.06 - 0.29 * t);
+      const slope = 0.12 + 0.69 * random() + 0.32 * t;
+      const droop = 0.33 + 0.58 * random() + 0.19 * (1 - t);
+      frond(p, az, length, slope, droop, 0.06 + 0.5 * tone + 0.38 * random());
     }
-    leaf(tip, angle + turn, 0.14, 0.035, 0.52, fall, hue + 0.19);
+    frond(tip, angle + turn, 0.18 + 0.04 * random(), 0.25, 0.6, 0.65 + 0.28 * random());
   }
 
-  const lean = 0.052 + 0.068 * random(),
-    twist = (random() - 0.5) * 0.12;
-  const spine = (t) => [lean * t * t + 0.016 * Math.sin(5 * t), t, twist * t * t];
-  wood([0, 0.12, 0.39, 0.6, 0.77, 0.91].map(spine), [0.05, 0.035, 0.028, 0.021, 0.014, 0.006], 9, true);
-  const forks = 6 + Math.floor(2 * random()),
+  const lean = habit.lean * (0.78 + 0.4 * random()),
+    twist = (random() - 0.5) * 0.13;
+  const spine = (t) => [lean * t * t + 0.029 * Math.sin(t * 5.3), t, twist * t * t];
+  wood(
+    [0, 0.09, 0.25, 0.42, 0.63, 0.8, 0.94].map(spine),
+    [0.065, 0.047, 0.04, 0.033, 0.024, 0.015, 0.004],
+    10,
+    true,
+  );
+  const forks = 7 + Math.floor(2 * random()),
     rotation = tau * random();
   for (let i = 0; i < forks; i++) {
     const t = i / (forks - 1),
-      a = rotation + i * 2.4 + 0.38 * (random() - 0.5);
-    const base = spine(0.37 + t * 0.43),
-      reach = 0.24 + 0.12 * (1 - t) + 0.12 * random();
-    const rise = 0.26 - 0.13 * t + 0.13 * random(),
-      turn = (random() - 0.5) * 0.88;
-    const elbow = extend(base, a, reach * 0.45, rise * 0.7);
-    const hand = extend(elbow, a + turn, reach * 0.55, rise * 0.3);
-    wood([base, elbow, hand], [0.019 - 0.007 * t, 0.013 - 0.005 * t, 0.004], 6);
-    spray(elbow, a - 0.82, reach * 0.62, 0.035 + 0.06 * random(), false);
-    spray(mix(elbow, hand, 0.57), a + turn + 0.76, reach * 0.54, 0.045 + 0.05 * random(), false);
-    spray(hand, a + turn, 0.11 + 0.08 * random(), 0.02 - 0.055 * random(), true);
+      a = rotation + i * 2.39996 + (random() - 0.5) * 0.72;
+    const base = spine(habit.fork + (0.81 - habit.fork) * t);
+    const profile = 1 - habit.taper * t + habit.shoulder * Math.sin(Math.PI * t);
+    const reach = habit.spread * profile * (0.82 + 0.37 * random());
+    const lift = habit.lift * (1 - 0.53 * t) * (0.76 + 0.4 * random()),
+      turn = (random() - 0.5) * 1.0;
+    const elbow = extend(base, a, reach * 0.47, lift * 0.57);
+    const hand = extend(elbow, a + turn, reach * 0.53, lift * 0.43);
+    wood([base, elbow, hand], [0.028 - 0.013 * t, 0.016 - 0.008 * t, 0.004], 7);
+    shoot(elbow, a - 0.82, reach * 0.74, 0.055 + 0.075 * random());
+    shoot(mix(elbow, hand, 0.52), a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random());
+    shoot(hand, a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random());
   }
   for (let i = 0; i < 4; i++)
-    spray(spine(0.85 + i * 0.017), rotation + i * 1.55, 0.16 + 0.085 * random(), 0.055 + 0.07 * random(), false);
+    shoot(spine(0.86 + i * 0.022), rotation + i * 1.55, 0.16 + 0.095 * random(), 0.07 + 0.065 * random());
+  let radius = 0,
+    bottom = Infinity,
+    top = -Infinity;
+  for (let i = 0; i < position.length; i += 3) {
+    radius = Math.max(radius, Math.hypot(position[i], position[i + 2]));
+    bottom = Math.min(bottom, position[i + 1]);
+    top = Math.max(top, position[i + 1]);
+  }
   return {
     position: new Float32Array(position),
     normal: new Float32Array(normal),
@@ -150,14 +172,17 @@ export function highCanopyMesh(random) {
     stalk: new Float32Array(stalk),
     tissue: new Float32Array(tissue),
     index: new Uint16Array([...near, ...far]),
+    foliage: new Float32Array(foliage),
+    radius,
+    bottom,
+    top,
     nearCount: near.length,
     farCount: far.length,
   };
 }
 
 export function highCanopySites(heightAt, noise, random, half, pathCover, waterLevel) {
-  const clusters = new Map(),
-    width = 40;
+  const instances = [];
   for (let i = 0; i < 2400; i++) {
     const x = (random() * 2 - 1) * 200,
       z = (random() * 2 - 1) * 200;
@@ -166,26 +191,87 @@ export function highCanopySites(heightAt, noise, random, half, pathCover, waterL
     if (edge < half - 12 || stand < 0.5 || (edge < half && stand < 0.73) || pathCover(x, z) > 0.01) continue;
     const y = heightAt(x, z);
     if (y < waterLevel(x, z) + 0.8 || y > 38 || Math.abs(y - heightAt(x + 2, z + 1)) > 2.6) continue;
-    const height = 4.8 + 9.8 * random() + stand * 3.3;
+    instances.push(x, y - 0.55, z, 4.8 + 9.8 * random() + stand * 3.3);
+  }
+  return { instances: new Float32Array(instances) };
+}
+
+// Group trunks by shape and position once. This instance list also places the
+// real foliated shoots in the ground shelter bake and supplies the water reflection.
+export function forestStands(localTrees, uplandTrees, isletTree, noise, random) {
+  const width = 32,
+    clusters = new Map();
+  const meshes = treeSeeds.map((seed, i) => highCanopyMesh(random(seed), i));
+  const accents = [
+    [-30, -3, 0.964],
+    [10, -19, 0.929],
+    [31, 3, 0.875],
+  ];
+  function plant(x, y, z, h, seed, islet = false) {
+    const r = random(Math.floor(seed * 1e8) ^ 0x6a73);
+    const colour = 0.74 * noise(x * 0.068 + 7, z * 0.068 - 12) + 0.26 * r();
+    let hue = 0.12 + 0.6 * r();
+    if (colour < 0.29) hue = 0.855 + 0.047 * r();
+    else if (colour > 0.77) hue = 0.921 + 0.024 * r();
+    else if (colour > 0.69) hue = 0.951 + 0.031 * r();
+    for (const [cx, cz, pigment] of accents) {
+      if ((x - cx) ** 2 + (z - cz) ** 2 < 90) hue = pigment + 0.009 * (seed - 0.5);
+    }
+    if (islet) hue = 0.41;
+    let form = Math.floor(r() * 3);
+    if (hue >= 0.85 && hue < 0.91) {
+      form = 1;
+      h *= 1.2;
+    }
+    if (hue >= 0.91 && hue < 0.95) {
+      form = 0;
+      h *= 1.18;
+    }
+    if (islet) form = 0;
+    const variant = form + (r() < 0.5 ? 3 : 0);
+    const az = islet ? 2.4 : r() * 2 * Math.PI,
+      spread = islet ? 1.35 : 0.86 + 0.38 * r();
     const ix = Math.floor(x / width),
       iz = Math.floor(z / width),
-      variant = ((Math.floor(x * 19 - z * 23) % 3) + 3) % 3,
-      key = ix + ',' + iz + ',' + variant;
-    let cluster = clusters.get(key);
-    if (!cluster) {
-      cluster = { variant, x0: ix * width, z0: iz * width, pad: 0, y0: Infinity, y1: -Infinity, sites: [] };
-      clusters.set(key, cluster);
+      key = [variant, ix, iz].join(',');
+    let tile = clusters.get(key);
+    if (!tile) {
+      tile = {
+        variant,
+        x0: ix * width,
+        z0: iz * width,
+        y0: Infinity,
+        y1: -Infinity,
+        pad: 0,
+        sites: [],
+        styles: [],
+      };
+      clusters.set(key, tile);
     }
-    cluster.pad = Math.max(cluster.pad, height * 0.99);
-    cluster.y0 = Math.min(cluster.y0, y - 0.55);
-    cluster.y1 = Math.max(cluster.y1, y + height * 1.3);
-    cluster.sites.push(x, y - 0.55, z, height);
+    tile.sites.push(x, y, z, h);
+    tile.styles.push(Math.cos(az), Math.sin(az), spread, hue);
+    const mesh = meshes[variant];
+    tile.y0 = Math.min(tile.y0, y + h * mesh.bottom - 0.12);
+    tile.y1 = Math.max(tile.y1, y + h * (mesh.top + 0.18) + 0.12);
+    tile.pad = Math.max(tile.pad, h * (mesh.radius * spread + 0.18) + 0.12);
   }
-  const instances = [],
+  for (let i = 0; i < localTrees.length; i += 5)
+    plant(localTrees[i], localTrees[i + 1], localTrees[i + 2], localTrees[i + 4], localTrees[i + 3]);
+  for (let i = 0; i < uplandTrees.length; i += 4) {
+    const x = uplandTrees[i],
+      z = uplandTrees[i + 2],
+      f = x * 0.75488 + z * 0.56984;
+    plant(x, uplandTrees[i + 1], z, uplandTrees[i + 3], f - Math.floor(f));
+  }
+  plant(...isletTree, true);
+  const sites = [],
+    styles = [],
     tiles = [];
-  for (const { sites, ...bounds } of [...clusters.values()].sort((a, b) => a.variant - b.variant)) {
-    tiles.push({ ...bounds, start: instances.length / 4, count: sites.length / 4 });
-    instances.push(...sites);
+  for (const tile of [...clusters.values()].sort((a, b) => a.variant - b.variant)) {
+    const { sites: local, styles: style, ...bounds } = tile;
+    tiles.push({ ...bounds, start: sites.length / 4, count: local.length / 4 });
+    sites.push(...local);
+    styles.push(...style);
   }
-  return { instances: new Float32Array(instances), tiles, width };
+  return { meshes, sites: new Float32Array(sites), styles: new Float32Array(styles), tiles, width };
 }

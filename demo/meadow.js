@@ -233,7 +233,7 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
         gl.bindVertexArray(tile.vao);
         if (contact) gl.uniform4fv(shader.u('uRootGrid'),tile.grid);
         gl.uniform1f(widthLoc, Math.min(2.2, 1 / Math.sqrt(fraction)));
-        const rows = plot ? (d < 2.4 ? 5 : d < 6 ? 3 : 2) : (d < 9 ? 4 : d < 24 ? 3 : 2);
+        const rows = plot ? (d < 2.4 ? 5 : d < 6 ? 3 : 2) : (d < 10.8 ? 4 : d < 24 ? 3 : 2);
         gl.uniform1i(rowsLoc, rows);
         gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, !plot && rows === 4 ? 27 : 2*rows + 1, plot ? Math.floor(tile.stems*fraction) : n);
         drawn += n;

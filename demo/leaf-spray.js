@@ -1,16 +1,9 @@
-// Leaf sprays, after the card technique of game foliage: rather than modelling every leaf, a picture of a whole leafy
-// twig is laid on one card, and cards are set along the real shoots so a few hundred of them read as thousands of
-// leaves. Here the picture is grown at load rather than photographed: a stem, alternate leaflets that shrink toward
-// the tip and a terminal leaflet, each cupped, creased along its midrib and veined, the upper ones shading the lower.
-//
-// The atlas holds four families of four, a family to a row: broadleaf sprays, fine sprays for the junipers, single
-// strap leaves for the ground plants, and clusters of five-petalled blossoms. Each texel stores the leaf surface's slope across and along the card (red,
-// green), its tone (blue: 0 is the stem, then shade, veins and edges) and its coverage (alpha). Coverage-preserving
-// mips keep distant crowns as full as near ones.
-
-export const SPRAY_COLUMNS = 4, SPRAY_ROWS = 4, SPRAY_MAX_LEVEL = 6;
-// card half-width over card length, per family: the vertex shader builds each card in the same proportion
-export const SPRAY_ASPECT = [0.56, 0.42, 0.2, 0.58];
+// Four individual shoots of the valley tree and four strap leaves of its understory.
+// Each texel carries the leaf's slopes, pigment variation and coverage. The smaller
+// mip levels preserve coverage so the same crown holds its silhouette across the lake.
+export const SPRAY_COLUMNS = 4, SPRAY_ROWS = 2, SPRAY_MAX_LEVEL = 6;
+export const STRAP_ASPECT = 0.20;
+const TREE_ASPECT = 0.56;
 
 export function makeLeafSprays(random, tile = 256) {
   const width = tile * SPRAY_COLUMNS, height = tile * SPRAY_ROWS, count = width * height;
@@ -20,39 +13,26 @@ export function makeLeafSprays(random, tile = 256) {
   const px = 1 / tile;
 
   for (let row = 0; row < SPRAY_ROWS; row++) for (let col = 0; col < SPRAY_COLUMNS; col++) {
-    const aspect = SPRAY_ASPECT[row], x0 = col * tile, y0 = row * tile;
+    const aspect = row === 0 ? TREE_ASPECT : STRAP_ASPECT, x0 = col * tile, y0 = row * tile;
     // card space: X across in units of card length (-aspect..aspect), Y along (0 at the root, 1 at the tip)
     const toPixel = (X, Y) => [x0 + (X / aspect * 0.5 + 0.5) * tile - 0.5, y0 + Y * tile - 0.5];
     const leaflets = [];
     let stem = null;
-    if (row < 2) {
-      const broad = row === 0, lean = (random() - 0.5) * 0.18, n = broad ? 5 + Math.floor(random() * 3) : 9 + Math.floor(random() * 5);
-      const stemAt = (y) => [lean * y * y, y];
-      stem = { at: stemAt, end: broad ? 0.8 : 0.86, thick: broad ? 0.016 : 0.011 };
+    if (row === 0) {
+      const lean = (random() - 0.5) * 0.18, n = 5 + Math.floor(random() * 3);
+      const stemAt = y => [lean * y * y, y];
+      stem = { at: stemAt, end: 0.8, thick: 0.016 };
       for (let i = 0; i < n; i++) {
         const y = 0.1 + (stem.end - 0.14) * (i + 0.35 * random()) / n, side = i % 2 ? 1 : -1;
         const [sx, sy] = stemAt(y);
-        const angle = side * ((broad ? 0.9 : 0.75) - (broad ? 0.42 : 0.32) * y + 0.18 * (random() - 0.5));
-        const length = (broad ? 0.29 : 0.25) * (1.05 - 0.45 * y) * (0.85 + 0.3 * random());
-        leaflets.push({ x: sx, y: sy, dx: Math.sin(angle), dy: Math.cos(angle), length, ratio: broad ? 0.42 + 0.1 * random() : 0.15 + 0.05 * random(),
-          ovate: broad, curl: (random() - 0.5) * 0.25, tilt: side * (0.25 + 0.25 * random()), shade: 0.55 + 0.35 * random() - 0.12 * (1 - y) });
+        const angle = side * (0.9 - 0.42 * y + 0.18 * (random() - 0.5));
+        const length = 0.29 * (1.05 - 0.45 * y) * (0.85 + 0.3 * random());
+        leaflets.push({ x: sx, y: sy, dx: Math.sin(angle), dy: Math.cos(angle), length, ratio: 0.42 + 0.1 * random(),
+          ovate: true, curl: (random() - 0.5) * 0.25, tilt: side * (0.25 + 0.25 * random()), shade: 0.55 + 0.35 * random() - 0.12 * (1-y) });
       }
       const [tx, ty] = stemAt(stem.end);
-      leaflets.push({ x: tx, y: ty - 0.02, dx: Math.sin(lean * 2), dy: Math.cos(lean * 2), length: Math.min(0.22, 1 - ty) * (broad ? 1 : 0.85), ratio: broad ? 0.38 : 0.16,
-        ovate: broad, curl: (random() - 0.5) * 0.15, tilt: (random() - 0.5) * 0.3, shade: 0.72 + 0.2 * random() });
-    } else if (row === 3) {
-      const lean = (random() - 0.5) * 0.14;
-      stem = { at: y => [lean * y, y], end: 0.91, thick: 0.011 };
-      for (let i = 0; i < 12; i++) {
-        const y = 0.14 + 0.75 * (i + 0.6 * random()) / 12;
-        const x = (i % 2 ? 1 : -1) * (0.045 + random() * 0.24) * (1.18 - 0.60 * y) + lean * y;
-        const head = 0.074 + 0.052 * random(), turn = 6.283 * random();
-        for (let petal = 0; petal < 5; petal++) {
-          const a = turn + petal * 1.256637;
-          leaflets.push({ x, y, dx: Math.cos(a), dy: Math.sin(a), length: head * (0.88 + 0.2 * random()),
-            ratio: 0.44, ovate: true, curl: 0, tilt: 0.22, shade: 0.64 + 0.32 * random() });
-        }
-      }
+      leaflets.push({ x: tx, y: ty - 0.02, dx: Math.sin(lean * 2), dy: Math.cos(lean * 2), length: 1-ty, ratio: 0.38,
+        ovate: true, curl: (random() - 0.5) * 0.15, tilt: (random() - 0.5) * 0.3, shade: 0.72 + 0.2 * random() });
     } else {
       // a single strap leaf, a little asymmetric, from stalk to point
       const lean = (random() - 0.5) * 0.12;
@@ -129,8 +109,10 @@ export function makeLeafSprays(random, tile = 256) {
     }
     return bytes;
   };
-  const share = (c) => { let n = 0; for (const v of c) if (v >= 0.5) n++; return n / c.length; };
-  const target = share(cover);
+  const coverageTarget = new Float32Array(SPRAY_ROWS * SPRAY_COLUMNS);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    if (cover[y*width+x] >= 0.5) coverageTarget[Math.floor(y/tile)*SPRAY_COLUMNS + Math.floor(x/tile)]++;
+  }
   levels.push({ width, height, bytes: pack(width, height, cover, slopeX, slopeY, tone) });
   let w = width, h = height, c = cover, sx = slopeX, sy = slopeY, tn = tone;
   for (let level = 1; level <= SPRAY_MAX_LEVEL; level++) {
@@ -144,13 +126,26 @@ export function makeLeafSprays(random, tile = 256) {
       const k = y * nw + x, norm = a + 4e-4;
       nc[k] = a / 4; nx[k] = ax / norm; ny[k] = ay / norm; nt[k] = at / norm;
     }
-    let lo = 1, hi = 4;
-    for (let it = 0; it < 18; it++) {
-      const mid = 0.5 * (lo + hi);
-      let n = 0; for (const v of nc) if (v * mid >= 0.5) n++;
-      if (n / nc.length < target) lo = mid; else hi = mid;
+    // Match each cutout to its own original coverage. A wide ground leaf must
+    // never consume the last visible texel of a distant tree shoot.
+    const span = nw / SPRAY_COLUMNS, ranked = new Float32Array(span*span);
+    for (let row = 0; row < SPRAY_ROWS; row++) for (let col = 0; col < SPRAY_COLUMNS; col++) {
+      const x0 = col*span, y0 = row*span;
+      for (let y = 0; y < span; y++) {
+        const start = (y0+y)*nw+x0;
+        ranked.set(nc.subarray(start, start+span), y*span);
+      }
+      ranked.sort();
+      const wanted = Math.round(coverageTarget[row*SPRAY_COLUMNS+col] * ranked.length/(tile*tile));
+      const cut = ranked.length - wanted;
+      const lower = cut > 0 ? ranked[cut-1] : 0;
+      const upper = cut < ranked.length ? ranked[cut] : 1;
+      const scale = Math.min(4, 1/Math.max(lower+upper, 0.001));
+      for (let y = 0; y < span; y++) for (let x = 0; x < span; x++) {
+        const k = (y0+y)*nw+x0+x;
+        nc[k] = Math.min(1, nc[k]*scale);
+      }
     }
-    for (let i = 0; i < nc.length; i++) nc[i] = Math.min(1, nc[i] * hi);
     levels.push({ width: nw, height: nh, bytes: pack(nw, nh, nc, nx, ny, nt) });
     w = nw; h = nh; c = nc; sx = nx; sy = ny; tn = nt;
   }
@@ -174,8 +169,8 @@ export function uploadLeafSprays(gl, sprays, unit) {
 // Where a card's texel lies in the atlas: the family by kind, the variant by seed, inset so mips do not bleed.
 export const sprayGLSL = `
 uniform sampler2D uLeafSprays;
-vec2 sprayUV(float u, float side, float kind, float seed){
-  float col = floor(fract(seed * 7.131) * ${SPRAY_COLUMNS}.), row = kind >= 2.5 ? 3. : kind >= 1.5 ? 2. : kind >= 0.5 ? 0. : 1.;
+vec2 sprayUV(float u, float side, float row, float seed){
+  float col = floor(fract(seed * 7.131) * ${SPRAY_COLUMNS}.);
   vec2 t = vec2(side * 0.5 + 0.5, u) * 0.96 + 0.02;
   return (vec2(col, row) + t) / vec2(${SPRAY_COLUMNS}., ${SPRAY_ROWS}.);
 }`;

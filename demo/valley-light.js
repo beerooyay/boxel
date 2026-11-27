@@ -49,7 +49,7 @@ export function groundAtlas(size, extent, groundAt, waterAt, addOccluders) {
   return { data, heightRange: [min, span] };
 }
 
-export function bakeGroundLight(gl, extent, groundAt, waterAt, sc, highTrunks, pl) {
+export function bakeGroundLight(gl, extent, groundAt, waterAt, sc, forest, pl) {
   const size = 2 * extent;
   const atlas = groundAtlas(size, extent, groundAt, waterAt, stamp => {
     for (let g = 0; g < sc.rv.length; g++) {
@@ -58,11 +58,9 @@ export function bakeGroundLight(gl, extent, groundAt, waterAt, sc, highTrunks, p
       for (let i = 0; i < sites.length; i += 4)
         stamp(sites[i], sites[i + 1], sites[i + 2], 0.85 * dims[i], (g < 2 ? 0.66 : 0.86) * dims[i + 1], 0.85 * dims[i + 2], sites[i + 3], sc.beds[g][i], sc.beds[g][i+1]);
     }
-    for (const [sites, stride, radius] of [[sc.trees, 5, 0.11], [highTrunks, 4, 0.061]]) {
-      for (let i = 0; i < sites.length; i += stride) {
-        const h = sites[i + stride - 1], r = Math.max(0.26, h * radius);
-        stamp(sites[i], sites[i + 1], sites[i + 2], r, h * 0.44, r, 0);
-      }
+    for (let i = 0; i < forest.sites.length; i += 4) {
+      const h = forest.sites[i+3], r = Math.max(0.26, 0.085 * h * forest.styles[i+2]);
+      stamp(forest.sites[i], forest.sites[i+1], forest.sites[i+2], r, h * 0.44, r, 0);
     }
     // Leaves in a tuft share a root. Use the largest footprint there.
     for (let i = 0; i < pl.P.length; i += 4) {
