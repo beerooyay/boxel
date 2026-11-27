@@ -92,7 +92,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 #labLegend { margin: 7px 0 0; }
 #labLegend span:first-child { color: #70efd0; }
 #labLegend span:last-child { color: #ffb660; }
-.grass-lab #hud, .grass-lab #bHud, .grass-lab #bCamera, html.intro #grassLab { display: none !important; }
+.grass-lab #hud, .grass-lab #bHud, html.intro #grassLab { display: none !important; }
 #capture-status { position: fixed; z-index: 15; top: max(12px, env(safe-area-inset-top)); left: 50%;
   translate: -50%; max-width: 86vw; padding: 9px 14px; border-radius: 12px;
   background: #151727; color: var(--ink); font: 13px var(--body); pointer-events: none; }
@@ -127,7 +127,11 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 #fieldMenu legend { color:#b8c5ca; font:500 13px var(--body); padding:0 8px 0 0; }
 #fieldMenu button { background:#282f3b; color:var(--ink); border:1px solid transparent; border-radius:7px; padding:9px 12px; cursor:pointer; font:500 14px var(--body); }
 #fieldMenu button[aria-pressed=true] { color:var(--glow); border-color:#5ff2e054; }
-#fieldMenu button:focus-visible { outline:2px solid var(--glow); }
+#fieldMenu :is(button, select):focus-visible { outline:2px solid var(--glow); outline-offset:2px; }
+#playerSettings label { align-self:center; }
+#animalChoice { font:inherit; padding:7px 10px; background:#282f3b; color:var(--ink); border:1px solid #43505c; border-radius:7px; min-width:9em; }
+#playerSettings .camera-options { display:flex; gap:6px; width:100%; margin-top:4px; }
+#animalStatus:empty { display:none; }
 #fieldMenu p { font:13px/1.6 var(--body); color:#bcc4ce; margin:14px 0 0; }
 body:not(.touch) #bJump, body:not(.touch) #bThrow, body:not(.touch) .touch-guide, body.touch .desktop-guide, body.touch:not(.using-controller) .controller-guide { display:none; }
 </style>
@@ -169,14 +173,21 @@ body:not(.touch) #bJump, body:not(.touch) #bThrow, body:not(.touch) .touch-guide
 </div>
 <dialog id="fieldMenu" aria-labelledby="fieldTitle">
   <header><h2 id="fieldTitle">Field menu</h2><button id="menuClose" autofocus>Resume</button></header>
+  <fieldset id="playerSettings"><legend>Player settings</legend>
+    <label for="animalChoice">Play as</label><select id="animalChoice"></select>
+    <div class="camera-options" role="group" aria-label="Camera view">
+      <button id="bFirstPerson" type="button" aria-pressed="false">First person</button>
+      <button id="bCamera" type="button" aria-pressed="true">Third person</button>
+    </div>
+    <span id="animalStatus" role="status"></span>
+  </fieldset>
   <fieldset><legend>Sky & weather</legend>
   <button id="bRain" type="button" aria-pressed="false">Spore rain</button>
   <button id="bStorm" type="button" aria-pressed="false">Storm</button>
   <button id="bNight" type="button" aria-pressed="false">Night</button>
   <button id="bDay" type="button" aria-pressed="false">Day cycle</button>
   <button id="bTimelapse" type="button" aria-pressed="false" title="Watch a full Tarn day in 28 seconds (L)">Timelapse</button>
-</fieldset><fieldset><legend>Camera & engine</legend>
-  <button id="bCamera" type="button" aria-pressed="true" title="Toggle third-person view (P)">Third person</button>
+</fieldset><fieldset><legend>Engine</legend>
   <button id="bMode" type="button" title="Switch the surface field engine">boxel</button>
   <button id="bHud" type="button" aria-pressed="false">Readout</button>
 </fieldset><fieldset><legend>Clips</legend>
@@ -185,6 +196,7 @@ body:not(.touch) #bJump, body:not(.touch) #bThrow, body:not(.touch) .touch-guide
 </fieldset>
   <p class="desktop-guide">Walk with WASD · S to back up · Shift + S to turn around<br>Shift to run · Space to jump · Click to throw<br>Drag or scroll with two fingers to look · Q for menu<br>Right-click for free look · Esc to release</p>
   <p class="touch-guide">Left thumb to walk · Push farther to run<br>Drag the right side to look · Tap Jump to leap or Throw for a glowstone</p>
+  <p>Move into deep water to swim. Keep moving up a steep slope to scramble.</p>
   <p class="controller-guide">Controller · Left stick to move · Right stick to look<br>Right trigger to run · A to jump · X to throw · Y for camera · Menu to open<br>D-pad to browse · A to select · B to return</p>
 </dialog>
 
@@ -211,7 +223,7 @@ body:not(.touch) #bJump, body:not(.touch) #bThrow, body:not(.touch) .touch-guide
 <div id="intro">
   <div class="card">
     <h1>T<span>A</span>RN</h1>
-    <p>Explore as a fox. Look for deer in the rose meadow, follow the river to the spring, or climb the eastern rock shelf for a view across the valley. After dark, throw a glowstone and watch the moss wake where it lands.</p>
+    <p>Follow the river to the waterfall, swim across the lake, or scramble up the eastern rock shelf. Choose your animal and camera in the field menu. After dark, throw a glowstone and watch the moss wake where it lands.</p>
     <div class="keys" id="keys">
       <b>keyboard</b><span>WASD to move · Shift to run · Space to jump</span>
       <b>mouse / pad</b><span>drag or two-finger scroll to look · click to throw</span>

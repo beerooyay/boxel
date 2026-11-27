@@ -125,15 +125,16 @@ const vec3 CONTACT_MIN = vec3(${CONTACT_ORIGIN.join(',')});
 const vec3 CONTACT_EXTENT = vec3(${CONTACT_SIZE.map(n => (n*CONTACT_CELL).toFixed(4)).join(',')});
 const float CONTACT_STEP = ${CONTACT_CELL};
 
+uniform float uContactScale;
 vec3 surfaceEscape(vec3 p) {
-  vec3 uv = (transpose(uContactBasis) * (p-uContactOrigin) - CONTACT_MIN) / CONTACT_EXTENT;
+  vec3 uv = (transpose(uContactBasis) * (p-uContactOrigin) / uContactScale - CONTACT_MIN) / CONTACT_EXTENT;
   if (any(lessThan(uv, vec3(0.))) || any(greaterThan(uv, vec3(1.)))) return vec3(0.);
   vec4 sampleV = textureLod(uFoxVolume, uv, 0.);
   if (sampleV.a <= 0.44) return vec3(0.);
   vec3 direction = (sampleV.rgb * 255. / sampleV.a - 128.) * 0.25;
   float distance = length(direction);
   if (distance < 0.0001) return vec3(0.);
-  float clearance = max(0., (distance - 1. + sampleV.a)) * CONTACT_STEP + 0.008;
+  float clearance = max(0., (distance - 1. + sampleV.a)) * CONTACT_STEP * uContactScale + 0.008;
   return uContactBasis * (direction * (clearance/distance) * smoothstep(0.44, 0.62, sampleV.a));
 }
 

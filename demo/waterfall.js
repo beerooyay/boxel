@@ -43,34 +43,69 @@ vec4 rollingFront(float phase, vec2 phaseGradient, float amplitude, float breaki
   float lip=smoothstep(0.59,0.96,peak)*smoothstep(-0.76,0.12,sin(skew)+0.14);
   return vec4(amplitude*(peak-0.29), amplitude*slope*phaseGradient, breaking*lip);
 }
+vec2 crestSeed(vec2 id){
+  vec3 h=fract(id.xyx*vec3(.1031,.1030,.0973));
+  h+=dot(h,h.yzx+33.33);
+  return fract((h.xx+h.yz)*h.zy);
+}
+// Each wind patch launches a short train at its own angle and cadence. Its
+// footprint and lifetime go to zero before its cell or event identity changes.
+vec4 shorePacket(vec2 p,float depth,vec2 bedSlope,float t,float gust,mat2 axes,vec2 offset){
+  const float spacing=4.8;
+  vec2 tile=axes*p/spacing+offset, cell=floor(tile);
+  vec2 seed=crestSeed(cell+offset*83.);
+  float interval=3.25+2.8*seed.x, clock=t/interval+seed.y;
+  float age=fract(clock), life=smoothstep(0.,0.17,age)*(1.-smoothstep(0.68,1.,age));
+  vec2 roll=crestSeed(cell+vec2(floor(clock)*17.7,41.2+offset.x));
+  vec2 q=(fract(tile)-0.5)*spacing;
+  vec2 centre=(seed-0.5)*0.52+(roll-0.5)*0.26;
+  centre+=vec2(0.34,-0.20)*(age-0.5);
+  vec2 radii=vec2(1.25+0.60*roll.y,1.37+0.48*seed.x);
+  vec2 local=(q-centre)/radii;
+  float envelope=max(0.,1.-dot(local,local));
+  if(envelope<=0. || life<=0.) return vec4(0.);
+  vec2 heading=vec2(0.28+0.86*roll.x,1.28*(roll.y-0.5));
+  float curve=0.40*(0.3+seed.y), deepK=5.5+2.8*seed.x;
+  float phase=dot(q,heading)+curve*local.y*local.y-deepK*depth
+    -age*interval*(1.74+1.0*roll.y)+6.283*roll.x;
+  vec2 gradient=transpose(axes)*(heading+vec2(0.,2.*curve*local.y/radii.y))-deepK*bedSlope;
+  float energy=life*(0.66+0.34*roll.x), strength=energy*envelope*envelope;
+  float amplitude=0.10+0.13*min(gust,1.5);
+  vec4 wave=rollingFront(phase,gradient,amplitude*strength,strength*(0.46+0.52*gust));
+  wave.yz+=wave.x*transpose(axes)*(-4.*local/(radii*envelope));
+  return wave;
+}
+// Travel time connects each roller to a pulse from one of the two chutes.
+// Different pulses spread into different parts of the pool.
+vec4 chuteRoll(vec2 p,vec2 source,float inlet,float t){
+  vec2 q=p-source; float r=max(0.02,length(q)), speed=1.02+0.11*inlet;
+  float clock=(t-r/speed)/(2.57+0.53*inlet)+inlet*4.1;
+  vec2 seed=crestSeed(vec2(floor(clock),inlet*39.7+4.));
+  float age=fract(clock), life=smoothstep(0.,0.13,age)*(1.-smoothstep(0.72,1.,age));
+  float bend=(seed.x-0.44)*0.78+inlet*0.19;
+  float crossFlow=q.x-bend*q.y-0.22*sin(0.87*q.y+5.*seed.y);
+  float width=0.63+q.y*(0.13+0.11*seed.y);
+  float fan=1.-smoothstep(0.18,max(0.25,width),abs(crossFlow));
+  float energy=life*fan*(0.64+0.36*seed.y)*smoothstep(-0.6,0.35,q.y)*(1.-smoothstep(1.6,7.3,r));
+  float skew=0.33*crossFlow*crossFlow;
+  float phase=-6.283*age*(1.38+0.69*seed.y)+skew;
+  float radialK=6.283*(1.38+0.69*seed.y)/((2.57+0.53*inlet)*speed);
+  vec2 gradient=radialK*q/r+0.66*crossFlow*vec2(1.,-bend-0.1914*cos(0.87*q.y+5.*seed.y));
+  return rollingFront(phase,gradient,0.21*energy,0.92*energy);
+}
 vec4 waterCrests(vec2 p, float depth, vec2 bedSlope, float t, float gust){
   vec4 wave=vec4(0.);
   if(depth < -0.23) return wave;
   float runup=smoothstep(-0.22,0.15,depth);
-  if(depth<1.1){
-    // Depth contours turn each front toward the local beach. Broad wind
-    // groups leave stretches of flat water between breaking wavelets.
-    float turn=dot(p,vec2(0.31,-0.20));
-    vec2 drift=vec2(0.19,0.14);
-    float phase=dot(p,drift)-6.8*depth-2.17*t+0.54*sin(turn);
-    vec2 gradient=drift-6.8*bedSlope+0.54*cos(turn)*vec2(0.31,-0.20);
-    float group=smoothstep(-0.75,0.82,sin(dot(p,vec2(0.31,0.17))-0.54*t+0.91*sin(turn)));
-    float strength=runup*(1.-smoothstep(0.42,1.10,depth))*(0.36+0.64*group);
-    wave=rollingFront(phase,gradient,strength*(0.075+0.11*gust),
-                      strength*(0.37+0.63*gust));
+  if(depth < 1.1){
+    float shoal=runup*(1.-smoothstep(0.42,1.10,depth));
+    wave=shoal*(shorePacket(p,depth,bedSlope,t,gust,mat2(0.8,0.6,-0.6,0.8),vec2(0.17,0.58))
+      +0.82*shorePacket(p,depth,bedSlope,t,gust,mat2(0.96,-0.28,0.28,0.96),vec2(0.79,0.12)));
   }
-  vec2 fromToe=p-vec2(${footX.toFixed(4)},${(falls.lip + falls.reach).toFixed(4)});
-  if(fromToe.y > -0.7 && fromToe.y < 9. && abs(fromToe.x)<6.){
-    // Short curved rollers spread away from the two chutes. The plunge is
-    // the energy source, so these can break even on a windless day.
-    vec2 arc=vec2(0.69*fromToe.x,fromToe.y);
-    float r=max(0.01,length(arc)), ribs=fromToe.x*1.38+0.5;
-    float groups=0.75+0.25*cos(0.87*r-1.23*t+0.45*sin(ribs));
-    float surge=runup*groups*smoothstep(-0.65,0.40,fromToe.y)*
-      (1.-smoothstep(1.4,8.8,r))*(1.-smoothstep(4.4,5.9,abs(fromToe.x)));
-    float phase=3.65*r-4.05*t+0.34*sin(ribs);
-    vec2 gradient=3.65*arc*vec2(0.69,1.)/r+vec2(0.47*cos(ribs),0.);
-    wave+=rollingFront(phase,gradient,0.235*surge,0.96*surge);
+  vec2 fromToe=p-vec2(${footX.toFixed(4)},${(falls.lip+falls.reach).toFixed(4)});
+  if(fromToe.y > -1.6 && fromToe.y < 8. && abs(fromToe.x)<6.) {
+    wave+=runup*(chuteRoll(p,vec2(${landingAt(-0.73).map(v=>v.toFixed(4)).join(',')}),-0.73,t)
+      +chuteRoll(p,vec2(${landingAt(0.47).map(v=>v.toFixed(4)).join(',')}),0.47,t));
   }
   return wave;
 }`;

@@ -17,14 +17,16 @@ The procedural forest grows three branching shapes from two seeds each. Every tr
 
 | Shape | Trees | Near triangles per tree | Distant triangles per tree | Leaf sprays across all instances |
 | --- | ---: | ---: | ---: | ---: |
-| Spreading A | 224 | 2,593 | 980 | 45,472 |
-| Upright A | 227 | 2,569 | 964 | 45,173 |
-| Rounded A | 165 | 2,605 | 988 | 33,825 |
-| Spreading B | 213 | 2,896 | 1,088 | 48,138 |
-| Upright B | 253 | 2,872 | 1,072 | 56,166 |
-| Rounded B | 151 | 2,581 | 972 | 30,351 |
+| Spreading A | 224 | 2,593 | 1,036 | 45,472 |
+| Upright A | 227 | 2,569 | 1,020 | 45,173 |
+| Rounded A | 165 | 2,605 | 1,044 | 33,825 |
+| Spreading B | 213 | 2,896 | 1,152 | 48,138 |
+| Upright B | 253 | 2,872 | 1,136 | 56,166 |
+| Rounded B | 151 | 2,581 | 1,028 | 30,351 |
 
 The crowns break down into **891 green, 153 dark evergreen, 61 blossom pink and 128 honey/apricot**. The solid petal-pink and solid-gold ranges currently occur on other vegetation. The broadleaves use four leaf-spray patterns on branching shoots. A 768 × 768 scanned bark colour and normal pair brings out grooves in the light, while modeled flutes, buttresses and forks shape each silhouette. [Pigment definitions](../demo/flora-palette.js) · [Leaf atlas generator](../tools/bake-leaf-sprays.mjs) · [Bark scan](https://polyhaven.com/a/bark_brown_02)
+
+On all six native meshes, the first ring of each main bough sits inside the trunk. The shoulder takes its surface normal and bark coordinates from the trunk triangle it meets. The distant mesh keeps the collar, and a tile of matching colour and normal grooves covers the wood if the bark photographs fail to load. [Branch construction](../demo/high-canopy.js) · [Surface textures](../demo/surface-texture.js)
 
 ## Archived oak trial
 
@@ -60,7 +62,7 @@ The separate 10 × 10 m grass lab has **15,016 desktop roots** or **8,566 coarse
 - **Plant placement.** The audit found zero coincident rooted understory placements, including checks between the two rosettes and all seven strip families, and zero understory roots exactly on a trunk centre. Crossed strips, cup filaments and clumped grass siblings intentionally share a base.
 - **Art inventory.** All 21 tree and leaf asset files in the repository, including the archived oak trial, have distinct file hashes. The small compressed leaf atlas and its raw fallback decode to the same six mip levels, also present in the larger atlas. Each browser selects one file. The game’s atlas supplies four canopy sprays and four ground-leaf shapes. [Atlas selection](../demo/leaf-spray.js)
 - **Source-only art.** Of 55 PNGs in the artist’s main texture folder, 54 have unique SHA-256 hashes. The winter cluster’s `Subsurface` and `SubsurfaceAmount` PNGs are byte-identical. The billboard folder has 323 PNGs and 323 distinct hashes. Both folders stay outside the runtime download.
-- **Ground-light bake.** Counting the tallest part at each root gives 3,656 desktop stamps across 15,491 eligible strips, or 2,507 across 10,698 on coarse pointers. The grass lab skips uploading 41,760 desktop or 28,135 coarse-pointer understory strips.
+- **Ground-light bake.** Counting the tallest part at each root gives 3,656 desktop stamps across 15,491 eligible strips, or 2,507 across 10,697 on coarse pointers. The grass lab skips uploading 41,760 desktop or 28,135 coarse-pointer understory strips.
 
 ## Reproduce the census
 

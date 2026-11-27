@@ -73,9 +73,9 @@ void solveBlade(vec3 root, vec3 edge, vec2 lean, float arc, float curvature, ive
   gl_PointSize=1.;
   vec3 base=transpose(uContactBasis)*(root-uContactOrigin);
   vec2 extent=vec2(arc+length(edge));
-  bool bodyPossible=all(greaterThan(base.xz,CONTACT_MIN.xz-extent)) &&
-                    all(lessThan(base.xz,CONTACT_MIN.xz+CONTACT_EXTENT.xz+extent)) &&
-                    base.y+arc+0.06>CONTACT_MIN.y && base.y-0.20*arc<CONTACT_MIN.y+CONTACT_EXTENT.y;
+  vec3 lo=CONTACT_MIN*uContactScale, hi=(CONTACT_MIN+CONTACT_EXTENT)*uContactScale;
+  bool bodyPossible=all(greaterThan(base.xz,lo.xz-extent)) && all(lessThan(base.xz,hi.xz+extent)) &&
+                    base.y+arc+0.06>lo.y && base.y-0.20*arc<hi.y;
   vec3 joint=root, lastRest=root;
   float direct=0., received=0.;
   ivec2 old=site-uLastBase;
@@ -264,6 +264,7 @@ export function createBladeContact(gl, solve, stamp, grid) {
     gl.uniform1f(solve.u('uRecovery'),Math.exp(-elapsed*8));
     gl.uniform3f(solve.u('uContactOrigin'),x,y,z);
     gl.uniformMatrix3fv(solve.u('uContactBasis'),false,basis);
+    gl.uniform1f(solve.u('uContactScale'),fox.contactScale);
     gl.uniform1i(solve.u('uFoxVolume'),21); gl.uniform1i(solve.u('uNeighbours'),24); gl.uniform1i(solve.u('uDonorSite'),25);
     stats.roots=grass.drawRoots(solve,groups,3);
     fieldOrigin=[Math.floor(x/CELL)*CELL-CONTACT_REACH,Math.floor(ground/BAND)*BAND-2*BAND,Math.floor(z/CELL)*CELL-CONTACT_REACH];

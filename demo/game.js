@@ -6,14 +6,15 @@ import { bladeStateGLSL, solveGLSL, stampGLSL, knotsFragment, stampFragment, cre
 import { contactVolume, contactGLSL } from './fox-contact.js';
 import { createWildlife } from './wildlife.js';
 import { animalProgram } from './animal-rig.js';
-import { loadFox } from './fox.js';
+import { loadPlayerAnimal } from './fox.js';
+import { animals, animalById } from './animal-catalog.js';
 import { DAY_RATE, TIMELAPSE_SECONDS, timelapseTravel } from './sky-clock.js';
 import { bindCapture } from './capture.js';
 import { floraPalette, understoryPigment, writeMeadowColour } from './flora-palette.js';
 import { createWind, windDirection, windShader } from './wind.js';
 import { bakeTrailMaterial } from './trail-material.js';
 import { loadLeafSprays, uploadLeafSprays, sprayGLSL, STRAP_ASPECT } from './leaf-spray.js';
-import { loadSurface, uploadSurface } from './surface-texture.js';
+import { barkTile, loadSurface, uploadSurface } from './surface-texture.js';
 import { galaxyFragment } from './galaxy.js';
 import { FieldTexture } from './field-texture.js';
 import { bakeMeadow, MEADOW_TILE, BLADE_HEIGHT_RANGE, CLUMP, clumpGLSL, meadowLodGLSL, SISTER_ONE, SISTER_TWO } from './meadow.js';
@@ -296,7 +297,12 @@ const FSQ = `out vec2 vUv; void main(){ vec2 p = vec2(float((gl_VertexID << 1) &
 const WAVES = waterSurfaceGLSL + crestGLSL + `
 vec3 waterWave(vec2 p, float t){
   vec2 k1 = vec2(0.21, 0.13), k2 = vec2(-0.27, 0.46), k3 = vec2(1.38, -0.8);
-  float a1 = dot(p, k1) + t * 0.7, a2 = dot(p, k2) + t * 1.1, a3 = dot(p, k3) + t * 1.9;
+  vec2 curlK=vec2(-0.23,0.29);
+  float curl=dot(p,curlK)-0.27*t;
+  float a1=dot(p,k1)+t*0.7+0.57*sin(curl), a2=dot(p,k2)+t*1.1-0.83*cos(curl);
+  float crossPhase=dot(p,vec2(0.41,0.26))+0.45*t;
+  float a3=dot(p,k3)+t*1.9+1.17*sin(crossPhase);
+  k1+=0.57*cos(curl)*curlK; k2+=0.83*sin(curl)*curlK; k3+=1.17*cos(crossPhase)*vec2(0.41,0.26);
   return vec3(0.035 * sin(a1) + 0.02 * sin(a2) + 0.008 * sin(a3), 0.035 * cos(a1) * k1 + 0.02 * cos(a2) * k2 + 0.008 * cos(a3) * k3);
 }
 
@@ -612,9 +618,14 @@ vec3 brushBend(vec3 wp) {
 }
 `;
 const CANOPY = program(WORLD_VS + BRUSH_VS + valleyAir + canopyShelter + `
-in vec3 aPos, aNor, aStalk, aBlade; in float aTissue; in vec4 aSite, aHabit; in vec2 aSlope;
+in vec3 aPos, aNor, aStalk, aBlade; in float aTissue; in vec4 aSite, aHabit, aGraft; in vec2 aSlope;
 centroid out vec2 vBlade; centroid out vec3 vWP, vNormal, vAcross;
+centroid out vec3 vGraft;
 flat out float vTissue, vHue; out float vCrown; out vec3 vField; out vec4 vAir;
+vec2 barkUV(vec3 ring) {
+  float repeats=max(1.,floor(ring.z*aSite.w*aHabit.z/0.74+0.5));
+  return vec2(ring.x*repeats,ring.y*aSite.w/0.74)+fract(aSite.xz*vec2(0.75488,0.56984)+ring.z*13.3);
+}
 void main(){
   mat2 rot=mat2(aHabit.x,aHabit.y,-aHabit.y,aHabit.x);
   vec3 p=aPos, stalk=aStalk;
@@ -622,6 +633,7 @@ void main(){
   stalk.xz = rot*stalk.xz*aHabit.z;
   vNormal=aNor; vNormal.xz=rot*aNor.xz/aHabit.z;
   vBlade=aBlade.xy;
+  vGraft=vec3(0.);
   float load=uWind>0. ? crownLoad(aSite.xz)*uWind : 0.;
   if (aTissue>=0.) {
     vec2 across=rot*vec2(-sin(aBlade.z),cos(aBlade.z));
@@ -648,9 +660,8 @@ void main(){
     // and the third blade channel carries this limb's reference circumference.
     vAcross=stalk;
     stalk=p;
-    float repeats=max(1.,floor(aBlade.z*aSite.w*aHabit.z/0.74+0.5));
-    vec2 offset=fract(aSite.xz*vec2(0.75488,0.56984)+aBlade.z*13.3);
-    vBlade=vec2(aBlade.x*repeats,aBlade.y*aSite.w/0.74)+offset;
+    vBlade=barkUV(aBlade);
+    vGraft=vec3(barkUV(aGraft.xyz)*aGraft.w,aGraft.w);
   }
   p+=boughOffset(load,stalk.y,1.)*min(1.,length(stalk.xz)*3.4);
   float foot=1.-smoothstep(0.,0.18,aPos.y);
@@ -667,6 +678,7 @@ void main(){
   gl_Position=project(vWP);
 }`, sprayGLSL + `uniform float uClip; uniform bool uCoverage;
 centroid in vec2 vBlade; centroid in vec3 vWP, vNormal, vAcross;
+centroid in vec3 vGraft;
 flat in float vTissue, vHue; in float vCrown; in vec3 vField; in vec4 vAir; out vec4 o;
 uniform sampler2D uBarkColor, uBarkNormal;
 void main(){
@@ -700,10 +712,16 @@ void main(){
     float veins=smoothstep(0.78,0.98,tone);
     colour+=pigment*uNight*(0.035*veins+glowI(vField.x)*(veins+0.22*vBlade.x));
   }else{
-    vec3 along=normalize(vAcross-n*dot(n,vAcross));
+    vec3 fibre=mix(vAcross,vec3(0.,1.,0.),vGraft.z);
+    vec3 along=normalize(fibre-n*dot(n,fibre));
     vec3 across=cross(along,n);
     vec3 grain=texture(uBarkNormal,vBlade).xyz*2.-1.;
     vec3 bark=texture(uBarkColor,vBlade).rgb;
+    if(vGraft.z>0.002) {
+      vec2 parentUV=vGraft.xy/vGraft.z;
+      grain=mix(grain,texture(uBarkNormal,parentUV).xyz*2.-1.,vGraft.z);
+      bark=mix(bark,texture(uBarkColor,parentUV).rgb,vGraft.z);
+    }
     n=normalize(n*max(0.25,grain.z)+1.02*(across*grain.x+along*grain.y));
     float damp=vField.y;
     bark*=1.-0.29*damp;
@@ -1716,8 +1734,8 @@ void main(){
   float bubbles=smoothstep(0.19,0.80,wash+0.23*(vnoise(15.*p-0.45*uTime)-0.5));
   float splashCap=smoothstep(0.018,0.085,disturbance.x)*smoothstep(0.06,0.24,length(disturbance.yz));
   float breaker=min(1.,front.w+splashCap)*bubbles;
-  float swash=(1.-smoothstep(0.024,0.16,abs(depth-0.041)))*(0.10+0.61*front.w);
-  float foam = breaker+(swash+0.12*stream*smoothstep(0.84,1.,sin(flow)))*shoreFroth(p);
+  float swash=(1.-smoothstep(0.024,0.16,abs(depth-0.041)))*(0.045+0.61*front.w);
+  float foam = breaker+(swash+0.065*stream*smoothstep(0.84,1.,sin(flow))*smoothstep(0.44,0.74,wash))*shoreFroth(p);
   float whitewater=plungeFoam(p,uTime)*smoothstep(0.,0.23,depth);
   foam=min(1.,foam+whitewater);
   float light = uNight * uNight * glowI(glow);
@@ -2798,6 +2816,7 @@ function uploadForest(stands) {
       { loc:loc(CANOPY,'aNor'), size:3, data:mesh.normal },
       { loc:loc(CANOPY,'aBlade'), size:3, data:mesh.blade },
       { loc:loc(CANOPY,'aStalk'), size:3, data:mesh.stalk },
+      { loc:loc(CANOPY,'aGraft'), size:4, data:mesh.graft },
       { loc:loc(CANOPY,'aTissue'), size:1, data:mesh.tissue }, site, habit, slope,
     ];
     gl.bindVertexArray(null);
@@ -3368,9 +3387,15 @@ function strike(r = stormRng, at = null) {
 }
 
 // ---------------------------------------------------------------- camera + player
-const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vx: 0, vz: 0, vy: 0, grounded: true, onStone: false, flight: 0, stride: 0, bob: 0, foot: 1, wet: 0 };
+const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vx: 0, vz: 0, vy: 0, grounded: true, onStone: false, swimming: false, scrambling: false, stroke: 0, flight: 0, stride: 0, bob: 0, foot: 1, wet: 0 };
 player.y = H(player.x, player.z);
-let fox, thirdPerson = true;
+function readPreference(key) {
+  try { return localStorage.getItem('tarn.' + key); } catch { return null; }
+}
+function savePreference(key, value) {
+  try { localStorage.setItem('tarn.' + key, value); } catch { /* Play for this session. */ }
+}
+let fox, thirdPerson = readPreference('camera') !== 'first', selection = 0;
 const chase = { height: player.y, arm: 3.55 };
 const contactGrid = TEST ? null : contactVolume();
 const bladeContact = TEST ? null : createBladeContact(gl,solveBlades,stampBlades,contactGrid);
@@ -3424,30 +3449,61 @@ function stoneTop(x, z, ceiling, floor) {
   return floor;
 }
 
+// The outer strip joins the rock's vertical flank to the soil. It is only a
+// paw's reach wide. The rounded cap inside is the same one used for landings.
+function climbingSupport(x, z, terrain = H(x,z)) {
+  const stones = boulderCells.get(Math.floor(x/4) + 4096*Math.floor(z/4));
+  let support = terrain;
+  if (!stones) return support;
+  for (const rock of stones) {
+    const dx=x-rock.x, dz=z-rock.z, rx=rock.sx*0.85, rz=rock.sz*0.85;
+    const a=(dx*rock.c+dz*rock.s)/rx, b=(dz*rock.c-dx*rock.s)/rz;
+    const disk=1-a*a-b*b;
+    if (disk >= 0) {
+      const u=Math.min(1,disk/0.10);
+      const cap=disk < 0.10 ? Math.sqrt(0.10)*u*(1.5-0.5*u) : Math.sqrt(disk);
+      support=Math.max(support,rock.y+rock.sy*cap);
+    } else {
+      const radius=Math.sqrt(1-disk);
+      const metres=(radius-1)*Math.hypot(dx,dz)/radius;
+      if (metres < 0.28) support=Math.max(support,terrain+(rock.y-terrain)*(1-sm(0,0.28,metres)));
+    }
+  }
+  return support;
+}
+
 function updateFox(dt, ground, distance, alongBody, running) {
   const ease = -Math.expm1(-15*dt);
-  const x = player.x, z = player.z;
+  const x = player.x, z = player.z, size = Math.sqrt(fox?.contactScale ?? 1);
   const f = Math.sin(foxPose.yaw), g = -Math.cos(foxPose.yaw);
-  const support = (sx, sz) => player.onStone ? stoneTop(sx, sz, player.y+0.32, H(sx,sz)) : H(sx,sz);
-  const front = support(x + 0.44*f, z + 0.44*g), rear = support(x - 0.44*f, z - 0.44*g);
-  const left = support(x + 0.20*g, z - 0.20*f), right = support(x - 0.20*g, z + 0.20*f);
-  foxPose.pitch += (Math.atan(Math.max(-0.85, Math.min(0.85, (front-rear)/0.88))) - foxPose.pitch) * ease;
-  foxPose.roll += (Math.atan(Math.max(-0.65, Math.min(0.65, (right-left)/0.40))) - foxPose.roll) * ease;
-  const sole = 0.55*ground + 0.225*(front+rear) + 0.02;
+  const span = 0.44 * size, width = 0.20 * size;
+  const support = player.onStone ? climbingSupport : H;
+  const front = player.swimming ? ground : support(x + span*f, z + span*g);
+  const rear = player.swimming ? ground : support(x - span*f, z - span*g);
+  const left = player.swimming ? ground : support(x + width*g, z - width*f);
+  const right = player.swimming ? ground : support(x - width*g, z + width*f);
+  const pitch = player.swimming ? 0.065 : Math.atan(Math.max(-3.4,Math.min(3.4,(front-rear)/(2*span))));
+  const roll = player.swimming ? 0.026*Math.sin(2*Math.PI*player.stroke)
+    : Math.atan(Math.max(-0.80,Math.min(0.80,(right-left)/(2*width))));
+  foxPose.pitch += (pitch - foxPose.pitch) * ease;
+  foxPose.roll += (roll - foxPose.roll) * ease;
+  const sole = ground + Math.min(0.10*size,Math.max(-0.05,0.225*(front+rear-2*ground))) + 0.02;
   foxPose.height = player.grounded ? Math.max(ground - 0.05, foxPose.height + (sole-foxPose.height)*ease) : player.y + 0.02;
-  chase.height += (ground + 0.65*Math.max(0, player.y-ground) - chase.height) * -Math.expm1(-10*dt);
+  const follow = player.swimming ? player.y : ground + 0.65*Math.max(0, player.y-ground);
+  chase.height += (follow - chase.height) * -Math.expm1(-10*dt);
   const reverse = Math.abs(alongBody) > 0.0001 ? alongBody < 0 : foxPose.backing;
   const stride = Math.max(distance, Math.abs(foxPose.turn)*0.33) * (reverse ? -1 : 1);
-  const phase = player.grounded ? -1 : Math.min(0.94, 0.24 + 0.70*player.flight/jumpDuration);
-  fox?.advance(dt, stride, running && distance/dt > 2, foxPose.bend, phase);
+  const phase = player.grounded || player.swimming ? -1 : Math.min(0.94, 0.24 + 0.70*player.flight/jumpDuration);
+  fox?.advance(dt,stride,running && distance/dt>2,foxPose.bend,phase,player.swimming,player.scrambling,player.stroke);
 }
 
 function foxCamera(dt = 0) {
   const yaw = player.yaw, pitch = Math.max(-1.15, Math.min(1.1, player.pitch - 0.23));
   const { f } = camBasis(yaw, pitch);
   const x = player.x, z = player.z, ground = H(x, z);
-  const pivot = Math.max(chase.height + 1.14, ground + 1.0, waterLevel(x, z) + 0.8);
-  const limit = touch ? 3.35 : 3.55;
+  const lift = Math.max(1.14, (fox?.eyeHeight ?? 0) + 0.26);
+  const pivot = Math.max(chase.height + lift, ground + lift - 0.14, waterLevel(x, z) + 0.68);
+  const limit = (touch ? 3.35 : 3.55) + 0.65 * (lift - 1.14);
   const shoulderX = Math.cos(yaw)*0.53, shoulderZ = Math.sin(yaw)*0.53;
   let clear = limit;
   for (let i = 1; i <= 14; i++) {
@@ -3470,14 +3526,45 @@ function playerCamera(dt) {
     return { eye: pivot.map((p, i) => p - f[i] * (touch ? 2.8 : 2.45)), yaw, pitch };
   }
   return thirdPerson && fox ? foxCamera(dt)
-    : { eye: [player.x, player.y + 1.65 + player.bob, player.z], yaw: player.yaw, pitch: player.pitch };
+    : { eye: [player.x, Math.max(player.y + (fox?.eyeHeight ?? 1.65) + player.bob, waterLevel(player.x,player.z)+0.12), player.z], yaw: player.yaw, pitch: player.pitch };
 }
 
-function toggleCamera() {
-  if (!fox) return;
-  thirdPerson = !thirdPerson;
+function setCamera(third, remember = true) {
+  thirdPerson = third;
+  if (GRASS_LAB) {
+    labView = 0;
+    document.getElementById('labView').textContent = third ? 'Chase view' : 'First person';
+  }
   document.getElementById('bCamera').setAttribute('aria-pressed', String(thirdPerson));
+  document.getElementById('bFirstPerson').setAttribute('aria-pressed', String(!thirdPerson));
+  if (remember) savePreference('camera', third ? 'third' : 'first');
   post.previous = null;
+}
+function toggleCamera() { if (fox) setCamera(!thirdPerson); }
+
+async function chooseAnimal(species) {
+  const version = ++selection, picker = document.getElementById('animalChoice');
+  const status = document.getElementById('animalStatus');
+  picker.value = species.id;
+  status.textContent = '';
+  if (fox?.species === species) return;
+  status.textContent = 'Loading ' + species.label + '…';
+  try {
+    const next = await loadPlayerAnimal(gl, ANIMAL, species);
+    if (version !== selection) { next.dispose(); return; }
+    const previous = fox;
+    fox = next;
+    previous?.dispose();
+    bladeContact?.reset();
+    post.previous = null;
+    savePreference('animal', species.id);
+    status.textContent = '';
+  } catch (error) {
+    if (version !== selection) return;
+    picker.value = fox?.species.id ?? '';
+    status.textContent = 'Couldn’t load ' + species.label + '. Choose it again to retry.';
+    console.warn(error);
+  }
 }
 const keys = {};
 const controller = foxController();
@@ -3502,48 +3589,35 @@ function viewProj(eye, b, fov, aspect) {
   return M;
 }
 
-function walkable(x, z, ground, priorDepth) {
-  const depth = waterLevel(x, z) - ground;
-  return depth <= Math.max(fox ? 0.44 : 1.25, priorDepth) && inMap(x, z, 1)
-    && (!GRASS_LAB || plotDistance(x, z) < 6.4);
+function walkable(x, z) {
+  return inMap(x, z, 1) && (!GRASS_LAB || plotDistance(x,z) < 6.4);
 }
 
-function crossSlope(dx, dz, ground) {
-  const x = player.x, z = player.z;
-  const edge = WORLD_HALF - 1.001;
-  dx = Math.min(edge, Math.max(-edge, x + dx)) - x;
-  dz = Math.min(edge, Math.max(-edge, z + dz)) - z;
-  const length = Math.hypot(dx, dz);
-  if (length < 1e-5) return ground;
-  const maxGrade = 0.80;
-  const ahead = H(x + dx, z + dz);
-  const priorDepth = waterLevel(x, z) - ground;
-  const blocked = rockAt(x + dx, ahead + 0.25, z + dz, 0.19);
-  if (blocked && rockAt(x, ground + 0.25, z, 0.19) !== blocked) {
-    const nx = x-blocked.x, nz = z-blocked.z;
-    const inward = Math.min(0, (dx*nx + dz*nz) / Math.max(1e-5, nx*nx+nz*nz));
-    dx -= nx*inward; dz -= nz*inward;
+// Spend a surface-distance budget. The bisection handles curved boulder rims
+// and abrupt changes of grade without letting a long frame teleport uphill.
+function crossSlope(dx, dz, draft) {
+  const { x, z } = player, edge = WORLD_HALF - 1.001;
+  dx = Math.max(-edge,Math.min(edge,x+dx))-x;
+  dz = Math.max(-edge,Math.min(edge,z+dz))-z;
+  const distance = Math.hypot(dx,dz);
+  if (distance < 0.00001 || !walkable(x+dx,z+dz)) return;
+  const supportAt = (xx,zz) => Math.max(climbingSupport(xx,zz),waterLevel(xx,zz)-draft);
+  const from = supportAt(x,z);
+  const ahead = supportAt(x+dx,z+dz);
+  const grade = (ahead-from)/distance;
+  const budget = distance / (1 + 0.24*Math.min(2,Math.max(0,grade)));
+  let fraction = Math.min(1,budget/Math.hypot(distance,ahead-from));
+  const rise = fraction === 1 ? ahead-from : supportAt(x+dx*fraction,z+dz*fraction)-from;
+  const used = Math.hypot(distance*fraction,rise);
+  if (Math.abs(used-budget)>Math.max(0.0003,0.025*budget)) {
+    let lo=used<budget ? fraction : 0, hi=used<budget ? 1 : fraction;
+    for(let i=0;i<8;i++) {
+      const mid=(lo+hi)*0.5, rise=supportAt(x+dx*mid,z+dz*mid)-from;
+      if (Math.hypot(distance*mid,rise)<=budget) lo=mid; else hi=mid;
+    }
+    fraction=lo;
   }
-  const nextGround = blocked ? H(x + dx, z + dz) : ahead;
-  const grade = (nextGround - ground) / Math.max(1e-5, Math.hypot(dx, dz));
-  if (grade > maxGrade || !walkable(x + dx, z + dz, nextGround, priorDepth)) {
-    // Keep the component along a steep face or the edge of deep water. Testing
-    // the combined move prevents gaining height by alternating the X and Z axes.
-    const n = normalAt(x, z, 0.2), horizontal = n[0] * n[0] + n[2] * n[2];
-    if (horizontal < 1e-6) return ground;
-    const across = (dx * n[0] + dz * n[2]) / horizontal;
-    dx -= across * n[0]; dz -= across * n[2];
-  } else {
-    const pace = 1 / (Math.hypot(1, grade) * (1 + 0.27 * Math.max(0, grade)));
-    dx *= pace; dz *= pace;
-  }
-  const to = H(x + dx, z + dz);
-  const obstacle = rockAt(x + dx, to + 0.25, z + dz, 0.19);
-  if ((obstacle && obstacle !== rockAt(x, ground + 0.25, z, 0.19))
-      || !walkable(x + dx, z + dz, to, priorDepth)
-      || to - ground > maxGrade * Math.hypot(dx, dz) + 1e-5) return ground;
-  player.x = x + dx; player.z = z + dz;
-  return to;
+  player.x=x+dx*fraction; player.z=z+dz*fraction;
 }
 
 function stepPlayer(dt) {
@@ -3552,11 +3626,12 @@ function stepPlayer(dt) {
   if (keys.KeyA || keys.ArrowLeft) mx -= 1; if (keys.KeyD || keys.ArrowRight) mx += 1;
   if (stick.id !== null) { mx += stick.x; mz += -stick.y; }
   const len = Math.hypot(mx, mz);
-  const ground = H(player.x, player.z), level = waterLevel(player.x, player.z), inWater = ground < level - 0.05, depth = Math.max(0, level - ground);
+  const ground = H(player.x, player.z), level = waterLevel(player.x, player.z);
+  const draft = fox?.draft ?? 0.42, depth = Math.max(0, level - player.y);
   const run = controller.input.run || keys.ShiftLeft || keys.ShiftRight || (stick.id !== null && len > 0.92 && mz >= -0.24);
   const moveYaw = GRASS_LAB && labView ? (labView === 2 ? 0 : -1.30) : player.yaw;
-  const speedLimit = steerFox(foxPose, mx, mz, moveYaw, run, dt, !player.grounded);
-  const waterDrag = 1 - Math.min(0.62, depth * (fox ? 1.22 : 0.45));
+  const speedLimit = steerFox(foxPose, mx, mz, moveYaw, run, dt, !player.grounded && !player.swimming);
+  const waterDrag = player.swimming ? 0.69 : 1 - 0.40 * sm(0.02, draft + 0.08, depth);
   const pace = speedLimit * waterDrag;
   let vx = Math.sin(foxPose.yaw)*pace, vz = -Math.cos(foxPose.yaw)*pace;
   if (!thirdPerson || !fox) {
@@ -3564,49 +3639,70 @@ function stepPlayer(dt) {
     const sy = Math.sin(moveYaw), cy = Math.cos(moveYaw);
     vx = (sy*mz+cy*mx)*scale; vz = (-cy*mz+sy*mx)*scale;
   }
-  const rate = !player.grounded ? 2.4 : len > 0.05 ? 10 : 17, blend = -Math.expm1(-rate * dt);
+  if (player.swimming) {
+    const current=0.34*riverFlow(player.z,level);
+    const bend=(riverX(player.z+0.12)-riverX(player.z-0.12))/0.24;
+    const downstream=current/Math.hypot(1,bend);
+    vx+=bend*downstream; vz+=downstream;
+  }
+  const rate = player.swimming ? 3.5 : !player.grounded ? 2.4 : len > 0.05 ? 10 : 17, blend = -Math.expm1(-rate * dt);
   const dx = vx * dt + (player.vx - vx) * blend / rate, dz = vz * dt + (player.vz - vz) * blend / rate;
   player.vx += (vx - player.vx) * blend; player.vz += (vz - player.vz) * blend;
   const oldX = player.x, oldZ = player.z, oldY=player.y, wasGrounded = player.grounded;
-  let target = ground;
-  if (player.grounded && !player.onStone) {
-    target = crossSlope(dx, dz, ground);
-    player.y = target;
+  const wasSwimming = player.swimming;
+  let target;
+  if (wasGrounded || wasSwimming) {
+    crossSlope(dx,dz,draft);
+    target = climbingSupport(player.x,player.z);
   } else {
-    // Test the actual height of the jump against obstacles. A fox above a
-    // rounded stone can cross its crown and land there from either side.
     const x = oldX+dx, z = oldZ+dz, terrain = H(x,z);
-    const ceiling = player.y + (player.grounded ? 0.09 : Math.max(0, player.vy*dt)+0.035);
-    const support = stoneTop(x, z, ceiling, terrain);
-    const side = rockAt(x, Math.max(player.y, support)+0.20, z, 0.09);
-    if (terrain <= ceiling && (!side || support > terrain+0.02)
-        && walkable(x,z,terrain,level-ground)) {
-      player.x = x; player.z = z; target = support;
-    } else target = stoneTop(oldX, oldZ, ceiling, ground);
-    if (player.grounded && player.y-target > 0.10) {
-      player.grounded = false; player.flight = jumpDuration*0.5; player.vy = 0;
-    }
-    if (player.grounded) player.y = target;
-    else if (advanceFlight(player,target,dt)) {
-      const d = waterLevel(player.x,player.z) - target;
+    const ceiling = player.y + Math.max(0,player.vy*dt) + 0.035;
+    const support = stoneTop(x,z,ceiling,terrain);
+    const side = rockAt(x,Math.max(player.y,support)+0.20,z,0.09);
+    if (terrain<=ceiling && (!side || support>terrain+0.02) && walkable(x,z)) {
+      player.x=x; player.z=z; target=support;
+    } else target=stoneTop(oldX,oldZ,ceiling,ground);
+    if (advanceFlight(player,target,dt)) {
+      const d=waterLevel(player.x,player.z)-target;
       if (d<=0.015 && target<=H(player.x,player.z)+0.02) footstep(player.x,player.z,false,player.wet,true,d);
-      player.stride = 0;
+      player.stride=0;
     }
-    player.onStone = player.grounded && target > H(player.x,player.z)+0.015;
   }
-  const newLevel=waterLevel(player.x,player.z);
+  const newLevel=waterLevel(player.x,player.z), waterDepth=newLevel-target;
+  const touched = wasGrounded || wasSwimming || (player.vy<=0 && player.y<=newLevel-draft+0.04);
+  player.swimming = touched && waterDepth > draft + (wasSwimming ? -0.055 : 0.08);
+  if (player.swimming) {
+    player.grounded=false; player.onStone=false; player.scrambling=false; player.vy=player.flight=0;
+    const floatY=Math.max(target,newLevel-draft+0.018*Math.sin(player.stroke*4*Math.PI));
+    player.y=Math.max(target,player.y+(floatY-player.y)*-Math.expm1(-12*dt));
+  } else if (wasGrounded || wasSwimming || player.grounded) {
+    player.y=target; player.grounded=true; player.onStone=target>H(player.x,player.z)+0.012;
+  }
   const submerged=newLevel-player.y;
-  // A jump disturbs the surface when the paws enter it, ahead of landing on the bed.
-  if (!wasGrounded && oldY>=level && submerged>0 && newLevel>H(player.x,player.z)) {
+  if (!wasGrounded && !wasSwimming && oldY>=level && submerged>0 && waterDepth>0.01) {
     const u=(oldY-level)/(oldY-level+submerged);
     wetContact(oldX+(player.x-oldX)*u,oldZ+(player.z-oldZ)*u,Math.min(1.2,0.45+0.16*(oldY-player.y)/dt),0.82);
   }
   const travel = Math.hypot(player.x-oldX, player.z-oldZ);
-  const distance = wasGrounded && player.grounded ? Math.hypot(travel, target-(player.onStone ? target : ground)) : 0;
+  const rise=player.y-oldY;
+  const distance = player.swimming ? travel : wasGrounded && player.grounded ? Math.hypot(travel,rise) : 0;
+  if (player.grounded && wasGrounded && travel>0.0001) {
+    player.scrambling=Math.abs(rise)/travel > (player.scrambling ? 0.65 : 0.84);
+  } else if (!player.grounded || !wasGrounded) player.scrambling=false;
+  if (player.swimming) {
+    const speed=travel/dt, previous=player.stroke;
+    player.stroke=(previous+dt*(0.50+0.52*Math.min(2.5,speed)))%1;
+    if (Math.floor(previous*2)!==Math.floor(player.stroke*2)) {
+      const side=player.stroke<0.5 ? 1 : -1, size=Math.sqrt(fox?.contactScale ?? 1);
+      const yaw=foxPose.yaw, forward=0.19*size, across=side*0.13*size;
+      wetContact(player.x+Math.sin(yaw)*forward+Math.cos(yaw)*across,
+        player.z-Math.cos(yaw)*forward+Math.sin(yaw)*across,0.16+0.21*Math.min(2,speed),0.19+0.16*Math.min(2,speed));
+    }
+  }
   const speed = distance / dt, strideLen = 0.48 + 0.49 * sm(1.9, 4.2, speed);
   const alongBody = (player.x-oldX)*Math.sin(foxPose.yaw) - (player.z-oldZ)*Math.cos(foxPose.yaw);
   updateFox(dt, target, distance, alongBody, run);
-  const phase = player.stride + distance / strideLen;
+  const phase = player.grounded ? player.stride + distance / strideLen : 0;
   if (phase >= 1) {
     player.foot = -player.foot;
     const u = (1 - player.stride) * strideLen / distance;
@@ -3628,7 +3724,7 @@ function jump() { if (started && !menu.open && !capture?.viewing) requestJump(pl
 function throwStone() {
   const cam = playerCamera(0);
   const aim = camBasis(cam.yaw, cam.pitch).f;
-  const eye = [player.x, player.y + (thirdPerson && fox ? 0.72 : 1.65), player.z];
+  const eye = [player.x, Math.max(player.y + (fox?.eyeHeight ?? 1.65), waterLevel(player.x,player.z)+0.12), player.z];
   const b = { f: thirdPerson && fox ? norm(cam.eye.map((v, i) => v + aim[i]*16 - eye[i])) : aim };
   stones.push({ p: [eye[0] + b.f[0] * 0.4, eye[1] + b.f[1] * 0.4 - 0.1, eye[2] + b.f[2] * 0.4], v: [b.f[0] * 15, b.f[1] * 15 + 3.5, b.f[2] * 15], t: 0 });
 }
@@ -4248,7 +4344,15 @@ function refreshModeUI() {
 function cycleMode() { setMode(mode === BOXEL ? DENSE : BOXEL); refreshModeUI(); }
 
 // ---------------------------------------------------------------- input
+function resetMovement() {
+  for (const k in keys) keys[k] = false;
+  player.vx = player.vz = player.bob = 0;
+  stick = { x: 0, y: 0, id: null };
+  lookId = lookLast = null;
+  document.getElementById('knob').style.transform = '';
+}
 function toggleMenu() {
+  resetMovement();
   if (menu.open) menu.close();
   else {
     if (document.pointerLockElement) document.exitPointerLock();
@@ -4258,7 +4362,6 @@ function toggleMenu() {
 function bindInput() {
   document.getElementById('menuOpen').onclick = toggleMenu;
   document.getElementById('menuClose').onclick = toggleMenu;
-  menu.addEventListener('close', resetMovement);
   menu.addEventListener('focusin', resetMovement);
   addEventListener('keydown', (e) => {
     if (capture.viewing || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -4291,13 +4394,6 @@ function bindInput() {
   });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
   addEventListener('blur', resetMovement);
-  function resetMovement() {
-    for (const k in keys) keys[k] = false;
-    player.vx = player.vz = player.bob = 0;
-    stick = { x: 0, y: 0, id: null };
-    lookId = lookLast = null;
-    document.getElementById('knob').style.transform = '';
-  }
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     last = performance.now();
@@ -4375,7 +4471,10 @@ function bindInput() {
   document.getElementById('bHud').onclick = toggleHud;
   document.getElementById('bNight').onclick = () => started && toggleNight();
   if (GRASS_LAB) bindGrassLab();
-  document.getElementById('bCamera').onclick = () => started && toggleCamera();
+  document.getElementById('bCamera').onclick = () => setCamera(true);
+  document.getElementById('bFirstPerson').onclick = () => setCamera(false);
+  const picker = document.getElementById('animalChoice');
+  picker.onchange = () => chooseAnimal(animalById(picker.value));
   document.getElementById('bDay').onclick = () => started && toggleDay();
   document.getElementById('bTimelapse').onclick = () => started && toggleTimelapse();
 }
@@ -4401,7 +4500,7 @@ function bindGrassLab() {
   };
   document.getElementById('labView').onclick = (event) => {
     labView = (labView + 1) % 3;
-    event.currentTarget.textContent = ['Chase view', 'Side view', 'Overhead view'][labView];
+    event.currentTarget.textContent = [thirdPerson ? 'Chase view' : 'First person', 'Side view', 'Overhead view'][labView];
     post.previous = null;
   };
   document.querySelector('#intro p').textContent = 'Walk the fox through a 10 × 10 m patch. Mark contact to see the fox touch a blade in mint and that blade push a neighbour in amber.';
@@ -4498,17 +4597,19 @@ function scripted(m, frames = 900, view = 'shore') {
 
 // ---------------------------------------------------------------- boot
 (async () => {
-  const foxReady = TEST ? null : loadFox(gl, ANIMAL, true).catch(error => {
-    console.warn(error);
-    document.getElementById('bCamera').hidden = true;
-    return null;
+  const picker = document.getElementById('animalChoice');
+  for (const species of animals) picker.add(new Option(species.label, species.id));
+  document.getElementById('playerSettings').hidden = TEST;
+  const saved = animalById(readPreference('animal')) ?? animals[0];
+  const avatarReady = TEST ? null : chooseAnimal(saved).then(() => {
+    if (!fox && saved !== animals[0]) return chooseAnimal(animals[0]);
   });
-  const [fieldEngine, [rock, bark, barkNormal], sprays, avatar] = await Promise.all([loadEngine(), surfacesReady, leafSpraysReady, foxReady]);
-  fox = avatar;
+  const [fieldEngine, [rock, bark, barkNormal], sprays] = await Promise.all([loadEngine(), surfacesReady, leafSpraysReady, avatarReady]);
+  setCamera(thirdPerson, false);
   engine = fieldEngine;
   uploadSurface(gl, rock, 19, gl.RGBA8, [128,128,128]);
-  uploadSurface(gl, bark, 26, gl.SRGB8_ALPHA8, [105,86,66]);
-  uploadSurface(gl, barkNormal, 27, gl.RGBA8, [128,128,255]);
+  uploadSurface(gl, bark, 26, gl.SRGB8_ALPHA8, () => barkTile(false));
+  uploadSurface(gl, barkNormal, 27, gl.RGBA8, () => barkTile(true));
   uploadLeafSprays(gl, sprays, 20);
   // Both lights see the same cutouts as the camera on their first bake.
   valleyShadows.rebake(0, SUN); valleyShadows.rebake(1, PLANET); shadowKeys.stale = true;
@@ -4532,10 +4633,16 @@ function scripted(m, frames = 900, view = 'shore') {
   if (touch) { document.getElementById('go').textContent = GRASS_LAB ? 'Enter grass lab' : 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk, pull back, or push forward to run</span><b>right thumb</b><span>look</span><b>buttons</b><span>jump, throw, or open the field menu</span>'; }
   window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
     runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, look: (view, pitch, yaw) => { const c = typeof view === 'string' ? VIEWS[view] : view; Object.assign(player, { x: c.eye[0], y: c.eye[1] - 1.65, z: c.eye[2], yaw: c.yaw + (yaw ?? 0), pitch: pitch ?? c.pitch, bob: 0, vx: 0, vz: 0 });
-      player.grounded = true; player.onStone = false; player.vy = player.flight = 0;
-      foxPose.yaw = player.yaw; foxPose.reverseYaw = null; foxPose.pitch = foxPose.roll = 0; foxPose.height = chase.height = H(player.x, player.z);
+      player.grounded = true; player.onStone = false; player.swimming = player.scrambling = false;
+      player.vy = player.flight = player.stride = player.stroke = 0;
+      const terrain=H(player.x,player.z), level=waterLevel(player.x,player.z);
+      if (fox && level-climbingSupport(player.x,player.z,terrain)>fox.draft+0.08) {
+        player.y=level-fox.draft; player.swimming=true; player.grounded=false;
+      }
+      foxPose.yaw = player.yaw; foxPose.reverseYaw = null; foxPose.pitch = foxPose.roll = 0;
+      foxPose.height = chase.height = player.swimming ? player.y : terrain;
       chase.arm = 3.55; post.previous = null;
-    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started, wildlife: wildlife?.state() ?? [],
+    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), animal: fox?.species.id, gait: fox?.gait, started, wildlife: wildlife?.state() ?? [],
     ...(GRASS_LAB && { grassLab: { occupied: contactOn ? contactGrid.occupied : 0, contactMs: bladeContact.stats.cpuMs, activeRoots: bladeContact.stats.roots, uploadBytes: bladeContact.stats.uploadBytes, coupled, markContacts, stillGrass, contactOn, view: labView } }),
     blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, oaks: 0, trees: forest.count, leaves: leaves.count + forest.shoots, plants: plants?.count ?? 0, grassDrawn } }) };
   if (qs.has('falls')) window.__game.look('falls');

@@ -1,25 +1,27 @@
+import { animalById } from './animal-catalog.js';
 import { interpolate, loadAnimal } from './animal-rig.js';
 
 // Trail clearings, in world metres. Each walking loop leaves space for the
 // animal's body at the waterline, nearby boulders and tree trunks.
 const homes = [
-  // model, centre x/z, model scale, loop radii
-  ['Deer',        16,    32.5, 0.35, 2.30, 1.40],
-  ['Stag',        31.5,  35.5, 0.38, 2.50, 1.70],
-  ['ShibaInu',     6,    32.5, 0.24, 1.65, 1.24],
-  ['Alpaca',     -30,    48,   0.35, 2.70, 1.80],
-  ['Bull',       -33.5,  86,   0.38, 2.80, 2.00],
-  ['Cow',        -41,    86.5, 0.37, 2.65, 1.95],
-  ['Donkey',     -71.5,  40.5, 0.37, 2.70, 1.80],
-  ['Horse',       42,   101,   0.42, 3.35, 2.40],
-  ['Horse_White', 55.5,  81,   0.41, 2.60, 1.65],
-  ['Husky',      -32,   -78,   0.28, 2.15, 1.70],
-  ['Wolf',        77.5, -32,   0.35, 2.65, 1.75],
+  // model, centre x/z, loop radii
+  ['Deer',        16,    32.5, 2.30, 1.40],
+  ['Stag',        31.5,  35.5, 2.50, 1.70],
+  ['ShibaInu',     6,    32.5, 1.65, 1.24],
+  ['Alpaca',     -30,    48, 2.70, 1.80],
+  ['Bull',       -33.5,  86, 2.80, 2.00],
+  ['Cow',        -41,    86.5, 2.65, 1.95],
+  ['Donkey',     -71.5,  40.5, 2.70, 1.80],
+  ['Horse',       42,   101, 3.35, 2.40],
+  ['Horse_White', 55.5,  81, 2.60, 1.65],
+  ['Husky',      -32,   -78, 2.15, 1.70],
+  ['Wolf',        77.5, -32, 2.65, 1.75],
 ];
 const TAU = Math.PI * 2, SAMPLES = 48;
 const smooth = x => { const u = Math.max(0, Math.min(1, x)); return u*u*(3-2*u); };
 
-function makeRoute([name, cx, cz, scale, rx, rz], i, ground) {
+function makeRoute([name, cx, cz, rx, rz], i, ground) {
+  const { scale, url } = animalById(name);
   const samples = new Float32Array(3 * (SAMPLES + 1));
   let y0 = Infinity, y1 = -Infinity;
   // Sample the rendered terrain during world construction. Use the support
@@ -33,7 +35,7 @@ function makeRoute([name, cx, cz, scale, rx, rz], i, ground) {
     y0 = Math.min(h, y0); y1 = Math.max(h, y1);
   }
   const reach = 5.4*scale;
-  return { name, cx, cz, scale, rx, rz, samples, offset: i * 7.17 + 1.2,
+  return { name, url, cx, cz, scale, rx, rz, samples, offset: i * 7.17 + 1.2,
     move: 4.5 + (i % 3)*0.85, rest: 4.8 + ((i*7) % 5)*0.92, stride: 3.4*scale,
     origin: new Float32Array([cx + rx, samples[0], cz]), basis: new Float32Array(9),
     bounds: { x0: cx-rx, z0: cz-rz, y0: y0-reach, y1: y1+7*scale, pad: reach },
@@ -91,8 +93,7 @@ export function createWildlife(gl, shader, ground, outsideView, coarse) {
   async function request(animal) {
     pending++; animal.loading = true;
     try {
-      const url = new URL('./animals/' + animal.name + '.glb', import.meta.url);
-      const rig = await loadAnimal(gl, shader, url, ['Idle', 'Walk', 'Eating']);
+      const rig = await loadAnimal(gl, shader, animal.url, ['Idle', 'Walk', 'Eating']);
       animal.still = rig.rest.map(n => n.slice()); animal.walking = rig.rest.map(n => n.slice());
       animal.rig = rig;
     } catch (error) {

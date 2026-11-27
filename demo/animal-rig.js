@@ -138,24 +138,34 @@ function uploadAnimal(gl, model, parts, read, contact) {
   }
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
+  const buffers = [];
+  function bindBuffer(target) {
+    const buffer = gl.createBuffer();
+    buffers.push(buffer);
+    gl.bindBuffer(target, buffer);
+  }
   arrays.forEach((data, slot) => {
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    bindBuffer(gl.ARRAY_BUFFER);
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(slot);
     if (slot === 3) gl.vertexAttribIPointer(slot, 4, gl.UNSIGNED_BYTE, 0, 0);
     else gl.vertexAttribPointer(slot, attributes[slot], gl.FLOAT, false, 0, 0);
   });
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+  bindBuffer(gl.ELEMENT_ARRAY_BUFFER);
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, Uint16Array.from(indices), gl.STATIC_DRAW);
   gl.bindVertexArray(null);
-  return { vao, count: indices.length, surfaces };
+  function dispose() {
+    gl.deleteVertexArray(vao);
+    buffers.forEach(buffer => gl.deleteBuffer(buffer));
+  }
+  return { vao, count: indices.length, surfaces, dispose };
 }
 
 export async function loadAnimal(gl, shader, url, keep, contact = false) {
   const response = await fetch(url);
   if (!response.ok) throw Error('Could not load ' + url);
   const { model, read, rest, order, bones, clips, parts } = readRig(await response.arrayBuffer(), keep);
-  const { vao, count, surfaces } = uploadAnimal(gl, model, parts, read, contact);
+  const { vao, count, surfaces, dispose } = uploadAnimal(gl, model, parts, read, contact);
   const world = rest.map(() => new Float32Array(16)), local = new Float32Array(16);
   const matrices = new Float32Array(bones.length * 16);
   const skinMatrices = bones.map((_, i) => matrices.subarray(i*16, (i+1)*16));
@@ -196,5 +206,5 @@ export async function loadAnimal(gl, shader, url, keep, contact = false) {
     gl.bindVertexArray(vao);
     gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, 0);
   }
-  return { rest, clips, sample, apply, draw, skinMatrices, surfaces, nodeIndex: name => model.nodes.findIndex(n => n.name === name) };
+  return { rest, clips, sample, apply, draw, dispose, skinMatrices, surfaces, world, nodeIndex: name => model.nodes.findIndex(n => n.name === name) };
 }

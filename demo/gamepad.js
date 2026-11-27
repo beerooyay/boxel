@@ -32,8 +32,15 @@ export function foxController() {
       } else if (gallery.open || menu.open) {
         const dialog = gallery.open ? gallery : menu;
         if (hit(1) || hit(9)) { dialog.close(); return; }
-        const items = Array.from(dialog.querySelectorAll('button:not(:disabled), a[href], video[controls]')).filter(el => el.getClientRects().length);
+        const items = Array.from(dialog.querySelectorAll('button:not(:disabled), select:not(:disabled), a[href], video[controls]')).filter(el => el.getClientRects().length);
         const i = items.indexOf(document.activeElement);
+        const item = items[i];
+        if (item?.tagName === 'SELECT' && (hit(14) || hit(15) || hit(0))) {
+          const n = item.options.length;
+          item.selectedIndex = (item.selectedIndex + (hit(14) ? -1 : 1) + n) % n;
+          item.dispatchEvent(new Event('change', { bubbles: true }));
+          return;
+        }
         const dir = hit(13) || hit(15) ? 1 : hit(12) || hit(14) ? -1 : 0;
         if (dir && items.length) items[(Math.max(0,i) + dir + items.length) % items.length].focus();
         else if (hit(0) && i >= 0) items[i].click();

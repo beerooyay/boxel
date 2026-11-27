@@ -1,11 +1,11 @@
-"""Extract the three ambient animations from the pinned Quaternius GLBs in a source directory."""
+"""Extract the ambient and playable animations from the pinned Quaternius GLBs in a source directory."""
 import json
 from pathlib import Path
 import struct
 import sys
 
 ANIMALS = 'Alpaca Bull Cow Deer Donkey Horse Horse_White Husky ShibaInu Stag Wolf'.split()
-CLIPS = {'Idle', 'Walk', 'Eating'}
+CLIPS = {'Idle', 'Walk', 'Eating', 'Gallop', 'Gallop_Jump'}
 
 
 def repack(path):

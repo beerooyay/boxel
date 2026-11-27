@@ -81,13 +81,16 @@ Tarn spans 256 × 256 metres, about 16 acres. Four connected upland walks add ab
 around the original lake. Follow the river north to a spring, take the west walk through the coilferns,
 climb the eastern rock shelf or look back across the lake from the arrowleaf groves on the southern ridge.
 Switchbacks cross the lake-facing hill with resting shelves on the way to the summit.
-Play as the fox. A deer grazes in the pink meadow above the shore, a stag walks beyond the hillside grove,
+Start as the fox, or open **Field menu → Player settings** to play as any of the twelve animals.
+Choose first or third person there, or press **P** to switch while moving. Tarn remembers both preferences on this device.
+An animal paddles when its paws lose the bottom and plants its feet again in the shallows. Hold a direction to
+scramble up steep terrain and over boulders. A deer grazes in the pink meadow above the shore, a stag walks beyond the hillside grove,
 and nine more animals range from the headwaters to the southern pastures.
 The forest uses six native broadleaf shapes across 1,233 tree sites. [Tree and flora census](docs/flora-audit.md)
 A separate Boxel field spreads and dissipates gusts in a moving air mass. The hills shelter the lee.
 Grass, crowns, sailwings, the sound of wind and rough patches on the water sample the same fronts.
 Grass and low leaves part as you pass. Follow the river upstream from the lake to a 2.7-metre waterfall.
-Water splits at the rock lip. Rounded crests roll out of the plunge pool and break into patches of foam.
+Water splits at the rock lip. Each chute sends short rollers out into its own part of the pool.
 Along the banks, wind waves turn toward the shallows and run up onto gravel between pockets of sedge.
 Wading, skimming sailwings and thrown stones send ripples through one another and back off rocks.
 The current and local wind carry disturbed bioluminescent plankton away from contact.
@@ -221,6 +224,7 @@ The archived hillside trial contains three summer oak forms from LOLIPOP’s oak
 detail levels per form and resized the shared material maps. [Original pack](https://sketchfab.com/3d-models/oak-trees-pack-17var-lods-seasons-gameready-a5e4e64f9f1d4089bdcc6170a9333393) · [CC Attribution 4.0](https://creativecommons.org/licenses/by/4.0/)
 
 Quaternius made the fox and its eleven neighbours and released the pack under CC0. The ambient animals use
-the authored walk, idle and eating clips. To rebuild their runtime GLBs, run
+the authored walk, idle and eating clips. Playable animals also use their gallop and jump clips.
+Paddling and scrambling pose all four limbs and paw targets on each animal’s rig. To rebuild the runtime GLBs, run
 `python3 tools/import-animals.py /path/to/animals_pack` with the pinned conversion as input.
 [Quaternius’s Ultimate Animated Animal Pack](https://quaternius.com/packs/ultimateanimatedanimals.html) · [Source GLBs](https://github.com/trebeljahr/quaternius-showcase/tree/5b491b755c6d2aaa263aaaf8671b30b559a380a4/public/glb/animals_pack)
