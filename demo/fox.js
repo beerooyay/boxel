@@ -2,11 +2,13 @@
 // https://quaternius.com/packs/ultimateanimatedanimals.html
 // GLB conversion: https://github.com/trebeljahr/quaternius-showcase/blob/5b491b755c6d2aaa263aaaf8671b30b559a380a4/public/glb/animals_pack/Fox.glb
 import { interpolate, loadAnimal } from './animal-rig.js';
+import { sampleWaterline, waterlineEdges, waterPart } from './swim-wake.js';
 
 export async function loadPlayerAnimal(gl, shader, species) {
   const { scale } = species;
   const rig = await loadAnimal(gl, shader, species.url, ['Idle', 'Walk', 'Gallop', 'Gallop_Jump'], true);
   const { rest, clips, nodeIndex, surfaces, skinMatrices } = rig;
+  const waterMesh=waterlineEdges(surfaces,rig.boneNames.map(waterPart));
   const pose = rest.map(n => n.slice()), blended = rest.map(n => n.slice()), from = rest.map(n => n.slice());
   const chest = nodeIndex('Torso'), neck = nodeIndex('Neck1'), tail = nodeIndex('Tail2');
   const frontFeet = [nodeIndex('IKFrontLeg.L'), nodeIndex('IKFrontLeg.R')];
@@ -36,7 +38,7 @@ export async function loadPlayerAnimal(gl, shader, species) {
     draft
   };
   const contactScale = species.id === 'Fox' ? 1 : Math.max(0.72, eyeHeight / 0.85, shoulderHeight / 0.51);
-  let gait = 'Idle', time = 0, fade = 1, dirty = true;
+  let gait = 'Idle', time = 0, fade = 1, dirty = true, contactDirty = true;
   let steering = 0, tailLag = 0, bakedLift = 0, fromLift = 0;
   let swim = 0, climb = 0;
   function clipFor(g) { return clips[g === 'Swim' || g === 'Scramble' ? 'Walk' : g]; }
@@ -110,6 +112,7 @@ export async function loadPlayerAnimal(gl, shader, species) {
     bakedLift = fromLift*(1-fade) + (gait === 'Gallop_Jump' ? (pose[body][2]-jumpBase)*100 : 0)*fade;
     rig.apply(blended, steer, bakedLift);
     dirty = false;
+    contactDirty = true;
   }
   function draw(ground, basis, wet) {
     if (dirty) palette();
@@ -117,6 +120,7 @@ export async function loadPlayerAnimal(gl, shader, species) {
   }
   function contactSurfaces() {
     if (dirty) palette();
+    if (!contactDirty) return surfaces;
     const toGrid = scale / contactScale;
     for (const { bind, joints, weights, positions } of surfaces) {
       for (let v = 0; v < bind.length/3; v++) {
@@ -133,8 +137,13 @@ export async function loadPlayerAnimal(gl, shader, species) {
         positions[p] = px*toGrid; positions[p+1] = py*toGrid; positions[p+2] = pz*toGrid;
       }
     }
+    contactDirty = false;
     return surfaces;
   }
+  function waterContacts(origin,basis,height,slopeX,slopeZ,bounds) {
+    contactSurfaces();
+    sampleWaterline(waterMesh,contactScale,origin,basis,height,slopeX,slopeZ,bounds);
+  }
   return { shader, species, eyeHeight, shoulderHeight, draft, waterline, contactScale,
-    advance, draw, contactSurfaces, dispose: rig.dispose, get gait() { return gait; } };
+    advance, draw, contactSurfaces, waterContacts, dispose: rig.dispose, get gait() { return gait; } };
 }

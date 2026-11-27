@@ -98,7 +98,10 @@ export function createWaterSurface(grid, bedAt) {
   // A moving chest presses water down and out. Apply the discrete Laplacian of
   // its pressure footprint: every push down is balanced by a push into wet
   // neighbours. The wave solver carries the bow and stern waves after a turn.
-  function swim(x, z, vx, vz, dt, body, stroke) {
+  function swim(x, z, vx, vz, dt, body) {
+    pressure(x,z,vx,vz,dt,body.halfLength,body.halfWidth,0.27*body.draft);
+  }
+  function pressure(x, z, vx, vz, dt, halfLength, halfWidth, headLimit) {
     const source = locate(x, z);
     if (!source) return;
     const dx = vx - flowX[source], dz = vz - flowZ[source];
@@ -106,10 +109,8 @@ export function createWaterSurface(grid, bedAt) {
     if (speed < 0.04) return;
     const fx = dx / speed, fz = dz / speed;
     // Integrate over several samples even for the narrowest swimmer.
-    const length = body.halfLength + 1.25 * step, widthAtChest = body.halfWidth + step;
-    // Each diagonal pull loads the shoulders, then releases a short wave.
-    const load = 1 + 0.48 * Math.cos(4 * Math.PI * stroke);
-    const head = Math.min(0.27 * body.draft, speed * speed / (2 * 9.81)) * load;
+    const length = halfLength + 1.25 * step, widthAtChest = halfWidth + step;
+    const head = Math.min(headLimit, speed * speed / (2 * 9.81));
     const impulse = c2[source] * head * (dt / DT);
     const reach = Math.max(length, 1.18 * widthAtChest);
     const minI = Math.max(0, Math.floor((x - reach - x0) / step));
@@ -138,6 +139,22 @@ export function createWaterSurface(grid, bedAt) {
     for (let j = Math.max(0, minJ - 1) >> 4; j <= bottom; j++) {
       active.fill(1, j * tileCols + left, j * tileCols + right + 1);
     }
+  }
+  function contactAt(x,z,out) {
+    const k=locate(x,z);
+    if (!k) return false;
+    out.height=h[k];
+    out.slopeX=(h[east[k]]-h[west[k]])/(2*step);
+    out.slopeZ=(h[south[k]]-h[north[k]])/(2*step);
+    out.vx=flowX[k]; out.vz=flowZ[k];
+    return true;
+  }
+  function stir(x,z,amount) {
+    const k=locate(x,z);
+    if (!k) return;
+    excitation[k]=Math.min(1,excitation[k]+amount);
+    const p=texel[k], row=Math.floor(p/width);
+    active[(row>>4)*tileCols+((p%width)>>4)]=1;
   }
   function tick(windX, windZ, windAt) {
     next.fill(0);
@@ -236,6 +253,9 @@ export function createWaterSurface(grid, bedAt) {
   return {
     touch,
     swim,
+    pressure,
+    contactAt,
+    stir,
     advance,
     reset,
     pack,

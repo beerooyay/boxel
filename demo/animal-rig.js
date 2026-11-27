@@ -206,5 +206,7 @@ export async function loadAnimal(gl, shader, url, keep, contact = false) {
     gl.bindVertexArray(vao);
     gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, 0);
   }
-  return { rest, clips, sample, apply, draw, dispose, skinMatrices, surfaces, world, nodeIndex: name => model.nodes.findIndex(n => n.name === name) };
+  return { rest, clips, sample, apply, draw, dispose, skinMatrices, surfaces, world,
+    boneNames: bones.map(bone => model.nodes[bone.index].name),
+    nodeIndex: name => model.nodes.findIndex(n => n.name === name) };
 }

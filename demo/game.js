@@ -1,5 +1,6 @@
 import { createWaterfall, crestGLSL, fallsBounds, landingAt, lipZ, plungeGLSL } from './waterfall.js';
 import { basinGrid, createWaterSurface, waterTexture, waterSurfaceGLSL } from './water-surface.js';
+import { createSwimWake, swimmerWakeGLSL } from './swim-wake.js';
 import { advanceFlight, jumpDuration, requestJump, steerFox } from './fox-motion.js';
 import { foxController } from './gamepad.js';
 import { bladeStateGLSL, solveGLSL, stampGLSL, knotsFragment, stampFragment, createBladeContact } from './blade-contact.js';
@@ -1620,7 +1621,6 @@ void main(){
 }`);
 
 const cascade = createWaterfall(gl,program,WORLD_VS,vao);
-const PADDLE_MARKS=8, PADDLE_LIFE=1.55;
 const WATERP = program(WORLD_VS + `
 in vec2 aXZ, aBedSlope; in vec3 aWater; out vec3 vWP; out float vDepth, vWave, vFlow, vGust; out vec2 vBedSlope;
 void main(){
@@ -1628,35 +1628,8 @@ void main(){
   vWave = waterWave(aXZ, uTime).x + waterCrests(aXZ, aWater.y, aBedSlope, uTime, vGust).x + surfaceAt(aXZ).x;
   vWP = vec3(aXZ.x, aWater.x + vWave, aXZ.y); vDepth = aWater.y; vFlow = aWater.z; gl_Position = project(vWP);
 }`,
-plungeGLSL + `uniform sampler2D uRefl, uUnder; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel;
-uniform vec4 uPaddleArea, uPaddles[${PADDLE_MARKS}]; uniform vec2 uPull[${PADDLE_MARKS}];
+plungeGLSL + swimmerWakeGLSL + `uniform sampler2D uRefl, uUnder; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel;
 in vec3 vWP; in float vDepth, vWave, vFlow, vGust; in vec2 vBedSlope; out vec4 o;
-// Short capillary waves are narrower than a cell of the gravity-wave solver.
-// Launch them at real paw contacts and drift their centres with the surface.
-vec2 paddleSlope(vec2 p,vec2 drift,vec2 longSlope,float pixelMetres){
-  if(any(lessThan(p,uPaddleArea.xy)) || any(greaterThan(p,uPaddleArea.zw))) return vec2(0.);
-  vec2 slopes=vec2(0.);
-  for(int i=0;i<${PADDLE_MARKS};i++){
-    vec4 paw=uPaddles[i]; float age=uTime-paw.z;
-    if(paw.w<=0. || age<=0. || age>=${PADDLE_LIFE}) continue;
-    vec2 pull=uPull[i];
-    vec2 q=p-paw.xy-age*(drift+.07*pull+.24*longSlope);
-    q-=.13*pull*dot(q,pull);
-    float r=length(q), seed=fract(dot(paw.xy,vec2(.713,.439)));
-    float crest=.075+age*(.81+.19*seed-.055*age);
-    float d=r-crest;
-    if(d<-.29 || d>.16) continue;
-    float width=.024+.025*age;
-    float filtered=sqrt(width*width+.25*pixelMetres*pixelMetres);
-    float k=d/filtered, back=k+2.85;
-    float wave=k*exp(-.63*k*k)+.47*back*exp(-.72*back*back);
-    float fade=smoothstep(0.,.10,age)*(1.-smoothstep(.29,${PADDLE_LIFE},age));
-    vec2 direction=q/max(.045,r);
-    float spread=.47+.53*smoothstep(-.65,.72,dot(direction,pull));
-    slopes+=direction*wave*paw.w*.39*fade*spread*width*width/(filtered*filtered);
-  }
-  return slopes;
-}
 // A cell schedules impacts. A new event can land anywhere in it, and its wave
 // crosses the boundary. The largest wave travels less than half a cell, so only
 // the current cell and the three neighbours in the nearest quadrant can reach p.
@@ -1735,11 +1708,9 @@ void main(){
   float lane = p.x-mix(bendX,-18.,smoothstep(66.,100.,-p.y));
   float flow = p.y*3.3-uTime*2.2+vnoise(vec2(lane*1.3,p.y*1.3-uTime*0.78))*3.8;
   vec2 downstream = normalize(vec2(0.442*cos(p.y*0.13)+0.406*cos(p.y*0.29+0.8),1.));
-  // The wet grid stops the fine waves from jumping a dry bar or the lip.
-  float carrier=length(disturbance.yz)+4.*abs(disturbance.x)+disturbance.a;
-  vec2 fineWake=vec2(0.);
-  if(carrier>.001) fineWake=smoothstep(.001,.014,carrier)*paddleSlope(p,
-    downstream*stream*(.24+.64*smoothstep(.02,.57,depth))+WIND_DIR*.085*clamp(vGust,0.,1.7),disturbance.yz,pixelMetres);
+  vec2 fineWake=swimmerSlope(p,
+    downstream*stream*(.24+.64*smoothstep(.02,.57,depth))+WIND_DIR*.085*clamp(vGust,0.,1.7),level,pixelMetres);
+  fineWake*=smoothstep(.012,.075,depth);
   g+=fineWake;
   g += stream*(downstream*0.028*cos(flow)+vec2(downstream.y,-downstream.x)*0.012*sin(flow*0.71));
   vec3 N = normalize(vec3(-g.x, 1., -g.y));
@@ -3314,30 +3285,12 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 const uploadSurfaceWaves = waterTexture(gl,surface,28);
 let simT = 0, denseUpload = null;
-const paddleMarks=new Float32Array(PADDLE_MARKS*4);
-const paddlePulls=new Float32Array(PADDLE_MARKS*2);
-let paddleIndex=0;
-function bindPaddles(t) {
-  let minX=Infinity, minZ=Infinity, maxX=-Infinity, maxZ=-Infinity;
-  for (let i=0;i<paddleMarks.length;i+=4) {
-    const age=t-paddleMarks[i+2];
-    if (!paddleMarks[i+3] || age<0 || age>=PADDLE_LIFE) continue;
-    const x=paddleMarks[i], z=paddleMarks[i+1], radius=0.32+2.35*age;
-    minX=Math.min(minX,x-radius); maxX=Math.max(maxX,x+radius);
-    minZ=Math.min(minZ,z-radius); maxZ=Math.max(maxZ,z+radius);
-  }
-  if (minX===Infinity) gl.uniform4f(WATERP.u('uPaddleArea'),1,1,-1,-1);
-  else {
-    gl.uniform4f(WATERP.u('uPaddleArea'),minX,minZ,maxX,maxZ);
-    gl.uniform4fv(WATERP.u('uPaddles[0]'),paddleMarks);
-    gl.uniform2fv(WATERP.u('uPull[0]'),paddlePulls);
-  }
-}
+const swimmerWake=createSwimWake(surface,waterLevel,(x,z,energy) => glowF.contact(x,z,energy));
 
 function setMode(m) {
   // Dense rows overwrite the whole image. All three layers can reuse the same staging buffer.
   denseUpload = m === DENSE ? (denseUpload ?? new Uint8Array(N * N)) : null;
-  mode = m; sailwings.reset(); surface.reset(); paddleMarks.fill(0); post.previous = null;
+  mode = m; sailwings.reset(); surface.reset(); swimmerWake.reset(); post.previous = null;
   acc = { frames: 0, t: 0, ms: 0, up: 0 }; wall = 0;
   for (const f of [glowF, groundF, wearF]) f.set(m);
 }
@@ -3352,15 +3305,8 @@ function footstep(x, z, inWater, wetFeet, run, depth = 0.35) {
     if (wetFeet>0) groundF.contact(x,z,0.70*wetFeet);
   }
 }
-function wetContact(x,z,strength,energy,pullX=0,pullZ=0) {
-  if (!surface.touch(x,z,strength,energy)) return;
-  glowF.contact(x,z,0.55*energy);
-  if (pullX || pullZ) {
-    const i=4*paddleIndex;
-    paddleMarks[i]=x; paddleMarks[i+1]=z; paddleMarks[i+2]=simT; paddleMarks[i+3]=strength;
-    paddlePulls[2*paddleIndex]=pullX; paddlePulls[2*paddleIndex+1]=pullZ;
-    paddleIndex=(paddleIndex+1)%PADDLE_MARKS;
-  }
+function wetContact(x,z,strength,energy) {
+  if (surface.touch(x,z,strength,energy)) glowF.contact(x,z,0.55*energy);
 }
 function splash(x, z, water, strength = 1.4, at = simT) {
   sailwings.startle(x, water ? waterLevel(x,z) : H(x,z), z, at, strength);
@@ -3654,6 +3600,7 @@ async function chooseAnimal(species) {
     fox = next;
     previous?.dispose();
     bladeContact?.reset();
+    swimmerWake.reset();
     post.previous = null;
     savePreference('animal', species.id);
     status.textContent = '';
@@ -3787,29 +3734,14 @@ function stepPlayer(dt) {
   if (player.grounded && wasGrounded && travel>0.0001) {
     player.scrambling=Math.abs(rise)/travel > (player.scrambling ? 0.65 : 0.84);
   } else if (!player.grounded || !wasGrounded) player.scrambling=false;
-  if (player.swimming && fox) {
-    const speed=travel/dt, previous=player.stroke;
-    player.stroke=(previous+dt*(0.50+0.52*Math.min(2.5,speed)))%1;
-    const body=fox.waterline, fx=Math.sin(foxPose.yaw), fz=-Math.cos(foxPose.yaw);
-    surface.swim((oldX+player.x)*0.5+fx*body.centre, (oldZ+player.z)*0.5+fz*body.centre,
-      (player.x-oldX)/dt, (player.z-oldZ)/dt, dt, body, player.stroke);
-    if (Math.floor(previous*2)!==Math.floor(player.stroke*2)) {
-      const side=player.stroke<0.5 ? 1 : -1;
-      const across=side*(body.halfWidth+Math.min(body.draft*0.2,0.13));
-      const forward=body.centre+0.28*body.halfLength;
-      const pull=Math.min(1.7,(0.27+1.04*sm(0,1.65,speed)+0.16*sm(1.65,2.9,speed))*Math.sqrt(fox.contactScale));
-      const air=0.11+0.43*sm(0,1.9,speed);
-      wetContact(player.x+fx*forward-fz*across,player.z+fz*forward+fx*across,pull,air,
-        -0.8*fx-0.6*side*fz,-0.8*fz+0.6*side*fx);
-      if (speed>0.18) {
-        const rear=body.centre-0.76*body.halfLength;
-        wetContact(player.x+fx*rear+fz*across,player.z+fz*rear-fx*across,0.64*pull,0.68*air);
-      }
-    }
+  if (player.swimming) {
+    player.stroke=(player.stroke+dt*(0.50+0.52*Math.min(2.5,travel/dt)))%1;
   }
   const speed = distance / dt, strideLen = 0.48 + 0.49 * sm(1.9, 4.2, speed);
   const alongBody = (player.x-oldX)*Math.sin(foxPose.yaw) - (player.z-oldZ)*Math.cos(foxPose.yaw);
   updateFox(dt, target, distance, alongBody, run);
+  if (fox) swimmerWake.update(fox,[player.x,foxPose.height,player.z],foxBasis(),
+    (player.x-oldX)/dt,(player.z-oldZ)/dt,dt,simT,player.swimming,night);
   const phase = player.grounded ? player.stride + distance / strideLen : 0;
   if (phase >= 1) {
     player.foot = -player.foot;
@@ -3818,7 +3750,9 @@ function stepPlayer(dt) {
     const z = oldZ + (player.z - oldZ) * u + Math.sin(foxPose.yaw) * 0.11 * player.foot;
     const soil=H(x,z), support=player.onStone?stoneTop(x,z,player.y+0.15,soil):soil;
     const footDepth=waterLevel(x,z)-support;
-    if (footDepth>0.015 || support<=soil+0.02) footstep(x,z,footDepth>0.015,player.wet,speed>2.6,footDepth);
+    if (footDepth>0.015) {
+      if (!fox) footstep(x,z,true,player.wet,speed>2.6,footDepth);
+    } else if (support<=soil+0.02) footstep(x,z,false,player.wet,speed>2.6);
   }
   player.stride = phase % 1;
   const bob = (0.014 + 0.014 * sm(2, 4.2, speed)) * Math.min(1, speed) * Math.sin(player.stride * Math.PI) ** 2;
@@ -4282,7 +4216,7 @@ function render(t, camOverride, glowTexture = texGlow, dt = 0) {
     copyUnderwater(w, h, waterInView);
     gl.colorMask(true, true, true, false);
     common(WATERP, cam.eye, VP, 1, t);
-    bindPaddles(t);
+    swimmerWake.bind(gl,WATERP,t);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, reflTex);
     gl.uniform2f(WATERP.u('uRes'), w, h);
     gl.uniform2f(WATERP.u('uRightXZ'), b.r[0], b.r[2]); gl.uniform1f(WATERP.u('uMirrorLevel'), reflectionLevel);
@@ -4750,7 +4684,7 @@ function scripted(m, frames = 900, view = 'shore') {
       }
       foxPose.yaw = player.yaw; foxPose.reverseYaw = null; foxPose.pitch = foxPose.roll = 0;
       foxPose.height = chase.height = player.swimming ? player.y : terrain;
-      chase.arm = 3.55; post.previous = null;
+      chase.arm = 3.55; swimmerWake.reset(); post.previous = null;
     }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), animal: fox?.species.id, gait: fox?.gait, started, wildlife: wildlife?.state() ?? [],
     ...(GRASS_LAB && { grassLab: { occupied: contactOn ? contactGrid.occupied : 0, contactMs: bladeContact.stats.cpuMs, activeRoots: bladeContact.stats.roots, uploadBytes: bladeContact.stats.uploadBytes, coupled, markContacts, stillGrass, contactOn, view: labView } }),
     blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, oaks: 0, trees: forest.count, leaves: leaves.count + forest.shoots, plants: plants?.count ?? 0, grassDrawn } }) };

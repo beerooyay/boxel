@@ -92,7 +92,8 @@ Grass, crowns, sailwings, the sound of wind and rough patches on the water sampl
 Grass and low leaves part as you pass. Follow the river upstream from the lake to a 2.7-metre waterfall.
 Water splits between mossy shale shoulders. Low spray rises where each chute hits the pool.
 Along the banks, wind waves turn toward the shallows and run up onto gravel between pockets of sedge.
-A swimmer’s chest pushes a bow wave ahead and each paddle sends smaller ripples down its sides.
+Water contact reads the same animated skin as grass contact. A continuous bow wave splits ahead of the swimmer’s
+leading contact, and each immersed leg and tail leaves a smaller trail that follows its motion.
 The wake travels through ripples from wading animals, skimming sailwings and thrown stones, and reflects off rocks.
 The current and local wind carry disturbed bioluminescent plankton away from contact.
 Footsteps and glowstones light the moss where they touch. [Play at the waterfall](https://beerooyay.github.io/boxel/?falls)

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWaterSurface } from '../demo/water-surface.js';
+import { createSwimWake, sampleWaterline, waterlineEdges, waterPart } from '../demo/swim-wake.js';
 import { falls, riverLevel, riverX, waterLevel, terrainHeight } from '../demo/landmarks.js';
 import { lipZ, landingAt } from '../demo/waterfall.js';
 
@@ -83,9 +84,9 @@ test('fixed steps give the same wake at 24 and 120 Hz, and reset clears it', () 
 const fox = { halfWidth: 0.21, halfLength: 0.48, draft: 0.416 };
 test('a swimming body displaces water across tile boundaries without adding volume or lighting the lake', () => {
   const lake = tank(), drifting = tank(0.8), bank = tank(0, true);
-  lake.swim(3.84, 7.68, 2.3, 0, 1/30, fox, 0.2);
-  drifting.swim(3.84, 7.68, 0, 0.8, 1/30, fox, 0.2);
-  bank.swim(5.64, 3, 2.3, 0, 1/30, fox, 0.2);
+  lake.swim(3.84, 7.68, 2.3, 0, 1/30, fox);
+  drifting.swim(3.84, 7.68, 0, 0.8, 1/30, fox);
+  bank.swim(5.64, 3, 2.3, 0, 1/30, fox);
   for (const basin of [lake, drifting, bank]) basin.advance(1/30);
   let volume = 0, high = 0, low = 0;
   for (let j = 0; j < grid.height; j++) for (let i = 0; i < grid.width; i++) {
@@ -105,7 +106,7 @@ test('ordinary paddling sends a signed wake past the tail and faster strokes lea
     const water = tank();
     for (let frame=0; frame<2*rate; frame++) {
       const t=(frame+0.5)/rate;
-      water.swim(3+t*speed,5.76,speed,0,1/rate,fox,1.49*t);
+      water.swim(3+t*speed,5.76,speed,0,1/rate,fox);
       water.advance(1/rate);
     }
     const samples=[];
@@ -115,11 +116,63 @@ test('ordinary paddling sends a signed wake past the tail and faster strokes lea
     return samples;
   }
   const gentle=swim(60,1.3), fast=swim(30,2.4), highRate=swim(120,2.4);
-  assert.ok(Math.max(...gentle)>0.010 && Math.min(...gentle)<-0.010);
+  // The grid carries longer waves from steady displacement. Short wakes
+  // from the bow and the legs are resolved separately at rendering scale.
+  assert.ok(Math.max(...gentle)>0.004 && Math.min(...gentle)<-0.003);
   assert.ok(Math.max(...fast)>2*Math.max(...gentle));
   const energy=fast.reduce((sum,h)=>sum+h*h,0);
   const difference=fast.reduce((sum,h,i)=>sum+(h-highRate[i])**2,0);
   assert.ok(difference/energy<0.03**2);
+});
+
+const upright = [1,0,0,0,1,0,0,0,1];
+test('waterline cuts the posed left and right legs independently and leaves a raised tail dry', () => {
+  const positions = new Float32Array([
+    0.1,-0.1,0.3, 0.3,0.1,0.3, 0.3,-0.1,0.3,
+    -0.3,-0.1,0.3, -0.1,0.1,0.3, -0.1,-0.1,0.3,
+    0,0.1,-0.4, 0.1,0.18,-0.5, -0.1,0.22,-0.5
+  ]);
+  const joints = new Uint8Array(36), weights = new Float32Array(36);
+  for (let i=0; i<9; i++) { joints[4*i]=Math.floor(i/3); weights[4*i]=1; }
+  const groups=['IKFrontLeg.L','FrontLowerLeg.R','Tail4'].map(waterPart);
+  const mesh=waterlineEdges([{positions,joints,weights,indices:[0,1,2,3,4,5,6,7,8]}],groups);
+  const bounds=new Float32Array(24);
+  sampleWaterline(mesh,1,[0,0,0],upright,0,0,0,bounds);
+  assert.ok(bounds[4]<0 && bounds[9]<0);
+  assert.equal(bounds[20],-Infinity);
+  positions[19]=-0.1;
+  sampleWaterline(mesh,1,[0,0,0],upright,0,0,0,bounds);
+  assert.ok(bounds[22]>0.4 && bounds[22]<0.5);
+});
+
+test('foreleg contact sustains a bow and a turn leaves the narrow wake on its previous path', () => {
+  const water=tank(), wake=createSwimWake(water,()=>0,()=>{});
+  const animal={waterline:fox, waterContacts(_o,_b,_h,_sx,_sz,bounds) {
+    bounds.fill(-Infinity);
+    bounds.set([-0.10,0.20,-0.20,0.25,0.20,-0.10,-0.20,0.25],4);
+  }};
+  const uniforms={};
+  const gl={
+    uniform4f:(key,...values)=>uniforms[key]=values,
+    uniform2f:(key,...values)=>uniforms[key]=values,
+    uniform1f:(key,value)=>uniforms[key]=value,
+    uniform1fv:(key,values)=>uniforms[key]=values.slice(),
+    uniform4fv:(key,values)=>uniforms[key]=values.slice()
+  };
+  for (let i=1; i<=22; i++) wake.update(animal,[4,-0.4,4+i/30],upright,0,1,1/30,i/30,true,0);
+  wake.bind(gl,{u:key=>key},22/30);
+  assert.ok(uniforms.uBow[1]>4+22/30 && uniforms.uBow[3]>0.7);
+  const firstLeg=32;
+  const trail=uniforms['uWakePath[0]'];
+  assert.ok(trail[firstLeg+2]>0 && trail[firstLeg+1]>trail[firstLeg+4*5+1]);
+  const east=[0,0,-1,0,1,0,1,0,0];
+  wake.update(animal,[4.033,-0.4,4+22/30],east,1,0,1/30,23/30,true,0);
+  wake.bind(gl,{u:key=>key},23/30);
+  assert.deepEqual(uniforms.uBowDirection,[1,0]);
+  assert.ok(Math.abs(uniforms['uWakePath[0]'][firstLeg+4*5]-4.15)<1e-5);
+  wake.reset();
+  wake.bind(gl,{u:key=>key},1);
+  assert.deepEqual(uniforms.uWakeBounds,[1,1,-1,-1]);
 });
 
 test('both chutes have bedrock immediately below the lip and room for the falling sheet to reach the pool', () => {
