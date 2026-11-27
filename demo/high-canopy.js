@@ -302,6 +302,7 @@ export function forestStands(localTrees, uplandTrees, isletTree, noise, random, 
         y0: Infinity,
         y1: -Infinity,
         pad: 0,
+        minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity,
         sites: [],
         styles: [],
         slopes: [],
@@ -326,6 +327,8 @@ export function forestStands(localTrees, uplandTrees, isletTree, noise, random, 
     tile.sites.push(x,y,z,h);
     tile.styles.push(c,s,spread,hue);
     tile.slopes.push(gx,gz);
+    tile.minX = Math.min(tile.minX, x); tile.maxX = Math.max(tile.maxX, x);
+    tile.minZ = Math.min(tile.minZ, z); tile.maxZ = Math.max(tile.maxZ, z);
     tile.y0 = Math.min(tile.y0, y+h*mesh.bottom - h*0.23*spread*Math.hypot(gx,gz) - 0.12);
     tile.y1 = Math.max(tile.y1, y + h * (mesh.top + 0.18) + 0.12);
     tile.pad = Math.max(tile.pad, h * (mesh.radius * spread + 0.18) + 0.12);
@@ -344,11 +347,34 @@ export function forestStands(localTrees, uplandTrees, isletTree, noise, random, 
     slopes = [],
     tiles = [];
   for (const tile of [...clusters.values()].sort((a, b) => a.variant - b.variant || a.z0 - b.z0 || a.x0 - b.x0)) {
-    const { sites: local, styles: style, slopes: grade, ...bounds } = tile;
-    tiles.push({ ...bounds, start: sites.length / 4, count: local.length / 4 });
+    // The sorting grid batches instances, but its empty margins need neither
+    // rendering nor the close mesh. Keep the full wind envelope around the roots.
+    const { sites: local, styles: style, slopes: grade, minX, maxX, minZ, maxZ } = tile;
+    tiles.push({ variant: tile.variant, start: sites.length / 4, count: local.length / 4,
+      x0: minX, width: maxX-minX, z0: minZ, depth: maxZ-minZ, y0: tile.y0, y1: tile.y1, pad: tile.pad });
     sites.push(...local);
     styles.push(...style);
     slopes.push(...grade);
   }
-  return { meshes, sites: new Float32Array(sites), styles: new Float32Array(styles), slopes: new Float32Array(slopes), tiles, width };
+  return { meshes, sites: new Float32Array(sites), styles: new Float32Array(styles), slopes: new Float32Array(slopes), tiles };
+}
+
+// Every vertex on a tree samples the ground fields at its trunk centre.
+// Store that centre's tile once, in the same order as the instance buffer.
+export function treeFieldTiles(sites, half, tileSize) {
+  const across = Math.ceil(2 * half / tileSize);
+  const cell = x => Math.max(0, Math.min(across - 1, Math.floor((x + half) / tileSize)));
+  return Uint16Array.from({ length: sites.length / 4 }, (_, i) =>
+    cell(sites[4*i]) + across * cell(sites[4*i+2]));
+}
+
+export function treeFieldMask(tiles, start, count, glow, ground) {
+  const possible = (glow ? 1 : 0) | (ground ? 2 : 0);
+  let mask = 0;
+  for (let i=start; i<start+count && mask!==possible; i++) {
+    const tile = tiles[i];
+    if (glow && glow[tile]) mask |= 1;
+    if (ground && ground[tile]) mask |= 2;
+  }
+  return mask;
 }

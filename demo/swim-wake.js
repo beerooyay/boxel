@@ -121,6 +121,16 @@ export function createSwimWake(surface, levelAt, emitLight) {
       const force=i===0 ? Math.min(1.35,Math.max(0,(speed-0.07)*0.84))
         : Math.min(0.67,Math.max(0,movement-0.11)*(i===5 ? 0.24 : 0.27)*Math.sqrt(width/0.075));
       part.force += ((wet ? force : 0)-part.force)*forceBlend;
+      if (night>0.01 && part.wet) {
+        // Charge the water the animated contact just vacated. A lifted paw
+        // gives its last bit of motion to that patch before the track ends.
+        const pulse=wet ? force*dt : Math.min(part.force,0.7)*0.055;
+        if (pulse>0.0001) {
+          const energy=pulse*(i===0 ? 0.28 : 1.05);
+          surface.stir(part.x,part.z,energy);
+          emitLight(part.x,part.z,energy);
+        }
+      }
       if (wet) {
         if (part.force>=0.004) lastForced=t;
         wakeLevel=level;
@@ -133,11 +143,6 @@ export function createSwimWake(surface, levelAt, emitLight) {
           // wet grid. Keep the independent light signal at actual contact.
           surface.pressure((px+part.x)*0.5,(pz+part.z)*0.5,vx,vz,dt,
             width,width,force*0.024);
-          if (night>0.01) {
-            const light=force*dt*0.64;
-            surface.stir(px,pz,light);
-            emitLight(px,pz,light);
-          }
         }
         part.x=px; part.z=pz; part.width=width; part.vx=vx; part.vz=vz;
       }

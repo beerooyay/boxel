@@ -159,3 +159,30 @@ To repeat these routes, run the current benchmark against each checkout with the
 ```sh
 ROUTE=swim,shore,falls,verge,summit,grove,night UNCAPPED=1 CHROME_CHANNEL=chrome node bench/performance.cjs http://127.0.0.1:8841/demo/ 1920 1200
 ```
+
+## Night wakes, trail vegetation and distant mountains
+
+The comparison build was `bc171a6`. Both builds ran the same animal inputs and eight camera routes on an M4 Max using Chrome 158, ANGLE Metal, HDR and 4× MSAA at 1920 × 1200. We ran updated, previous, previous, updated with a fresh browser each time. Each route had 48 warm-up frames, 180 measured frames and 36 whole-frame GPU timer queries per run. Entries are the average of the two run medians or p95s, in milliseconds.
+
+| View | Previous median | Updated median | Previous p95 | Updated p95 |
+|---|---:|---:|---:|---:|
+| Day swim | 8.59 | 8.32 | 9.54 | 9.60 |
+| Night swim | 8.78 | 8.74 | 10.37 | 9.97 |
+| Wooded shore | 19.56 | 19.37 | 20.87 | 20.62 |
+| Waterfall | 15.99 | 15.54 | 17.07 | 16.56 |
+| Trail verge | 6.07 | 6.06 | 9.21 | 9.31 |
+| Summit | 22.82 | 22.34 | 24.08 | 23.56 |
+| Grove | 15.20 | 14.84 | 15.97 | 15.60 |
+| Night river | 12.79 | 12.42 | 14.08 | 14.38 |
+
+Night swimming cost about the same at the median. Its slower GPU frames improved by 0.40 ms at p95. The summit and wooded shore still exceed the 16.67 ms GPU budget for 60 Hz at this resolution. The night river's p95 increased by 0.30 ms. These figures describe this machine and route. To repeat them, include `night-swim` directly after `swim` in the route command above.
+
+### What changed
+
+- **Water.** The previous position of each moving body contact charges the wet cells it has just left. The water solver gradually releases the charge, carries it with the current and spreads it into adjacent disturbed water. Height and slope modulate the emitted colour on the same surface that bends the reflection. In the test pool a single pulse peaked at the contact after 0.33 seconds and 0.96 m away after 0.90 seconds. A dry barrier blocked it. The effect reuses the existing ripple texture and adds zero render passes. Unlit wave tiles skip the light transport work.
+- **Land.** A brushed blade lights along its midrib. Nearby leafy plants show the same disturbance in their own veins and pigments. Removing procedural light filaments from bare terrain saves a glow texture read on in-field soil pixels. Moisture, tread, and paw pressure still affect soil. Foliage skips daytime glow reads.
+- **Forest.** The same 1,233 trees still use six meshes. Bounding each batch by its actual planted roots, crown extent and wind allowance reduced tree triangles in a static 16:9 main-camera replay. At the river they fell from 350,655 to 286,209, at the shore from 544,435 to 488,833 and at the falls from 368,737 to 314,916. These counts include the renderer choosing the existing lower-detail mesh sooner for some batches. The whole-world shadow bake uses the original geometry. Changing trunk radius alone would save zero vertices, triangles or draw calls. The number of shaded bark pixels would depend on the camera and what the narrower trunk reveals.
+- **Boxel and canopy shading.** A 2,466-byte lookup maps tree roots to existing field tiles. A draw skips a glow or moisture texture read when every root it contains has zero support in that field, including the edge needed for bilinear sampling. Uniform rain still reaches every tree. In a separate two-run comparison with all other changes fixed, enabling the skip moved median GPU time from 14.95 to 14.65 ms in the grove, 12.72 to 12.29 ms at the night river, and 19.17 to 19.05 ms at the shore.
+- **Mountain range.** The terrain records concave gullies and exposed ribs alongside each lighting normal. Snow collects on sheltered shoulders, thins to blue ice, and breaks over layered bedrock. Blocky scree and patches of low scrub use two existing texture reads in the alpine material. They are surface detail at that distance. Fully alpine pixels outside the valley fields skip the valley-floor shading. Packing the normals reduced terrain GPU buffers by 1,511,296 bytes on desktop and 1,313,248 bytes with the touch terrain profile. Every distant vertex position matched the previous build.
+
+Both builds made 50 same-origin resource requests. Uncompressed local response bodies rose from 4,944,798 to 4,950,500 bytes. Across the four changed runtime modules the increase was 2,273 bytes when gzip-compressed individually at level 9. The update added zero texture downloads.

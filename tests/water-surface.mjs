@@ -81,6 +81,40 @@ test('fixed steps give the same wake at 24 and 120 Hz, and reset clears it', () 
   assert.equal(q.height, 0);
 });
 
+test('a glow pulse blooms after contact, travels with the outgoing wave and fades downstream of the footprint', () => {
+  const waved = tank(), quiet = tank(), blocked = tank(0,true);
+  const x=4.44, z=4.44, outer=x+4*grid.step;
+  waved.touch(x,z,0.9,0.8);
+  quiet.touch(x,z,0,0.8);
+  blocked.touch(x,z,0.9,0.8);
+  let firstLight=0, centrePeak=0, outerPeak=0, quietPeak=0;
+  let centreTick=0, outerTick=0;
+  for (let i=1; i<=270; i++) {
+    for (const basin of [waved,quiet,blocked]) basin.advance(1/30);
+    const centre=waved.sample(x,z).light, edge=waved.sample(outer,z).light;
+    if (i===1) firstLight=centre;
+    if (centre>centrePeak) { centrePeak=centre; centreTick=i; }
+    if (edge>outerPeak) { outerPeak=edge; outerTick=i; }
+    quietPeak=Math.max(quietPeak,quiet.sample(outer,z).light);
+    assert.equal(blocked.sample(5.88,z).light,0);
+  }
+  assert.ok(firstLight>0 && centrePeak>firstLight*2 && centreTick>=4);
+  assert.ok(outerPeak>3/255 && outerPeak>quietPeak*3 && outerTick>centreTick);
+  assert.ok(waved.sample(x,z).light<0.5/255 && waved.sample(outer,z).light<0.5/255);
+});
+
+test('skin contact charges adjacent wet cells continuously as a paw crosses a texel boundary', () => {
+  const z=4.44;
+  const left=tank(), right=tank();
+  left.stir(4.8-0.0001,z,0.9);
+  right.stir(4.8+0.0001,z,0.9);
+  left.advance(1/30); right.advance(1/30);
+  for (const x of [4.68,4.92]) {
+    assert.ok(left.sample(x,z).light>0.04);
+    assert.ok(Math.abs(left.sample(x,z).light-right.sample(x,z).light)<0.0001);
+  }
+});
+
 test('texture updates preserve both fixed ticks across batched uploads and clear a reset', () => {
   const grid = { x0: 0, z0: 0, width: 37, height: 35, step: 0.24 };
   const water = createWaterSurface(grid, (_x,_z,bed) => Object.assign(bed,{depth:1,level:0,vx:0,vz:0}));
@@ -231,6 +265,28 @@ test('foreleg contact sustains a bow and a turn leaves the narrow wake on its pr
   assert.ok(Math.abs(uniforms['uWakePath[0]'][firstLeg+4*5]-4.15)<1e-5);
   wake.reset();
   assert.equal(wake.prepare(1),null);
+});
+
+test('a moving paw charges its previous footprint once more on lift and a resting paw stays dark', () => {
+  const water=tank(), events=[];
+  const wake=createSwimWake(water,()=>0,(x,z,amount)=>events.push({x,z,amount}));
+  let planted=true;
+  const animal={waterline:fox,waterContacts(_o,_b,_h,_sx,_sz,bounds) {
+    bounds.fill(-Infinity);
+    if (planted) bounds.set([0.06,0.06,0.08,0.08],4);
+  }};
+  const dt=1/30;
+  for (let i=0; i<15; i++) wake.update(animal,[4,-0.2,4],upright,0,0,dt,i*dt,false,1);
+  assert.equal(events.length,0);
+  wake.update(animal,[4,-0.2,4.04],upright,0,1.2,dt,15*dt,false,1);
+  assert.equal(events.length,1);
+  assert.ok(Math.abs(events[0].z-4)<1e-6);
+  planted=false;
+  wake.update(animal,[4,-0.2,4.08],upright,0,1.2,dt,16*dt,false,1);
+  assert.equal(events.length,2);
+  assert.ok(Math.abs(events[1].z-4.04)<1e-6 && events[1].amount>0);
+  wake.update(animal,[4,-0.2,4.12],upright,0,1.2,dt,17*dt,false,1);
+  assert.equal(events.length,2);
 });
 
 test('both chutes have bedrock immediately below the lip and room for the falling sheet to reach the pool', () => {

@@ -26,14 +26,15 @@ function installMeter() {
     tick = (tick ?? now) + 1000/60;
     if (!job) return fn(tick);
     const run = job, n = run.frame++;
+    const swim = run.view === 'swim' || run.view === 'night-swim';
     if (n === 0) {
       release();
-      __game.setNight(run.view === 'night' ? 1 : 0);
-      if (run.view === 'swim') {
+      __game.setNight(run.view === 'night' || run.view === 'night-swim' ? 1 : 0);
+      if (swim) {
         __game.look({ eye: [14,__game.H(14,12)+1.65,12], yaw: -Math.PI/2, pitch: -0.82 });
       } else __game.look(run.view === 'night' ? 'river' : run.view);
     }
-    if (run.view === 'swim') {
+    if (swim) {
       if (n === 48) key('keydown','KeyW');
       if (n === 92) key('keydown','ShiftLeft');
       if (n === 136) key('keydown','KeyD');
@@ -50,7 +51,7 @@ function installMeter() {
     if (query) { gl.endQuery(ext.TIME_ELAPSED_EXT); run.pending.push(query); }
     if (record) {
       run.cpu.push(cpu); run.intervals.push(now-run.last);
-      if (run.view === 'swim' && n % 30 === 0 && !__game.state().player.swimming) run.dry++;
+      if (swim && n % 30 === 0 && !__game.state().player.swimming) run.dry++;
     }
     run.last = now;
     poll(run);
@@ -94,7 +95,7 @@ function installMeter() {
     for (const view of views) {
       const result = await page.evaluate(v => measureRoute(v), view);
       assert.equal(result.glError, 0);
-      if (view === 'swim') {
+      if (view === 'swim' || view === 'night-swim') {
         assert.equal(result.dry, 0);
         assert.ok(Math.hypot(result.end.x-14,result.end.z-12)>5);
       }

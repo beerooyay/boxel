@@ -95,8 +95,9 @@ Along the banks, wind waves turn toward the shallows and run up onto gravel betw
 Water contact reads the same animated skin as grass contact. A continuous bow wave splits ahead of the swimmer’s
 leading contact, and each immersed leg and tail leaves a smaller trail that follows its motion.
 The wake travels through ripples from wading animals, skimming sailwings and thrown stones, and reflects off rocks.
-The current and local wind carry disturbed bioluminescent plankton away from contact.
-Footsteps and glowstones light the moss where they touch. [Play at the waterfall](https://beerooyay.github.io/boxel/?falls)
+At night, water a paw has just left glows along the outgoing ripple, then fades as the current carries it away.
+Along the trail, a passing animal lights the blades and leaf veins it brushes. Wet prints and scuffs still show on bare soil.
+From the summit, look for bright snow in sheltered gullies, dark rock ribs and patches of scrub below the scree. [Play at the waterfall](https://beerooyay.github.io/boxel/?falls)
 Cloud shadows cross the valley by
 day, and the pigments in leaves and wetland flowers set the colour of their light at night.
 Spiral rosettes grow beside the paths and sheltered banks. Their folded leaves take a wet sheen

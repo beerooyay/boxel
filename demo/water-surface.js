@@ -66,6 +66,7 @@ export function createWaterSurface(grid, bedAt) {
     oldLight = h.slice(),
     active = new Uint8Array(tiles.length),
     next = active.slice();
+  // Bit 0 advances waves. Bit 1 also transports light on that wet tile.
   const dirty = active.slice(),
     excitation = new Float32Array(count);
   let remainder = 0, currentLayer = 1;
@@ -92,7 +93,7 @@ export function createWaterSurface(grid, bedAt) {
         // A depression with a raised rim launches a signed wave packet.
         v[id] = clamp(v[id] - strength * 3.0 * weight * (1 - 3.8 * r2), -2.4, 2.4);
         excitation[id] = Math.min(1, excitation[id] + emission * weight);
-        active[(j >> 4) * tileCols + (i >> 4)] = 1;
+        active[(j >> 4) * tileCols + (i >> 4)] |= emission > 0 ? 3 : 1;
       }
     return true;
   }
@@ -138,7 +139,7 @@ export function createWaterSurface(grid, bedAt) {
     const left = Math.max(0, minI - 1) >> 4, right = Math.min(width - 1, maxI + 1) >> 4;
     const bottom = Math.min(height - 1, maxJ + 1) >> 4;
     for (let j = Math.max(0, minJ - 1) >> 4; j <= bottom; j++) {
-      active.fill(1, j * tileCols + left, j * tileCols + right + 1);
+      for (let tile=j*tileCols+left; tile<=j*tileCols+right; tile++) active[tile] |= 1;
     }
   }
   function contactAt(x,z,out) {
@@ -150,12 +151,25 @@ export function createWaterSurface(grid, bedAt) {
     out.vx=flowX[k]; out.vz=flowZ[k];
     return true;
   }
-  function stir(x,z,amount) {
-    const k=locate(x,z);
-    if (!k) return;
+  function chargeCell(k,amount) {
     excitation[k]=Math.min(1,excitation[k]+amount);
     const p=texel[k], row=Math.floor(p/width);
-    active[(row>>4)*tileCols+((p%width)>>4)]=1;
+    active[(row>>4)*tileCols+((p%width)>>4)] |= 3;
+  }
+  function stir(x,z,amount) {
+    const k=locate(x,z);
+    if (!k || amount<=0) return;
+    // Deposit continuously between wet cell centres. At a bank the neighbour
+    // points to this cell, so its share remains on the contacted side.
+    const pixel=texel[k];
+    const fx=(x-x0)/step-(pixel%width+0.5);
+    const fz=(z-z0)/step-(Math.floor(pixel/width)+0.5);
+    const side=(fx<0 ? west : east)[k], along=fz<0 ? north : south;
+    const u=Math.abs(fx), w=Math.abs(fz);
+    chargeCell(k,amount*(1-u)*(1-w));
+    chargeCell(side,amount*u*(1-w));
+    chargeCell(along[k],amount*(1-u)*w);
+    chargeCell(along[side],amount*u*w);
   }
   function tick(windX, windZ, windAt) {
     currentLayer = 1 - currentLayer;
@@ -169,7 +183,8 @@ export function createWaterSurface(grid, bedAt) {
         ne = windAt ? windAt(left + side, top) : 1;
       const sw = windAt ? windAt(left, top + side) : 1,
         se = windAt ? windAt(left + side, top + side) : 1;
-      let awake = false;
+      const luminous = active[t] & 2;
+      let awake = 0;
       dirty[t] |= 1 << currentLayer;
       for (const k of tiles[t]) {
         const l = west[k],
@@ -188,25 +203,37 @@ export function createWaterSurface(grid, bedAt) {
         const lap = h[l] + h[r] + h[n] + h[s] - 4 * h[k];
         const vel = (v[k] + wx * (v[upX] - v[k]) + wz * (v[upZ] - v[k]) + c2[k] * lap) * damping[k];
         const heightNext = h[k] + wx * (h[upX] - h[k]) + wz * (h[upZ] - h[k]) + DT * vel;
-        const dye = Math.min(
-          1,
-          (light[k] + wx * (light[upX] - light[k]) + wz * (light[upZ] - light[k])) * 0.9802 + excitation[k]
-        );
-        excitation[k] = 0;
+        // A contact primes the organisms it sweeps. Release this charge over
+        // several fixed steps. The lit water then drifts with the current.
+        let glow = 0;
+        if (luminous) {
+          const lit = light[k], charge = excitation[k], release = 0.11 * charge;
+          excitation[k] = charge - release;
+          const advected = lit + wx*(light[upX]-lit) + wz*(light[upZ]-lit);
+          // Turbulent mixing broadens the trace. An arriving ripple can excite
+          // adjacent plankton along the same connected wet edges as the wave.
+          const adjacent = light[l] + light[r] + light[n] + light[s];
+          const difference = adjacent - 4*lit;
+          const mixing = 0.032 * Math.max(0, 1-wx-wz);
+          const strain = Math.min(0.36, 4.2 * Math.abs(vel));
+          glow = Math.min(1, 0.968 * (advected + mixing*difference + strain*Math.max(0,difference)) + release);
+        }
         previous[k] = heightNext;
         vNext[k] = vel;
-        oldLight[k] = dye;
-        if (Math.abs(vel) + Math.abs(heightNext) * 6 + dye < 0.0005) continue;
-        awake = true;
-        if (i === 0 && l !== k) next[t - 1] = 1;
-        if (i === 15 && r !== k) next[t + 1] = 1;
-        if (j === 0 && n !== k) next[t - tileCols] = 1;
-        if (j === 15 && s !== k) next[t + tileCols] = 1;
+        oldLight[k] = glow;
+        const stillLit = luminous && glow + excitation[k] >= 0.00025;
+        if (!stillLit && Math.abs(vel) + Math.abs(heightNext) * 6 < 0.0005) continue;
+        const mask = stillLit ? 3 : 1;
+        awake |= mask;
+        if (i === 0 && l !== k) next[t - 1] |= mask;
+        if (i === 15 && r !== k) next[t + 1] |= mask;
+        if (j === 0 && n !== k) next[t - tileCols] |= mask;
+        if (j === 15 && s !== k) next[t + tileCols] |= mask;
       }
-      if (awake) next[t] = 1;
+      if (awake) next[t] |= awake;
       else {
         dirty[t] = 3;
-        for (const k of tiles[t]) h[k] = previous[k] = v[k] = vNext[k] = light[k] = oldLight[k] = 0;
+        for (const k of tiles[t]) h[k] = previous[k] = v[k] = vNext[k] = light[k] = oldLight[k] = excitation[k] = 0;
       }
     }
     [h, previous] = [previous, h];
