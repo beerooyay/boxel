@@ -62,10 +62,16 @@ export function bakeGroundLight(gl, extent, groundAt, waterAt, sc, forest, pl) {
       const h = forest.sites[i+3], r = Math.max(0.26, 0.085 * h * forest.styles[i+2]);
       stamp(forest.sites[i], forest.sites[i+1], forest.sites[i+2], r, h * 0.44, r, 0);
     }
-    // Leaves in a tuft share a root. Use the largest footprint there.
-    for (let i = 0; i < pl.P.length; i += 4) {
-      const h = pl.P[i + 3] * pl.F[i + 1];
-      if (h > 0.8) stamp(pl.P[i], pl.P[i + 1], pl.P[i + 2], h * 0.35, h * 0.30, h * 0.35, 0);
+    // The scatter emits each root's petals and crossed strips consecutively.
+    // Their concentric occluders nest, so their union is the tallest one.
+    for (let i = 0; i < pl.P.length;) {
+      const x = pl.P[i], y = pl.P[i+1], z = pl.P[i+2];
+      let h = 0;
+      do {
+        h = Math.max(h, pl.P[i+3] * pl.F[i+1]);
+        i += 4;
+      } while (i < pl.P.length && pl.P[i] === x && pl.P[i+1] === y && pl.P[i+2] === z);
+      if (h > 0.8) stamp(x, y, z, h * 0.35, h * 0.30, h * 0.35, 0);
     }
   });
   gl.activeTexture(gl.TEXTURE14); gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());

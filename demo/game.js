@@ -3,6 +3,8 @@ import { advanceFlight, jumpDuration, requestJump, steerFox } from './fox-motion
 import { foxController } from './gamepad.js';
 import { bladeStateGLSL, solveGLSL, stampGLSL, knotsFragment, stampFragment, createBladeContact } from './blade-contact.js';
 import { contactVolume, contactGLSL } from './fox-contact.js';
+import { createWildlife } from './wildlife.js';
+import { animalProgram } from './animal-rig.js';
 import { loadFox } from './fox.js';
 import { DAY_RATE, TIMELAPSE_SECONDS, timelapseTravel } from './sky-clock.js';
 import { bindCapture } from './capture.js';
@@ -26,7 +28,7 @@ import { createAudio } from './audio.js';
 import { bakeGroundLight, groundLight, mistFragment, viewRay } from './valley-light.js';
 import { cameraJitter, depthRange, historyColor, temporalFragment } from './temporal.js';
 import { createShadows } from './shadows.js';
-// Tarnished Promise: sixteen acres of lake shore and highlands on Tarn, under a ringed giant.
+// Tarn: sixteen acres of lake shore and highlands on Tarn, under a ringed giant.
 //
 // The world remembers you through three boxel fields on the unbounded plane of 12.5 cm cells:
 //   glow      bioluminescence in the moss and the water   D 8 cells²/s, k 0.3/s, 60 steps/s
@@ -725,6 +727,7 @@ void main(){
 
 // Air and overhead shelter change slowly across the terrain mesh. Keep the
 // fine shadow comparisons, material normals and field filaments at each pixel.
+const ANIMAL = TEST ? null : animalProgram(program, WORLD_VS);
 const OAK = oakProgram(program,WORLD_VS,valleyAir);
 let oakParts = [];
 const TERRAIN = program(WORLD_VS + valleyAir + canopyShelter + `
@@ -1459,7 +1462,7 @@ const stampBlades = TEST ? null : program(grassHeader + '#define STAMP_BLADE\n' 
 // leaflets in the fragment shader), glow tubes (capsules whose tips are lamps), coilferns (stalks that roll their tips
 // into spirals) and lantern bells (arching stems that nod a glowing bulb). Each blade follows a centreline in its own
 // plane; veins brighten at night and when you stir the ground beside them.
-const PLANT = program(WORLD_VS + BRUSH_VS + `
+const PLANT = GRASS_LAB ? null : program(WORLD_VS + BRUSH_VS + `
 in vec4 aP; in vec4 aF; in vec4 aS2;
 centroid out vec3 vWP; centroid out float vU; centroid out float vSide; centroid out vec3 vN; centroid out float vType; centroid out float vStir; centroid out float vSeed; centroid out float vHue;
 // the centreline at u in [0, 1]: x out along the ground, y up
@@ -2056,6 +2059,8 @@ function scatter(near, fixed, meshes) {
   };
   const place = ([v,x,z,sx,sy,sz,yaw,tint]) => {
     const reach = Math.max(sx, sz);
+    // Keep the sightline from the rose meadow to the golden crown open.
+    if (v === 2 && Math.hypot(x - 26, z - 44) < 3) return;
     if (v !== 3 && (trailDistance(x,z) < 0.85+1.2*reach || inRestArea(x,z,reach))) return;
     const iz = z - ISLET[1], ix = x - ISLET[0] + 0.21*iz;
     if (Math.hypot(ix/ISLET_WIDTH, iz/ISLET_DEPTH) < 1.28 + reach/ISLET_DEPTH) return;
@@ -2293,7 +2298,7 @@ function growRosettes(sc, near, leaves) {
   }
 }
 // understory around tree bases and big stones, ferns along the shade and the shore, glow tubes by the water,
-// coilferns curling in the shade of the junipers, and lantern bells nodding along the shore and the meadows
+// coilferns curling in the shade of the broadleaf groves, and lantern bells nodding along the shore and the meadows
 function plantScatter(sc, near, shelterAt) {
   const r = rng(555), P = [], F = [], S2 = [];
   const ok = (x, z) => { const y = H(x, z); return y > 0.32 && y < 10 && nearNy(near, x, z) > 0.8 && clearOf(x, z) && inMap(x, z) && outcrop(x, z) < 0.6; };
@@ -2595,7 +2600,7 @@ function outsideView(planes, tile, width, depth = width) {
 // ---------------------------------------------------------------- build the scene
 const loc = (p, n) => gl.getAttribLocation(p, n);
 const highSites = highCanopySites(H, vnoise, rng(914), VALLEY_HALF, trailCover, waterLevel);
-const { oakReady, oakSite, near, wm, sc, rocks, forest, leaves, grass, plants, coilView, lanternView, sailwings, heightRange } = buildValley();
+const { oakReady, oakSite, near, wm, sc, rocks, forest, leaves, grass, plants, coilView, lanternView, sailwings, wildlife, heightRange } = buildValley();
 const far = uploadTerrain(terrainFar());
 function uploadTerrain(mesh) {
   const attrs = [{ loc: loc(TERRAIN, 'aPos'), size: 3, data: mesh.pos }, { loc: loc(TERRAIN, 'aNor'), size: 3, data: mesh.nor }];
@@ -2689,12 +2694,13 @@ function buildValley() {
     },
   });
   const pl = plantScatter(sc, near, shelterAt);
-  const plants = new Tiled(PLANT, { aP: pl.P, aF: pl.F, aS2: pl.S2 },
+  const plants = GRASS_LAB ? null : new Tiled(PLANT, { aP: pl.P, aF: pl.F, aS2: pl.S2 },
     pl.P, i => 0.2 + 1.8 * pl.P[i * 4 + 3] * pl.F[i * 4 + 1], 25, 24, 0.06);
   const heightRange = bakeGroundLight(gl, EXTENT, (x, z) => nearH(near, x, z), waterLevel, sc, stands, pl);
   bakeFloraSpill(pl);
+  const wildlife = TEST || GRASS_LAB ? null : createWildlife(gl, ANIMAL, (x,z) => nearH(near,x,z), outsideView, touch);
   const sailwings = createSailwings({ gl, program, vao, worldVertex: WORLD_VS, groundAt: (x, z) => nearH(near, x, z), waterLevel, riverX, sc, stands, random: rng(971), windAt: (x,z) => wind.sample(x,z)*windStrength(), outsideView });
-  return { oakReady, oakSite, near: uploadTerrain(near), wm: uploadWater(waterMesh(near)), heightRange, sailwings, sc, rocks,
+  return { oakReady, oakSite, near: uploadTerrain(near), wm: uploadWater(waterMesh(near)), heightRange, sailwings, wildlife, sc, rocks,
     forest, leaves, grass, plants, coilView: plantView(pl, 3), lanternView: plantView(pl, 4) };
 }
 function uploadForest(stands) {
@@ -3820,6 +3826,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   common(ROCK, eye, VP, mirror, t); drawRocks(VP, mirror, opts.px * 400 / opts.tanY, planes);
   gl.disable(gl.CULL_FACE);
   if (opts.avatar) drawFox(eye, VP, mirror, t);
+  wildlife?.draw(planes, eye, t, p => common(p, eye, VP, mirror, t));
   const coverage = mirror > 0 && Boolean(post.ms) && !opts.crop;
   if (coverage) { gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true,true,true,false); }
   common(CANOPY, eye, VP, mirror, t);
@@ -3832,7 +3839,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   leaves.draw(planes, eye, mirror < 0 ? 0.62 : 1);
   if (coverage) { gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true, true, true, true); }
   common(sailwings.shader, eye, VP, mirror, t); sailwings.draw(t, planes, eye, b.f, mirror);
-  if (!GRASS_LAB) { common(PLANT, eye, VP, mirror, t); plants.draw(planes, eye, mirror < 0 ? 0.72 : 1); }
+  if (plants) { common(PLANT, eye, VP, mirror, t); plants.draw(planes, eye, mirror < 0 ? 0.72 : 1); }
   if (opts.grass) {
     common(GRASS, eye, VP, mirror, t);
     if (bladeContact) {
@@ -3924,6 +3931,7 @@ function render(t, camOverride, glowTexture = texGlow, dt = 0) {
   exposure = 0.95 + 0.3 * night + 0.3 * storm + 0.36 * twilight * (1 - night);
   turnSky(t);
   prepareRipples(t);
+  wildlife?.update(t, cam.eye);
   frameNumber++;
   lightDirection = norm(starDirection.map((v, i) => v * (1 - night) + PLANET[i] * night));
   lightColor = starColor.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
@@ -4371,7 +4379,7 @@ function scripted(m, frames = 900, view = 'shore') {
 
 // ---------------------------------------------------------------- boot
 (async () => {
-  const foxReady = TEST ? null : loadFox(gl, program, WORLD_VS, true).catch(error => {
+  const foxReady = TEST ? null : loadFox(gl, ANIMAL, true).catch(error => {
     console.warn(error);
     document.getElementById('bCamera').hidden = true;
     return null;
@@ -4409,9 +4417,9 @@ function scripted(m, frames = 900, view = 'shore') {
       player.grounded = true; player.onStone = false; player.vy = player.flight = 0;
       foxPose.yaw = player.yaw; foxPose.reverseYaw = null; foxPose.pitch = foxPose.roll = 0; foxPose.height = chase.height = H(player.x, player.z);
       chase.arm = 3.55; post.previous = null;
-    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started,
+    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started, wildlife: wildlife?.state() ?? [],
     ...(GRASS_LAB && { grassLab: { occupied: contactOn ? contactGrid.occupied : 0, contactMs: bladeContact.stats.cpuMs, activeRoots: bladeContact.stats.roots, uploadBytes: bladeContact.stats.uploadBytes, coupled, markContacts, stillGrass, contactOn, view: labView } }),
-    blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, trees: forest.count+1, leaves: leaves.count + forest.shoots, plants: plants.count, grassDrawn } }) };
+    blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, trees: forest.count+1, leaves: leaves.count + forest.shoots, plants: plants?.count ?? 0, grassDrawn } }) };
   if(qs.has('oak')) {
     const [x,z]=oakSite;
     window.__game.look({eye:[x-2,H(x-2,z-1)+1.65,z-1],yaw:Math.atan2(2,-1),pitch:.20});

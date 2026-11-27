@@ -73,14 +73,17 @@ mismatch. [Replay method and results](docs/results.md#cross-platform-replay)
 after blocks retire. Two distant footprints can evolve without filling the space between
 them. Peak allocations, event records and the certificate table also contribute to memory.
 
-## The demo: Tarnished Promise
+## Tarn
 
-[Play Tarnished Promise in your browser](https://beerooyay.github.io/boxel/).
+[Play Tarn in your browser](https://beerooyay.github.io/boxel/).
 
 Tarn spans 256 × 256 metres, about 16 acres. Four connected upland walks add about 730 metres of trail
 around the original lake. Follow the river north to a spring, take the west walk through the coilferns,
 climb the eastern rock shelf or look back across the lake from the arrowleaf groves on the southern ridge.
 Switchbacks cross the lake-facing hill with resting shelves on the way to the summit.
+Play as the fox. A deer grazes in the pink meadow above the shore, a stag walks beyond the hillside oak,
+and nine more animals range from the headwaters to the southern pastures.
+The forest mixes six shared broadleaf shapes with one hand-authored oak. [Tree and flora census](docs/flora-audit.md)
 A separate Boxel field spreads and dissipates gusts in a moving air mass. The hills shelter the lee.
 Grass, crowns, sailwings, the sound of wind and rough patches on the water sample the same fronts.
 Grass and low leaves part as you pass. Wading, skimming sailwings and thrown stones send ripples
@@ -164,7 +167,7 @@ fog of war are the same three calls with different numbers.
 | `.github/` | the engine checks, browser picture regression, native/wasm replay and Pages deployment |
 | `ffi/` | the C ABI, its header, and the JavaScript binding |
 | `bench/` | native benchmark fixtures, wasm replay and browser picture check |
-| `demo/` | Tarnished Promise |
+| `demo/` | Tarn |
 | `integrations/bevy/` | standalone Bevy plugin: fields as components, windows as textures |
 | `docs/` | [the certificate](docs/certificate.md), [results](docs/results.md) |
 
@@ -208,4 +211,10 @@ The tree and understory leaf atlases ship with coverage-preserving mip levels in
 To rebuild both sizes, install the [Khronos KTX tools](https://github.com/KhronosGroup/KTX-Software)
 and run `node tools/bake-leaf-sprays.mjs`.
 
-The hillside trial at `?oak` uses a summer medium oak from [Oak trees pack by LOLIPOP](https://sketchfab.com/3d-models/oak-trees-pack-17var-lods-seasons-gameready-a5e4e64f9f1d4089bdcc6170a9333393), licensed under [CC Attribution](https://creativecommons.org/licenses/by/4.0/). The demo extracts one mesh pair, resizes the material maps and fits the root flare to the terrain.
+The hillside trial uses LOLIPOP’s summer medium oak under CC Attribution 4.0. Tarn extracts one mesh pair,
+resizes the material maps and fits the root flare to the terrain. [Visit the oak](https://beerooyay.github.io/boxel/?oak) · [Original pack](https://sketchfab.com/3d-models/oak-trees-pack-17var-lods-seasons-gameready-a5e4e64f9f1d4089bdcc6170a9333393) · [License](https://creativecommons.org/licenses/by/4.0/)
+
+Quaternius made the fox and its eleven neighbours and released the pack under CC0. The ambient animals use
+the authored walk, idle and eating clips. To rebuild their runtime GLBs, run
+`python3 tools/import-animals.py /path/to/animals_pack` with the pinned conversion as input.
+[Quaternius’s Ultimate Animated Animal Pack](https://quaternius.com/packs/ultimateanimatedanimals.html) · [Source GLBs](https://github.com/trebeljahr/quaternius-showcase/tree/5b491b755c6d2aaa263aaaf8671b30b559a380a4/public/glb/animals_pack)

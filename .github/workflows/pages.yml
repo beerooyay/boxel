@@ -1,4 +1,4 @@
-name: Publish Tarnished Promise
+name: Publish Tarn
 
 on:
   push:
