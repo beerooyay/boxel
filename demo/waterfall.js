@@ -126,9 +126,12 @@ float plungeFoam(vec2 p, float t) {
   float beads = vnoise(q*vec2(24.,19.)+2.6*curl);
   float lace = (1.-smoothstep(0.035,0.12,abs(cells-0.53)))*smoothstep(0.16,0.76,beads);
   lace+=0.28*smoothstep(0.49,0.79,beads)*smoothstep(.38,.72,curl);
-  float boil = exp(-1.9*abs(reach-0.22-0.18*sin(lane*4.3+t*2.4)));
+  float s=lane/${(falls.halfWidth * 1.07).toFixed(4)};
+  float chutes=(1.-smoothstep(.88,1.04,abs(s)))*smoothstep(.05,.23,abs(s+.38));
+  float impact=reach-.10-.12*sin(lane*4.3+t*2.4)-.09*(cells-.5);
+  float collar=(1.-smoothstep(.02,.35+.17*curl,abs(impact)))*chutes;
   float edges = 1.-smoothstep(1.22,2.35,abs(lane+0.31*sin(reach*1.2)-0.23*(curl-0.5)));
-  return edges*(boil*(0.50+0.50*beads)+trail*(0.06+0.80*lace));
+  return min(1.,collar*(.72+.28*beads)+edges*trail*(.04+.68*lace));
 }`;
 
 // t measures time since the water left the lip. This gives the curtain a
@@ -163,9 +166,9 @@ void main(){
   float bend=0.65*coarse+0.19*sin(2.7*moving+11.*s);
   float threads=vnoise(vec2(42.*s+bend*3.4,6.*moving));
   float fines=vnoise(vec2(104.*s+7.2*bend,13.*moving));
-  float gap=(s+0.38-0.026*sin(4.*t))/(0.084+0.075*t);
+  float gap=(s+0.38-0.026*sin(4.*t)-0.010*(coarse-.5))/(0.041+0.058*t);
   float cleft=exp(-gap*gap);
-  float thickness=(0.24+0.56*coarse+0.34*threads-0.15*t)*(1.-0.98*cleft);
+  float thickness=(0.24+0.56*coarse+0.34*threads-0.15*t)*(1.-smoothstep(0.03,0.46,t)*0.98*cleft);
   float rim=1.-smoothstep(0.91,1.,abs(s));
   if (rim*thickness<0.094+0.16*t*fines) discard;
   float air=smoothstep(0.10,0.80,t);
@@ -204,28 +207,50 @@ void main(){
     worldVertex +
       outfallGLSL +
       `
-uniform float uScale; out float vFade, vSeed, vBubbles;
+uniform float uScale; out float vFade, vSeed; flat out int vKind;
 void main(){
   float seed=float(gl_VertexID)+0.5;
   vec3 r=fract(sin(seed*vec3(17.31,45.112,93.17))*vec3(1324.57,1792.43,632.17));
-  float lane=2.*r.x-1., z=landingZ(lane);
+  // Mist, surface bubbles and individual drops share the two impact lanes.
+  vKind=gl_VertexID<110 ? 0 : gl_VertexID<228 ? 1 : 2;
+  float life=vKind==0 ? 0.74+0.47*r.y : vKind==1 ? 0.36+0.44*r.y : 0.28+0.34*r.y;
+  float cycle=r.z+uTime/life, u=fract(cycle);
+  vec2 burst=fract(sin(vec2(seed,seed+3.7)*37.3+floor(cycle)*vec2(12.8,24.3))*2974.42);
+  float along=fract(r.x+0.15*(burst.x-0.5));
+  float lane=along<0.28 ? mix(-0.97,-0.45,along/0.28) : mix(-0.31,0.97,(along-0.28)/0.72);
+  float z=landingZ(lane);
   float x=-5.+3.4*sin(z*.13)+1.4*sin(z*.29+.8)+lane*${(falls.halfWidth * 1.07).toFixed(4)};
-  vBubbles=step(seed,156.); vSeed=seed;
-  float life=mix(0.32+0.48*r.y,0.34+0.23*r.y,vBubbles), u=fract(r.z+uTime/life);
-  float kick=4.905*life*life*u*(1.-u)*mix(1.,0.35,vBubbles);
-  vec3 p=vec3(x+(r.x-0.48)*0.71*u,${bottom.toFixed(3)}+0.045+kick,z+0.08+(0.27+r.z)*u);
+  float lift=4.905*life*life*u*(1.-u);
+  float spread=(burst.x-0.49)*0.64+0.26*lane, downstream=0.28+0.62*burst.y;
+  vec3 p=vec3(x+spread*u,${bottom.toFixed(3)}+0.055,z+0.02+downstream*u);
+  float size;
+  if(vKind==0){
+    p.y+=0.12*u+(0.055+0.08*r.y)*sin(3.14159*u);
+    p.xz+=WIND_DIR*(0.10+0.32*max(0.,windWave(vec2(x,z))*uWind))*u*u;
+    size=(0.23+0.23*r.y)*(0.68+1.30*u);
+    vFade=0.085+0.105*burst.y;
+  } else if(vKind==1){
+    p.y+=0.025+lift*0.14;
+    size=(0.034+0.061*r.y)*(1.+0.52*u);
+    vFade=0.32+0.29*burst.y;
+  } else {
+    p.y+=lift; p.z+=0.19*u;
+    size=0.012+0.023*r.y*r.y;
+    vFade=0.49+0.41*burst.y;
+  }
+  vSeed=seed+13.*burst.x;
+  vFade*=smoothstep(0.,0.15,u)*(1.-smoothstep(.50,1.,u));
   vec4 clip=project(p); gl_Position=clip;
-  float size=mix(0.011+0.039*r.y*r.y,(0.050+0.094*r.y)*(0.63+u*0.62),vBubbles);
-  gl_PointSize=clamp(uScale*size/clip.w,1.,42.);
-  vFade=smoothstep(0.,0.15,u)*(1.-smoothstep(.54,1.,u))*(0.17+0.57*r.z)*(1.-0.31*vBubbles);
+  gl_PointSize=clamp(uScale*size/max(0.01,clip.w),1.,100.);
 }`,
-    `in float vFade,vSeed,vBubbles; out vec4 o;
+    `in float vFade,vSeed; flat in int vKind; out vec4 o;
 void main(){
-  vec2 p=gl_PointCoord-.5;
-  float grit=vnoise(p*8.2+vSeed);
-  float d=length(p)*2.+(grit-0.5)*0.45*vBubbles;
-  float a=(1.-smoothstep(0.06,1.,d))*vFade;
-  o=vec4(tonemap(vec3(0.76,0.84,0.83)*(0.83-0.79*uNight)*(0.72+0.38*grit)),a);
+  vec2 p=gl_PointCoord*2.-1.;
+  float grain=vnoise(p*(vKind==0 ? 3.2 : 5.3)+vSeed);
+  float d=length(p*vec2(1.,vKind==0 ? 1.23 : 1.))+(grain-.5)*(vKind==0 ? .47 : .19);
+  float a=(1.-smoothstep(vKind==0 ? 0. : .16,1.,d))*vFade;
+  vec3 salt=vKind==0 ? vec3(.64,.80,.79) : vec3(.83,.90,.87);
+  o=vec4(tonemap(salt*(0.84-0.80*uNight)*(.77+.32*grain)),a);
 }`
   );
   return {

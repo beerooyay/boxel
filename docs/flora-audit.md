@@ -40,19 +40,19 @@ Each root or stalk is counted once at its generated position. In a colony, indiv
 
 | Flora | Desktop roots or stalks | Coarse-pointer roots or stalks | Desktop pieces | Typical habitat |
 | --- | ---: | ---: | ---: | --- |
-| Blush rosette | 560 | 364 | 6,178 | Sheltered tree and stone bases |
-| Cut-leaf fern | 480 | 312 | 5,748 | Grove shade and shore |
-| Glow tube | 3,108 | 2,060 | 6,216 | Colonies at the waterline and around rocks |
-| Coilfern | 3,077 | 2,084 | 6,154 | Fern walk, west groves and upland trails |
+| Blush rosette | 560 | 364 | 6,142 | Sheltered tree and stone bases |
+| Cut-leaf fern | 480 | 312 | 5,756 | Grove shade and shore |
+| Glow tube | 3,161 | 2,025 | 6,322 | Colonies at the waterline and around rocks |
+| Coilfern | 3,073 | 2,063 | 6,146 | Fern walk, west groves and upland trails |
 | Lantern bell | 1,613 | 1,047 | 3,226 | Shore, meadow and headwaters |
-| Tidecup | 413 | 286 | 7,021 | Wet margins |
+| Tidecup | 432 | 281 | 7,344 | Wet margins |
 | Arrowleaf | 1,042 | 790 | 6,746 | Rock benches, eastern and southern walks |
 | Spiral rosette | 514 | 514 | 10,794 | Path edges, banks and grove margins |
-| **Total** | **10,807** | **7,457** | **52,083** | |
+| **Total** | **10,875** | **7,396** | **52,476** | |
 
-Blush and spiral rosettes have separate generators and silhouettes. The first seven families share a strip renderer with **41,289** desktop pieces or **28,154** on coarse pointers. Each tidecup has 12 lobes and five pollen filaments. Its filaments reuse the glow-tube shader, accounting for 2,065 desktop strips. Each spiral rosette has 21 strap leaves in three overlapping fans. The desktop `leaves` counter combines those 10,794 straps with 259,125 tree sprays for a total of **269,919**. A spray can contain many individual leaflets.
+Blush and spiral rosettes have separate generators and silhouettes. The first seven families share a strip renderer with **41,682** desktop pieces or **27,890** on coarse pointers. Each tidecup has 12 lobes and five pollen filaments. Its filaments reuse the glow-tube shader, accounting for 2,160 desktop strips. Each spiral rosette has 21 strap leaves in three overlapping fans. The desktop `leaves` counter combines those 10,794 straps with 259,125 tree sprays for a total of **269,919**. A spray can contain many individual leaflets.
 
-**Grass and surface cover.** The full map holds **5,553,733 grass root records** on desktop and **2,613,048** on coarse pointers. A root occupies eight bytes and can carry one to three blades up close. Tile visibility and distance determine how many blades the GPU draws each frame. Shade, moisture, exposure and elevation blend green meadow, sedge and straw heath. Light pink grass grows in the eastern meadow, western fen and a band along the upper river. Along the waterline, reeds grow in pockets with open gravel between them. They share the grass renderer. Ground moss, fungal filaments, rock lichen and fallen litter live in surface materials. Eight drifting spore pods, airborne motes and spore rain are effects. [Meadow generation](../demo/meadow.js) · [Habitats and surface materials](../demo/game.js)
+**Grass and surface cover.** The full map holds **5,554,344 grass root records** on desktop and **2,613,378** on coarse pointers. A root occupies eight bytes and can carry one to three blades up close. Tile visibility and distance determine how many blades the GPU draws each frame. Shade, moisture, exposure and elevation blend green meadow, sedge and straw heath. Light pink grass grows in the eastern meadow, western fen and a band along the upper river. Along the waterline, reeds grow in pockets with open gravel between them. They share the grass renderer. Ground moss, fungal filaments, rock lichen and fallen litter live in surface materials. Eight drifting spore pods, airborne motes and spore rain are effects. [Meadow generation](../demo/meadow.js) · [Habitats and surface materials](../demo/game.js)
 
 The separate 10 × 10 m grass lab has **15,016 desktop roots** or **8,566 coarse-pointer roots**. The clearing changes local placement, giving the lab backdrop 1,210 trees and 465 spiral rosettes. It skips the seven-family understory draw, shader compilation and instance upload. The CPU still uses those plant positions for the baked lighting.
 
@@ -62,7 +62,7 @@ The separate 10 × 10 m grass lab has **15,016 desktop roots** or **8,566 coarse
 - **Plant placement.** The audit found zero coincident rooted understory placements, including checks between the two rosettes and all seven strip families, and zero understory roots exactly on a trunk centre. Crossed strips, cup filaments and clumped grass siblings intentionally share a base.
 - **Art inventory.** All 21 tree and leaf asset files in the repository, including the archived oak trial, have distinct file hashes. The small compressed leaf atlas and its raw fallback decode to the same six mip levels, also present in the larger atlas. Each browser selects one file. The game’s atlas supplies four canopy sprays and four ground-leaf shapes. [Atlas selection](../demo/leaf-spray.js)
 - **Source-only art.** Of 55 PNGs in the artist’s main texture folder, 54 have unique SHA-256 hashes. The winter cluster’s `Subsurface` and `SubsurfaceAmount` PNGs are byte-identical. The billboard folder has 323 PNGs and 323 distinct hashes. Both folders stay outside the runtime download.
-- **Ground-light bake.** Counting the tallest part at each root gives 3,656 desktop stamps across 15,491 eligible strips, or 2,507 across 10,697 on coarse pointers. The grass lab skips uploading 41,760 desktop or 28,135 coarse-pointer understory strips.
+- **Ground-light bake.** Counting the tallest part at each root gives 3,634 desktop stamps across 15,710 eligible strips, or 2,481 across 10,595 on coarse pointers. The grass lab skips uploading 41,697 desktop or 28,053 coarse-pointer understory strips.
 
 ## Reproduce the census
 

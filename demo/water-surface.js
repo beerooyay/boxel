@@ -95,6 +95,50 @@ export function createWaterSurface(grid, bedAt) {
       }
     return true;
   }
+  // A moving chest presses water down and out. Apply the discrete Laplacian of
+  // its pressure footprint: every push down is balanced by a push into wet
+  // neighbours. The wave solver carries the bow and stern waves after a turn.
+  function swim(x, z, vx, vz, dt, body, stroke) {
+    const source = locate(x, z);
+    if (!source) return;
+    const dx = vx - flowX[source], dz = vz - flowZ[source];
+    const speed = Math.hypot(dx, dz);
+    if (speed < 0.04) return;
+    const fx = dx / speed, fz = dz / speed;
+    // Integrate over several samples even for the narrowest swimmer.
+    const length = body.halfLength + 1.25 * step, widthAtChest = body.halfWidth + step;
+    // Each diagonal pull loads the shoulders, then releases a short wave.
+    const load = 1 + 0.48 * Math.cos(4 * Math.PI * stroke);
+    const head = Math.min(0.27 * body.draft, speed * speed / (2 * 9.81)) * load;
+    const impulse = c2[source] * head * (dt / DT);
+    const reach = Math.max(length, 1.18 * widthAtChest);
+    const minI = Math.max(0, Math.floor((x - reach - x0) / step));
+    const maxI = Math.min(width - 1, Math.floor((x + reach - x0) / step));
+    const minJ = Math.max(0, Math.floor((z - reach - z0) / step));
+    const maxJ = Math.min(height - 1, Math.floor((z + reach - z0) / step));
+    for (let j = minJ; j <= maxJ; j++) {
+      const rz = z0 + (j + 0.5) * step - z;
+      for (let i = minI; i <= maxI; i++) {
+        const k = lookup[j * width + i];
+        if (!k || Math.abs(levels[k] - levels[source]) >= 0.35) continue;
+        const rx = x0 + (i + 0.5) * step - x;
+        const along = (rx * fx + rz * fz) / length;
+        const across = (rx * fz - rz * fx) / (widthAtChest * (1 + 0.18 * along));
+        const kernel = 1 - along * along - across * across;
+        if (kernel <= 0) continue;
+        const push = impulse * kernel * kernel;
+        v[k] -= 4 * push;
+        v[west[k]] += push; v[east[k]] += push;
+        v[north[k]] += push; v[south[k]] += push;
+      }
+    }
+    // The four neighbours can belong to the next tile.
+    const left = Math.max(0, minI - 1) >> 4, right = Math.min(width - 1, maxI + 1) >> 4;
+    const bottom = Math.min(height - 1, maxJ + 1) >> 4;
+    for (let j = Math.max(0, minJ - 1) >> 4; j <= bottom; j++) {
+      active.fill(1, j * tileCols + left, j * tileCols + right + 1);
+    }
+  }
   function tick(windX, windZ, windAt) {
     next.fill(0);
     for (let t = 0; t < tiles.length; t++) {
@@ -191,6 +235,7 @@ export function createWaterSurface(grid, bedAt) {
   }
   return {
     touch,
+    swim,
     advance,
     reset,
     pack,

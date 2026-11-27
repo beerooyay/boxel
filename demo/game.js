@@ -851,12 +851,17 @@ void main(){
   alb = mix(alb, mix(heath, litter, 0.5) * (0.68 + 0.55 * hummocks + 0.15 * n3), upland * (1. - shore) * 0.64);
   float rk = max(smoothstep(0.34, 0.58, mix(slopeG, slope, 0.22) + 0.13 * n2), smoothstep(6. + 11. * upland, 12. + 16. * upland, y) * 0.8);
   alb = mix(alb, rock, rk); rough = mix(rough, 0.62, rk);
-  if (abs(p.y-(${falls.lip}))<2.8 && abs(p.x-(${riverX(falls.lip).toFixed(3)}))<5.) {
-    vec3 slab=texture(uRockSurface,vec2(vWP.x*0.56+vWP.z*0.14,vWP.y*0.88+vWP.z*0.14)).rgb;
-    float layer=0.54+0.22*sin(vWP.y*14.+0.73*vWP.x+2.9*n1)+0.35*slab.b;
-    float face=smoothstep(0.06,0.46,slopeG)*(1.-smoothstep(1.9,2.8,abs(p.y-(${falls.lip}))));
-    vec3 slate=mix(vec3(0.037,0.053,0.051),vec3(0.19,0.17,0.138),layer)*(.65+.52*n3);
-    alb=mix(alb,slate,face); rough=mix(rough,0.39,face);
+  vec2 sill=p-vec2(${riverX(falls.lip).toFixed(3)},${falls.lip});
+  if (abs(sill.y)<4.2 && abs(sill.x)<5.5) {
+    vec3 sp=vWP*0.63;
+    float mineral=dot(weights,vec3(texture(uRockSurface,sp.zy).b, texture(uRockSurface,sp.xz).b, texture(uRockSurface,sp.xy).b));
+    float layer=vnoise(vec2(dot(p,vec2(0.88,-0.38))*0.65,vWP.y*2.4+0.30*vWP.x+1.6*n1));
+    float face=smoothstep(0.08,0.39,slopeG)*(1.-smoothstep(1.9,4.2,abs(sill.y)))*(1.-smoothstep(3.5,5.5,abs(sill.x)));
+    float drier=smoothstep(-0.03,0.84,bank+0.20*(n2-0.5));
+    vec3 slate=shale(0.24+0.57*layer)*(0.54+0.90*mineral)*(0.69+0.31*drier);
+    float cap=smoothstep(0.55,0.85,vN.y+0.17*(n2-0.5))*smoothstep(0.33,0.64,0.6*n1+0.4*mineral)*drier;
+    slate=mix(slate,mix(vec3(0.067,0.106,0.039),vec3(0.17,0.21,0.078),n2)*(0.72+0.46*n3),cap);
+    alb=mix(alb,slate,face); rough=mix(rough,mix(0.44,0.76,drier),face);
   }
   // Discontinuous beds and runoff flutes break up the exposed valley cliffs at the scale
   // visible across the lake. The height coordinate keeps detail on near-vertical faces.
@@ -1043,7 +1048,7 @@ void main(){
 
 const ROCK = program(WORLD_VS + `
 in vec3 aPos, aPos1, aPos2, aNor, aNor1, aNor2; in vec4 aI, aS, aBed;
-flat out vec3 vBed, vAlong, vUp;
+flat out vec4 vBed; flat out vec3 vAlong, vUp;
 out vec3 vWP, vLoc, vNl; out float vH, vToe, vCurv;
 void main(){
   float form = min(aS.w * 3., 2.999999), w = fract(form);
@@ -1058,11 +1063,11 @@ void main(){
   mat3 frame = mat3(vAlong, vUp, cross(vAlong,vUp));
   vLoc = rp * aS.xyz; vNl = normalize(rn / aS.xyz); vH = aS.w;
   vWP = aI.xyz + frame * vLoc;
-  vBed = vec3(aBed.zw, max(aS.x,aS.z)); vToe = rp.y;
+  vBed = vec4(max(0.,aBed.z),aBed.w,max(aS.x,aS.z),float(aBed.z<0.)); vToe = rp.y;
   gl_Position = project(vWP);
 }`,
 `uniform float uClip; uniform sampler2D uRockSurface;
-flat in vec3 vBed, vAlong, vUp; in vec3 vWP, vLoc, vNl; in float vH, vToe, vCurv; out vec4 o;
+flat in vec4 vBed; flat in vec3 vAlong, vUp; in vec3 vWP, vLoc, vNl; in float vH, vToe, vCurv; out vec4 o;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 V = normalize(uCam - vWP);
@@ -1110,6 +1115,16 @@ void main(){
     vec3 mossTint = mix(vec3(0.027, 0.08, 0.052), vec3(0.12, 0.215, 0.103), n2);
     moss *= 0.28 + 0.52 * (1.-smoothstep(0.30,2.9,abs(vWP.y-vBed.y)));
     alb = mix(alb, mossTint * (0.68 + 0.6 * speck), moss);
+    if(vBed.w>0.){
+      // Beds continue across adjoining blocks. Moss takes the damp, sky-facing shelves.
+      float layer=vWP.y*1.82+dot(vWP.xz,vec2(.33,-.17))+.41*vnoise(vWP.xz*1.1);
+      float fracture=vnoise(vec2(dot(vWP.xz,vec2(.79,.44)),floor(layer)*1.17));
+      float joint=(1.-smoothstep(.026,.105,abs(fract(layer)-.5)))*smoothstep(.27,.68,fracture);
+      float ledge=smoothstep(.31,.76,N.y+.25*(humus-.5));
+      float cap=ledge*(.38+.62*smoothstep(.27,.69,humus+.18*(mineral-.5)))*smoothstep(.03,.55,vWP.y-vBed.y);
+      vec3 weathered=mix(alb,vec3(.23,.24,.205)*(.47+.82*mineral),.49);
+      alb=mix(weathered*(1.-.33*joint),vec3(.085,.145,.047)*(.61+.85*n2),cap);
+    }
     float shoreWet;
     alb = waterline(alb, vWP, vBed.y, shoreWet);
     float wet = clamp(max(shoreWet, (texture(uGround, uv).r + uSheet) * inf), 0., 1.);
@@ -1605,6 +1620,7 @@ void main(){
 }`);
 
 const cascade = createWaterfall(gl,program,WORLD_VS,vao);
+const PADDLE_MARKS=8, PADDLE_LIFE=1.55;
 const WATERP = program(WORLD_VS + `
 in vec2 aXZ, aBedSlope; in vec3 aWater; out vec3 vWP; out float vDepth, vWave, vFlow, vGust; out vec2 vBedSlope;
 void main(){
@@ -1613,7 +1629,34 @@ void main(){
   vWP = vec3(aXZ.x, aWater.x + vWave, aXZ.y); vDepth = aWater.y; vFlow = aWater.z; gl_Position = project(vWP);
 }`,
 plungeGLSL + `uniform sampler2D uRefl, uUnder; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel;
+uniform vec4 uPaddleArea, uPaddles[${PADDLE_MARKS}]; uniform vec2 uPull[${PADDLE_MARKS}];
 in vec3 vWP; in float vDepth, vWave, vFlow, vGust; in vec2 vBedSlope; out vec4 o;
+// Short capillary waves are narrower than a cell of the gravity-wave solver.
+// Launch them at real paw contacts and drift their centres with the surface.
+vec2 paddleSlope(vec2 p,vec2 drift,vec2 longSlope,float pixelMetres){
+  if(any(lessThan(p,uPaddleArea.xy)) || any(greaterThan(p,uPaddleArea.zw))) return vec2(0.);
+  vec2 slopes=vec2(0.);
+  for(int i=0;i<${PADDLE_MARKS};i++){
+    vec4 paw=uPaddles[i]; float age=uTime-paw.z;
+    if(paw.w<=0. || age<=0. || age>=${PADDLE_LIFE}) continue;
+    vec2 pull=uPull[i];
+    vec2 q=p-paw.xy-age*(drift+.07*pull+.24*longSlope);
+    q-=.13*pull*dot(q,pull);
+    float r=length(q), seed=fract(dot(paw.xy,vec2(.713,.439)));
+    float crest=.075+age*(.81+.19*seed-.055*age);
+    float d=r-crest;
+    if(d<-.29 || d>.16) continue;
+    float width=.024+.025*age;
+    float filtered=sqrt(width*width+.25*pixelMetres*pixelMetres);
+    float k=d/filtered, back=k+2.85;
+    float wave=k*exp(-.63*k*k)+.47*back*exp(-.72*back*back);
+    float fade=smoothstep(0.,.10,age)*(1.-smoothstep(.29,${PADDLE_LIFE},age));
+    vec2 direction=q/max(.045,r);
+    float spread=.47+.53*smoothstep(-.65,.72,dot(direction,pull));
+    slopes+=direction*wave*paw.w*.39*fade*spread*width*width/(filtered*filtered);
+  }
+  return slopes;
+}
 // A cell schedules impacts. A new event can land anywhere in it, and its wave
 // crosses the boundary. The largest wave travels less than half a cell, so only
 // the current cell and the three neighbours in the nearest quadrant can reach p.
@@ -1692,6 +1735,12 @@ void main(){
   float lane = p.x-mix(bendX,-18.,smoothstep(66.,100.,-p.y));
   float flow = p.y*3.3-uTime*2.2+vnoise(vec2(lane*1.3,p.y*1.3-uTime*0.78))*3.8;
   vec2 downstream = normalize(vec2(0.442*cos(p.y*0.13)+0.406*cos(p.y*0.29+0.8),1.));
+  // The wet grid stops the fine waves from jumping a dry bar or the lip.
+  float carrier=length(disturbance.yz)+4.*abs(disturbance.x)+disturbance.a;
+  vec2 fineWake=vec2(0.);
+  if(carrier>.001) fineWake=smoothstep(.001,.014,carrier)*paddleSlope(p,
+    downstream*stream*(.24+.64*smoothstep(.02,.57,depth))+WIND_DIR*.085*clamp(vGust,0.,1.7),disturbance.yz,pixelMetres);
+  g+=fineWake;
   g += stream*(downstream*0.028*cos(flow)+vec2(downstream.y,-downstream.x)*0.012*sin(flow*0.71));
   vec3 N = normalize(vec3(-g.x, 1., -g.y));
   vec3 V = normalize(uCam - vWP); float NdV = clamp(dot(N, V), 0., 1.);
@@ -1732,11 +1781,26 @@ void main(){
   }
   float wash = vnoise(p*vec2(3.9,2.6)-downstream*uTime*(0.21+0.53*stream));
   float bubbles=smoothstep(0.19,0.80,wash+0.23*(vnoise(15.*p-0.45*uTime)-0.5));
-  float splashCap=smoothstep(0.018,0.085,disturbance.x)*smoothstep(0.06,0.24,length(disturbance.yz));
-  float breaker=min(1.,front.w+splashCap)*bubbles;
+  float steepness=length(disturbance.yz);
+  // The two faces of a short ripple catch different parts of the sky. This
+  // still reads at a steep chase-camera angle looking into dark water.
+  vec2 skySlope=normalize(uSunDir.xz-0.56*V.xz+vec2(0.001,0.));
+  float tilt=dot(disturbance.yz+fineWake,skySlope);
+  float skylight=1.-0.91*uNight, face=max(0.,tilt);
+  col*=1.-0.29*skylight*smoothstep(0.,0.20,-tilt);
+  col+=(0.19*refl+0.23*col+vec3(0.037,0.054,0.057))*(face/(face+0.15))*skylight;
+  float splashCap=smoothstep(0.015,0.073,disturbance.x)*smoothstep(0.067,0.30,steepness);
+  float breaker=min(1.,front.w+0.58*splashCap)*bubbles;
   float swash=(1.-smoothstep(0.024,0.16,abs(depth-0.041)))*(0.045+0.61*front.w);
   float foam = breaker+(swash+0.065*stream*smoothstep(0.84,1.,sin(flow))*smoothstep(0.44,0.74,wash))*shoreFroth(p);
   float whitewater=plungeFoam(p,uTime)*smoothstep(0.,0.23,depth);
+  // Residual bubbles follow the same advected contact field as the plankton.
+  // They break up along wave faces and lose their white tips as the water settles.
+  float churn=smoothstep(0.05,0.57,disturbance.a)*(0.24+0.76*smoothstep(0.010,0.107,steepness));
+  if (churn>0.001) {
+    float flecks=smoothstep(0.51,0.77,vnoise(p*21.+wash*1.6-downstream*uTime*(0.22+stream)));
+    foam+=churn*(0.10+0.50*flecks);
+  }
   foam=min(1.,foam+whitewater);
   float light = uNight * uNight * glowI(glow);
   col = mix(col, tonemap(vec3(0.75, 0.82, 0.82) * (ambient(N) * 2.4 + uSunCol * sun * 0.16)), min(1.,foam*0.58+whitewater*0.38+breaker*0.20));
@@ -2202,13 +2266,10 @@ function scatter(near, fixed, meshes) {
     }
   }
 
-  // The lip shows through the thinner side streams. Low blocks break the pool's banks.
+  // The embedded outcrop below supplies the lip. Rounded stones collect farther down the pool.
   const ledgeRand=rng(17631);
   for (const [side,dz,rx,ry,rz] of [
-    [-2.26,-0.48,1.08,0.71,1.05], [2.32,-0.70,1.29,0.87,1.20],
-    [-2.34,1.92,1.35,0.65,1.08], [2.42,2.53,1.05,0.78,1.31],
     [-1.73,4.5,0.71,0.74,0.88], [2.10,5.35,0.80,0.54,0.90],
-    [-0.62,-1.1,0.46,0.70,0.49],
   ]) {
     const z=falls.lip+dz;
     add(1,riverX(z)+side,z,rx,ry,rz,ledgeRand);
@@ -2322,22 +2383,31 @@ function scatter(near, fixed, meshes) {
     const radius = 0.073*tall[i+3];
     reserve(tall[i], tall[i+2], radius, radius, 0);
   }
-  // These outcrops are rooted in the continuous rock shelf. Embed their
-  // undersides into it so the spill divides at a rounded, weathered edge.
-  const lip = falls.lip, cap = riverLevel(lip);
-  for (const [lane, run, ceiling, sx, sy, sz, yaw, tint] of [
-    [-0.67, -0.02, cap + 0.03, 0.55, 0.60, 0.90, 1.32, 0.38],
-    [-2.94, -0.29, cap - 0.92, 0.99, 0.83, 1.14, 0.80, 0.44],
-    [2.98, -0.36, cap - 1.02, 1.03, 0.99, 1.17, 2.31, 0.79],
-    [-2.69, 1.20, cap - 1.98, 0.85, 0.75, 0.97, 1.09, 0.40],
-    [2.72, 2.00, riverLevel(lip + 2) - 0.29, 0.80, 0.65, 1.03, 1.91, 0.56],
+  // Adjacent weathered blocks belong to one outcrop. Their crowns follow the
+  // bank, and their bases extend into the lower substrate around each toe.
+  for (const [lane, run, sx, thickness, sz, yaw, tint] of [
+    [-2.18,-0.43, 0.88,0.92,1.00, 0.67,0.28], [-3.31,0.59, 1.24,1.20,1.12, 2.67,0.12],
+    [-2.04,0.83, 0.71,1.16,0.85, 0.21,0.32], [-2.27,1.67, 0.86,0.98,0.76, 0.94,0.06],
+    [-2.96,2.37, 0.96,0.80,0.83, 1.92,0.27], [-3.84,3.49, 0.65,0.55,0.81, 1.27,0.40],
+    [2.34,-0.75, 0.89,0.99,0.96, 2.12,0.24], [3.44,0.57, 1.08,1.06,1.16, 0.96,0.10],
+    [2.24,0.51, 0.85,1.39,0.89, 1.78,0.26], [2.05,1.41, 0.73,1.12,0.85, 2.55,0.14],
+    [3.08,1.64, 0.95,1.38,1.16, 0.78,0.29], [2.51,2.54, 0.91,0.83,0.83, 1.14,0.04],
+    [3.61,3.12, 1.04,0.79,0.95, 2.94,0.21], [3.91,4.04, 0.74,0.60,0.70, 0.52,0.45],
   ]) {
-    const z = lip + run, x = riverX(z) + lane;
+    const z = falls.lip + run, x = riverX(z) + lane;
+    const ground = groundAt(x,z);
+    let toe = ground;
+    for (let i=0; i<12; i++) {
+      const a=i*Math.PI/6;
+      const dx=0.78*sx*Math.cos(a), dz=0.78*sz*Math.sin(a);
+      toe=Math.min(toe,groundAt(x+dx*Math.cos(yaw)-dz*Math.sin(yaw),z+dx*Math.sin(yaw)+dz*Math.cos(yaw)));
+    }
+    const sy=Math.min(1.78,thickness+0.58*(ground-toe));
+    const y=Math.min(ground-0.27*sy,toe+0.035*sy);
     const footprint = drop(meshes[1], x, z, sx, sy, sz, yaw, tint, { gx: 0, gz: 0 });
-    if (!reserve(footprint)) continue;
-    const y = Math.min(ceiling, groundAt(x, z) + 0.12 * sy);
+    reserve(footprint,true);
     rv[1].push(x, y, z, yaw); rs[1].push(sx, sy, sz, tint);
-    beds[1].push(0, 0, 0, waterLevel(x, z));
+    beds[1].push(0, 0, -1, waterLevel(x, z));
     const x0 = macro(footprint.x0), x1 = macro(footprint.x1), z1 = macro(footprint.z1);
     for (let j = macro(footprint.z0); j <= z1; j++) fixed.fill(1, j*fixedWidth+x0, j*fixedWidth+x1+1);
   }
@@ -2773,7 +2843,9 @@ function buildValley() {
       }
       const ld = y > -0.38 && y < 0.55 ? lakeD(x, z) : 0;
       if ((ld > 9.7 && ld < 12.6 || water > 0.1) && y-water < 0.44) {
-        const sedge = sm(0.53,0.83,tuftBed)*sm(-0.10,0.21,y-water);
+        const nearFalls=Math.abs(z-falls.lip)<4.2 && Math.abs(x-riverX(z))<5.5;
+        const shelf=nearFalls ? sm(0.55,0.82,nearNy(near,x,z)) : 1;
+        const sedge = sm(0.53,0.83,tuftBed)*sm(-0.10,0.21,y-water)*shelf;
         data[i] = 0.29*sedge*(1-tread);
         data[i+1] = 0.62+1.60*sedge;
         return;
@@ -3242,11 +3314,30 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 const uploadSurfaceWaves = waterTexture(gl,surface,28);
 let simT = 0, denseUpload = null;
+const paddleMarks=new Float32Array(PADDLE_MARKS*4);
+const paddlePulls=new Float32Array(PADDLE_MARKS*2);
+let paddleIndex=0;
+function bindPaddles(t) {
+  let minX=Infinity, minZ=Infinity, maxX=-Infinity, maxZ=-Infinity;
+  for (let i=0;i<paddleMarks.length;i+=4) {
+    const age=t-paddleMarks[i+2];
+    if (!paddleMarks[i+3] || age<0 || age>=PADDLE_LIFE) continue;
+    const x=paddleMarks[i], z=paddleMarks[i+1], radius=0.32+2.35*age;
+    minX=Math.min(minX,x-radius); maxX=Math.max(maxX,x+radius);
+    minZ=Math.min(minZ,z-radius); maxZ=Math.max(maxZ,z+radius);
+  }
+  if (minX===Infinity) gl.uniform4f(WATERP.u('uPaddleArea'),1,1,-1,-1);
+  else {
+    gl.uniform4f(WATERP.u('uPaddleArea'),minX,minZ,maxX,maxZ);
+    gl.uniform4fv(WATERP.u('uPaddles[0]'),paddleMarks);
+    gl.uniform2fv(WATERP.u('uPull[0]'),paddlePulls);
+  }
+}
 
 function setMode(m) {
   // Dense rows overwrite the whole image. All three layers can reuse the same staging buffer.
   denseUpload = m === DENSE ? (denseUpload ?? new Uint8Array(N * N)) : null;
-  mode = m; sailwings.reset(); surface.reset(); post.previous = null;
+  mode = m; sailwings.reset(); surface.reset(); paddleMarks.fill(0); post.previous = null;
   acc = { frames: 0, t: 0, ms: 0, up: 0 }; wall = 0;
   for (const f of [glowF, groundF, wearF]) f.set(m);
 }
@@ -3261,8 +3352,15 @@ function footstep(x, z, inWater, wetFeet, run, depth = 0.35) {
     if (wetFeet>0) groundF.contact(x,z,0.70*wetFeet);
   }
 }
-function wetContact(x,z,strength,energy) {
-  if (surface.touch(x,z,strength,energy)) glowF.contact(x,z,0.55*energy);
+function wetContact(x,z,strength,energy,pullX=0,pullZ=0) {
+  if (!surface.touch(x,z,strength,energy)) return;
+  glowF.contact(x,z,0.55*energy);
+  if (pullX || pullZ) {
+    const i=4*paddleIndex;
+    paddleMarks[i]=x; paddleMarks[i+1]=z; paddleMarks[i+2]=simT; paddleMarks[i+3]=strength;
+    paddlePulls[2*paddleIndex]=pullX; paddlePulls[2*paddleIndex+1]=pullZ;
+    paddleIndex=(paddleIndex+1)%PADDLE_MARKS;
+  }
 }
 function splash(x, z, water, strength = 1.4, at = simT) {
   sailwings.startle(x, water ? waterLevel(x,z) : H(x,z), z, at, strength);
@@ -3689,14 +3787,24 @@ function stepPlayer(dt) {
   if (player.grounded && wasGrounded && travel>0.0001) {
     player.scrambling=Math.abs(rise)/travel > (player.scrambling ? 0.65 : 0.84);
   } else if (!player.grounded || !wasGrounded) player.scrambling=false;
-  if (player.swimming) {
+  if (player.swimming && fox) {
     const speed=travel/dt, previous=player.stroke;
     player.stroke=(previous+dt*(0.50+0.52*Math.min(2.5,speed)))%1;
+    const body=fox.waterline, fx=Math.sin(foxPose.yaw), fz=-Math.cos(foxPose.yaw);
+    surface.swim((oldX+player.x)*0.5+fx*body.centre, (oldZ+player.z)*0.5+fz*body.centre,
+      (player.x-oldX)/dt, (player.z-oldZ)/dt, dt, body, player.stroke);
     if (Math.floor(previous*2)!==Math.floor(player.stroke*2)) {
-      const side=player.stroke<0.5 ? 1 : -1, size=Math.sqrt(fox?.contactScale ?? 1);
-      const yaw=foxPose.yaw, forward=0.19*size, across=side*0.13*size;
-      wetContact(player.x+Math.sin(yaw)*forward+Math.cos(yaw)*across,
-        player.z-Math.cos(yaw)*forward+Math.sin(yaw)*across,0.16+0.21*Math.min(2,speed),0.19+0.16*Math.min(2,speed));
+      const side=player.stroke<0.5 ? 1 : -1;
+      const across=side*(body.halfWidth+Math.min(body.draft*0.2,0.13));
+      const forward=body.centre+0.28*body.halfLength;
+      const pull=Math.min(1.7,(0.27+1.04*sm(0,1.65,speed)+0.16*sm(1.65,2.9,speed))*Math.sqrt(fox.contactScale));
+      const air=0.11+0.43*sm(0,1.9,speed);
+      wetContact(player.x+fx*forward-fz*across,player.z+fz*forward+fx*across,pull,air,
+        -0.8*fx-0.6*side*fz,-0.8*fz+0.6*side*fx);
+      if (speed>0.18) {
+        const rear=body.centre-0.76*body.halfLength;
+        wetContact(player.x+fx*rear+fz*across,player.z+fz*rear-fx*across,0.64*pull,0.68*air);
+      }
     }
   }
   const speed = distance / dt, strideLen = 0.48 + 0.49 * sm(1.9, 4.2, speed);
@@ -4174,6 +4282,7 @@ function render(t, camOverride, glowTexture = texGlow, dt = 0) {
     copyUnderwater(w, h, waterInView);
     gl.colorMask(true, true, true, false);
     common(WATERP, cam.eye, VP, 1, t);
+    bindPaddles(t);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, reflTex);
     gl.uniform2f(WATERP.u('uRes'), w, h);
     gl.uniform2f(WATERP.u('uRightXZ'), b.r[0], b.r[2]); gl.uniform1f(WATERP.u('uMirrorLevel'), reflectionLevel);

@@ -126,12 +126,13 @@ export function stoneDrop(terrain, stride, coord, ground) {
 // tilted stone at every detail level. A separating interval guarantees a gap.
 export function stoneSpacing() {
   const bins = new Map(), width = 4;
-  return function reserve(stone) {
+  return function reserve(stone, embedded = false) {
     const keys = [];
     for (let j = Math.floor(stone.z0/width); j <= Math.floor(stone.z1/width); j++) {
       for (let i = Math.floor(stone.x0/width); i <= Math.floor(stone.x1/width); i++) {
         const key = i + ',' + j;
         keys.push(key);
+        if (embedded) continue;
         for (const other of bins.get(key) || []) {
           if (stone.x1 <= other.x0 || stone.x0 >= other.x1 || stone.z1 <= other.z0 || stone.z0 >= other.z1) continue;
           if (stone.sum1 <= other.sum0 || stone.sum0 >= other.sum1 || stone.diff1 <= other.diff0 || stone.diff0 >= other.diff1) continue;

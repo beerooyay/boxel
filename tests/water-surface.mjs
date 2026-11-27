@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWaterSurface } from '../demo/water-surface.js';
 import { falls, riverLevel, riverX, waterLevel, terrainHeight } from '../demo/landmarks.js';
+import { lipZ, landingAt } from '../demo/waterfall.js';
 
 const grid = { x0: 0, z0: 0, width: 48, height: 48, step: 0.24 };
 function tank(current = 0, wall = false) {
@@ -77,6 +78,63 @@ test('fixed steps give the same wake at 24 and 120 Hz, and reset clears it', () 
   const q = slow.sample(3.84, 4.68);
   assert.equal(q.light, 0);
   assert.equal(q.height, 0);
+});
+
+const fox = { halfWidth: 0.21, halfLength: 0.48, draft: 0.416 };
+test('a swimming body displaces water across tile boundaries without adding volume or lighting the lake', () => {
+  const lake = tank(), drifting = tank(0.8), bank = tank(0, true);
+  lake.swim(3.84, 7.68, 2.3, 0, 1/30, fox, 0.2);
+  drifting.swim(3.84, 7.68, 0, 0.8, 1/30, fox, 0.2);
+  bank.swim(5.64, 3, 2.3, 0, 1/30, fox, 0.2);
+  for (const basin of [lake, drifting, bank]) basin.advance(1/30);
+  let volume = 0, high = 0, low = 0;
+  for (let j = 0; j < grid.height; j++) for (let i = 0; i < grid.width; i++) {
+    const x = (i+0.5)*grid.step, z = (j+0.5)*grid.step;
+    const { height, light } = lake.sample(x,z);
+    volume += height*grid.step**2;
+    high = Math.max(high, height); low = Math.min(low, height);
+    assert.equal(light, 0);
+    assert.equal(drifting.sample(x,z).height, 0);
+    assert.equal(bank.sample(x,z).height, 0);
+  }
+  assert.ok(high > 0.002 && low < -0.003);
+  assert.ok(Math.abs(volume) < 1e-7);
+});
+test('ordinary paddling sends a signed wake past the tail and faster strokes leave a larger wake at either frame rate', () => {
+  function swim(rate, speed) {
+    const water = tank();
+    for (let frame=0; frame<2*rate; frame++) {
+      const t=(frame+0.5)/rate;
+      water.swim(3+t*speed,5.76,speed,0,1/rate,fox,1.49*t);
+      water.advance(1/rate);
+    }
+    const samples=[];
+    for (let behind=0.75; behind<2.85; behind+=grid.step)
+      for (let side=-1.56; side<1.57; side+=grid.step)
+        samples.push(water.sample(3+2*speed-behind,5.76+side).height);
+    return samples;
+  }
+  const gentle=swim(60,1.3), fast=swim(30,2.4), highRate=swim(120,2.4);
+  assert.ok(Math.max(...gentle)>0.010 && Math.min(...gentle)<-0.010);
+  assert.ok(Math.max(...fast)>2*Math.max(...gentle));
+  const energy=fast.reduce((sum,h)=>sum+h*h,0);
+  const difference=fast.reduce((sum,h,i)=>sum+(h-highRate[i])**2,0);
+  assert.ok(difference/energy<0.03**2);
+});
+
+test('both chutes have bedrock immediately below the lip and room for the falling sheet to reach the pool', () => {
+  const head=riverLevel(falls.lip), tail=riverLevel(falls.lip+falls.reach);
+  for (const s of [-0.78,-0.60,-0.19,0,0.18,0.40]) {
+    const lip=lipZ(s), [,landing]=landingAt(s);
+    for (let i=0; i<=20; i++) {
+      const t=i/20, z=lip+(landing-lip)*t;
+      const x=riverX(z)+s*falls.halfWidth*(0.99+0.08*t*t);
+      const bed=terrainHeight(x,z,6);
+      const water=head+0.010-(head-tail+0.22)*t*t;
+      if (i===0) assert.ok(water-bed < 0.60, 'the feeding water rests on the ledge');
+      assert.ok(water-bed>0, 'exposed terrain does not cut through the chute');
+    }
+  }
 });
 test('the upper race feeds the falls and a scoured pool drains continuously to the ford', () => {
   const top = riverLevel(falls.lip),

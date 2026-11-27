@@ -90,9 +90,10 @@ The forest uses six native broadleaf shapes across 1,233 tree sites. [Tree and f
 A separate Boxel field spreads and dissipates gusts in a moving air mass. The hills shelter the lee.
 Grass, crowns, sailwings, the sound of wind and rough patches on the water sample the same fronts.
 Grass and low leaves part as you pass. Follow the river upstream from the lake to a 2.7-metre waterfall.
-Water splits at the rock lip. Each chute sends short rollers out into its own part of the pool.
+Water splits between mossy shale shoulders. Low spray rises where each chute hits the pool.
 Along the banks, wind waves turn toward the shallows and run up onto gravel between pockets of sedge.
-Wading, skimming sailwings and thrown stones send ripples through one another and back off rocks.
+A swimmer’s chest pushes a bow wave ahead and each paddle sends smaller ripples down its sides.
+The wake travels through ripples from wading animals, skimming sailwings and thrown stones, and reflects off rocks.
 The current and local wind carry disturbed bioluminescent plankton away from contact.
 Footsteps and glowstones light the moss where they touch. [Play at the waterfall](https://beerooyay.github.io/boxel/?falls)
 Cloud shadows cross the valley by

@@ -28,6 +28,13 @@ export async function loadPlayerAnimal(gl, shader, species) {
   const head = heightOf('Head');
   const eyeHeight = nodeIndex('Head_end') < 0 ? head + 0.12*shoulderHeight : 0.78*head+0.22*heightOf('Head_end');
   const draft = Math.min(eyeHeight * 0.72, shoulderHeight * 0.9);
+  const fore = rig.world[frontFeet[0]], hind = rig.world[nodeIndex('IKBackLeg.L')];
+  const waterline = {
+    centre: (fore[14] + hind[14]) * scale * 0.5,
+    halfLength: (fore[14] - hind[14]) * scale * 0.5 + 0.35 * draft,
+    halfWidth: Math.max(Math.abs(fore[12]), Math.abs(hind[12])) * scale + 0.25 * draft,
+    draft
+  };
   const contactScale = species.id === 'Fox' ? 1 : Math.max(0.72, eyeHeight / 0.85, shoulderHeight / 0.51);
   let gait = 'Idle', time = 0, fade = 1, dirty = true;
   let steering = 0, tailLag = 0, bakedLift = 0, fromLift = 0;
@@ -128,6 +135,6 @@ export async function loadPlayerAnimal(gl, shader, species) {
     }
     return surfaces;
   }
-  return { shader, species, eyeHeight, shoulderHeight, draft, contactScale,
+  return { shader, species, eyeHeight, shoulderHeight, draft, waterline, contactScale,
     advance, draw, contactSurfaces, dispose: rig.dispose, get gait() { return gait; } };
 }

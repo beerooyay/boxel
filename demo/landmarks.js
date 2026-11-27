@@ -240,25 +240,27 @@ export function terrainHeight(x, z, base, shapedBanks=true) {
   const sill = smooth(0.20+0.10*pool,1.66+0.14*pool+0.90*bar,d);
   let bed = level-depth+(depth-0.24)*sill+1.31*smooth(1.56+bar,bankTop,d);
   const run=z-falls.lip;
-  if (run > -2 && run < 6.3 && d>3.0) {
-    // Only the wetted ledge drops vertically. Outside it the two dry banks
-    // descend at different lengths along the river, around the rock face.
+  if (run > -4 && run < 8) {
+    // An eroded sill runs across the channel. Its downstream edge recedes
+    // behind the curtain, then curves out into two much broader bank shelves.
     const grade=channelGrade(z);
     const head=upperReach(z,grade), tail=lowerReach(z,grade);
-    const terrace=head+(tail-head)*smooth(-1.1+0.42*side,5.0+0.81*side,run);
-    bed+=(terrace-level)*smooth(3.50+bar,5.22+bar,d);
-  }
-  if (run > -2.5 && run < 2.6) {
-    // A tongue of bedrock splits off a narrower race. Its foot projects
-    // past the vertical cut and stays exposed between the sheets.
     const lane=x-riverX(z);
-    const rib=(1-smooth(0.10,0.56,Math.abs(lane+0.67-0.09*run)));
-    const flank=Math.abs(lane+0.11*Math.sin(3.4*run));
-    const shoulder=smooth(1.58,2.15,flank)*(1-smooth(2.17,3.22,flank));
-    const crown=riverLevel(falls.lip)+0.22-0.18*Math.max(0,run);
-    const reach=1.05+0.24*Math.sin(lane*2.4);
-    const prow=(1-smooth(reach,reach+1.14,run))*smooth(-2.4,-0.8,run);
-    bed+=Math.max(0,crown-bed)*Math.max(rib,shoulder)*prow;
+    const bank=smooth(1.18,4.15,d), right=smooth(-1.4,1.4,lane);
+    const plan=0.16*Math.sin(1.37*lane+0.42)+0.11*Math.sin(2.10*lane);
+    const shoulder=bank*(0.70+0.86*right);
+    const start=-0.20+0.59*plan-0.56*bank+shoulder;
+    const end=1.10+0.64*plan+(3.20+0.88*right)*bank+shoulder;
+    const shelf=head+(tail-head)*smooth(start,end,run);
+    const ledge=smooth(-4,-1.7,run)*(1-smooth(6.1,8,run));
+    // Stone shoulders hold the upper water inside the two spillways. The
+    // gravel submerged at their feet opens out into the normal lower banks.
+    const flank=smooth(1.23,1.99,d)*(1-smooth(3.25,4.95,d));
+    const bedrock=(0.79+0.14*Math.sin(lane*1.7))*flank
+      *smooth(-2.8,-0.6,run)*(1-smooth(0.4,3.45+0.35*right,run));
+    const lip=0.36*(1-smooth(1.22,2.03,d))*smooth(-1.85,-0.5,run)*(1-smooth(0,0.95,run));
+    const gravelShelf=smooth(1.10,2.78,run)*(1-smooth(3.72,4.73,d));
+    bed+=((shelf-level)*ledge+bedrock+lip)*(1-gravelShelf);
   }
   // At the mouth, the channel opens into the existing lake basin.
   return joinBank(base,bed,bankTop,d,z);
