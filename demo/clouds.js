@@ -1,7 +1,7 @@
 import { createWeather, cloudBase, CLOUD_WIND, WEATHER_METRES, WEATHER_SIZE, WEATHER_TILE } from './weather.js';
 
 // An azimuth/elevation atlas stores integrated light, high-altitude skylight,
-// aerial perspective and opacity. The main view, reflected sky and ground
+// opacity-weighted distance along the viewing ray and opacity. The main view, reflected sky and ground
 // illumination all look into the same volume, including in a storm.
 export const cloudSky = `
 uniform highp sampler2DArray uClouds;
@@ -12,17 +12,27 @@ vec2 cloudSkyUV(vec3 d) {
   float az = abs(d.x) + abs(d.z) < 0.00001 ? 0. : atan(d.x, -d.z);
   return vec2(az * 0.159154943 + 0.5, asin(clamp(d.y, 0., 1.)) * 0.636619772);
 }
-vec2 cloudProjection(vec3 origin, vec3 ray, vec4 anchor) {
+vec4 cloudSample(vec3 origin, vec3 ray, vec4 anchor, float layer) {
   vec3 delta = origin - anchor.xyz;
-  float dist = max(60., (anchor.w - delta.y) / max(ray.y, 0.045));
-  return cloudSkyUV(normalize(delta + dist * ray));
+  float guess = max(60., (anchor.w-delta.y)/max(ray.y,0.045));
+  vec3 dir = normalize(delta + guess*ray);
+  vec4 col = texture(uClouds, vec3(cloudSkyUV(dir),layer));
+  // Optical distance follows each bank. A near turret and a distant horizon
+  // cloud travel different angles across the sky as the fox or the air moves.
+  if (col.a > 0.10 && dot(delta,delta) > 0.09) {
+    float range = clamp(8300.*col.b/col.a-dot(delta,ray),0.64*guess,1.75*guess);
+    // A nearly clear pixel has too little optical mass to locate a bank.
+    // Ease into the distance estimate as its opacity and parallax grow.
+    float confidence = 0.72*smoothstep(0.10,0.76,col.a)*smoothstep(0.3,3.,length(delta));
+    vec3 refined=ray+delta*mix(1./guess,1./range,confidence);
+    col=texture(uClouds,vec3(cloudSkyUV(normalize(refined)),layer));
+  }
+  return col;
 }
 vec4 cloudColumn(vec3 origin, vec3 ray) {
-  vec4 col = texture(uClouds, vec3(cloudProjection(origin, ray, uCloudEye), uCloudLayerMix.x));
-  if (uCloudLayerMix.y < 1.) {
-    vec2 uv = cloudProjection(origin, ray, uLastCloudEye);
-    col = mix(texture(uClouds, vec3(uv, uCloudLayerMix.z)), col, uCloudLayerMix.y);
-  }
+  vec4 col = cloudSample(origin,ray,uCloudEye,uCloudLayerMix.x);
+  if (uCloudLayerMix.y < 1.)
+    col = mix(cloudSample(origin,ray,uLastCloudEye,uCloudLayerMix.z),col,uCloudLayerMix.y);
   return col;
 }
 vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
@@ -41,8 +51,8 @@ vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
   vec3 moon = vec3(0.009, 0.013, 0.028) * col.a + vec3(0.023, 0.034, 0.067) * col.g
     + vec3(0.038, 0.051, 0.080) * towardsMoon * (col.g + 0.70 * col.a * (1. - col.a));
   lit = mix(lit, moon, uNight);
-  // Distance haze is integrated with the same weights as opacity.
-  lit = lit * (1. - 0.45 * col.b) + skyBase(ray) * (0.45 * col.b);
+  float haze = 0.45 * smoothstep(1700.,8000.,8300.*col.b/max(col.a,0.001));
+  lit = mix(lit, col.a*skyBase(ray), haze);
   lit += vec3(0.43, 0.48, 0.69) * uFlash * (0.38 * col.a + 0.62 * col.g);
   return behind * (1. - col.a) + lit;
 }`;
@@ -109,8 +119,8 @@ float density(vec3 p, out float height) {
   q += (warp - 0.68) * vec3(77., 46., 43.);
   // New lobes rise through the moist column while the crown and base
   // dissolve them. Move the smaller billows faster than the main body.
-  vec3 large = textureLod(uBillows, q / 1200. - vec3(0., uDriftTime * 0.00042, 0.), 0.).rgb;
-  vec3 fine = textureLod(uBillows, q.zxy / 480. + vec3(0.31, -uDriftTime * 0.00036, 0.53 - uDriftTime * 0.00175), 0.).rgb;
+  vec3 large = textureLod(uBillows, q / 1200. - vec3(0., uDriftTime * 0.00034, 0.), 0.).rgb;
+  vec3 fine = textureLod(uBillows, q.zxy / 480. + vec3(0.31, -uDriftTime * 0.00036, 0.53 - uDriftTime * 0.00092), 0.).rgb;
   // A nearest-feature field is steepest around a lobe's shoulders. Using
   // distance here keeps the fine turrets distinct on the sunlit faces.
   large = 1. - sqrt(max(vec3(0.), 1. - large));
@@ -172,7 +182,7 @@ void main() {
     float weight = trans * alpha;
     float light = sunlight(p, rho);
     light = mix(light, smoothstep(0.13, 0.72, light), 0.72);
-    sum += weight * vec3(light, smoothstep(-0.02, 0.90, height), smoothstep(1700., 8000., dist));
+    sum += weight * vec3(light, smoothstep(-0.02, 0.90, height), dist / 8300.);
     trans *= 1. - alpha;
     if (trans < 0.003) break;
   }
@@ -210,9 +220,9 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
   const eyeUniform = new Float32Array(4), lastEyeUniform = new Float32Array(4);
   const priorWater = weather.water.slice(), priorMaxima = weather.maxima.slice();
   const waterMix = weather.water.slice(), maxMix = weather.maxima.slice();
-  const WEATHER_PERIOD = 4, BLEND_SECONDS = 0.8;
+  const WEATHER_PERIOD = 4;
   let front = 0, shown, previous, pending, row = 0, swappedAt = 0, blend = 1, weatherAge = 0;
-  let blendDuration = BLEND_SECONDS;
+  let blendDuration = 1;
   let lastLayer = 0;
   function spareLayer() {
     // The three layer indices sum to 3. Keep both sampled layers intact.
@@ -260,10 +270,10 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
     const displaced = shown && Math.hypot(eye[0] - shown.eye[0], eye[1] - shown.eye[1], eye[2] - shown.eye[2]) > 18;
     const weatherChanged = shown && Math.abs(rain - shown.rain) > 0.10;
     if (previous && (fixture || t - swappedAt >= blendDuration)) previous = null;
-    const changed = shown && (t - shown.t > 1.25 - 1.03 * motion || displaced || weatherChanged ||
+    const changed = shown && (t - shown.t >= 1.0 - 0.66 * motion || displaced || weatherChanged ||
       (fixture && (alignment < 0.99999 || Math.abs(rain - shown.rain) > 0.001)));
-    // Build the next volume while the last two are still blending during a lapse.
-    if (reset || (!pending && changed && (!previous || motion > 0.1))) {
+    // The third layer is available throughout the blend, including at walking speed.
+    if (reset || (!pending && changed)) {
       upload(weatherAge / WEATHER_PERIOD);
       // Deep twilight lights the existing volume in the composite. Keep the
       // optical light ray above the horizon as the sun sets.
@@ -285,11 +295,13 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
       front = pending.layer;
       shown = pending;
       pending = null;
+      // At low frame rates a complete striped bake takes longer. Match that
+      // cadence so the shapes keep moving between successive volume updates.
+      blendDuration = Math.max(1.0-0.66*shown.motion, Math.min(2.4,t-shown.t));
       swappedAt = t;
-      blendDuration = BLEND_SECONDS - 0.49 * shown.motion;
     }
     const fraction = previous ? Math.min(1, Math.max(0, (t - swappedAt) / blendDuration)) : 1;
-    blend = fraction * fraction * (3 - 2 * fraction);
+    blend = fraction;
     anchor(shown, weatherTime, eyeUniform);
     if (previous) anchor(previous, weatherTime, lastEyeUniform);
     gl.activeTexture(gl.TEXTURE11); gl.bindTexture(gl.TEXTURE_2D_ARRAY, atlas);

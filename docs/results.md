@@ -82,13 +82,15 @@ storm, sparse bookkeeping outweighed the saving in cell updates.
 
 The river fixture runs 900 frames of walking, impacts, spore rain, drifting river pods,
 and sailwing skims, covering 15 seconds of simulation. Two additional impacts exercise the
-upland spring and the eastern shelf outside the original valley. The dense and sparse engines receive
+upland spring and the eastern shelf. Two wet pawprints reach the moss beside the plunge pool
+near the end of the replay. The dense and sparse engines receive
 the same events. At the final tick, the verifier compares all 4,194,304 cells in each of
 three fields, including uniform rain. The picture check renders the same night exposure with
 each engine, then renders Boxel once more with a zero glow texture. All three use the same
 water, moisture, camera, simulation tick and five-frame temporal warmup.
 
-Chrome on an Apple M4 Max at 720 × 480 pixels with the nighttime river fixture gave the following results.
+The following measurements were taken on the earlier river, before the waterfall and contact-driven
+water surface, in Chrome on an Apple M4 Max at 720 × 480 pixels.
 
 | measurement | Boxel | dense |
 |---|---:|---:|

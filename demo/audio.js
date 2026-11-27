@@ -46,6 +46,7 @@ export function createAudio() {
     return { f, g, pan };
   };
   const wind = bed('lowpass', 480, 0.7), whistle = bed('bandpass', 1500, 4), river = bed('bandpass', 850, 0.6);
+  const cascade = bed('bandpass',1100,0.42);
   const lake = bed('lowpass', 300, 0.9), rain = bed('highpass', 1700, 0.4);
 
   const smooth = (param, value, seconds = 0.25) => param.setTargetAtTime(value, ctx.currentTime, seconds);
@@ -81,13 +82,16 @@ export function createAudio() {
     },
     toggle() { muted = !muted; smooth(master.gain, muted ? 0 : 0.85, 0.08); return !muted; },
     /** Once a frame: the weather, the night, and how far the water is, with its bearing (radians, 0 ahead, + right). */
-    update({ wind: strength, gust, height, night, storm, river: [riverDistance, riverBearing], lake: [lakeDistance, lakeBearing] }) {
+    update({ wind: strength, gust, height, night, storm, falls: [fallDistance,fallBearing], river: [riverDistance, riverBearing], lake: [lakeDistance, lakeBearing] }) {
       const g = Math.max(0, gust);
       smooth(wind.g.gain, 0.035 + 0.075 * strength * (0.55 + 0.45 * g) + 0.11 * storm);
       smooth(wind.f.frequency, 380 + 380 * g + 300 * storm, 0.6);
       smooth(whistle.g.gain, 0.006 * g * strength * (1 + Math.max(0, height - 8) / 6));
       smooth(river.g.gain, 0.15 / (1 + riverDistance / 3.5));
       smooth(river.pan.pan, Math.sin(riverBearing) * Math.min(1, riverDistance / 6), 0.15);
+      smooth(cascade.g.gain,0.35/(1+(fallDistance/5.3)**2));
+      smooth(cascade.f.frequency,550+1350/(1+fallDistance/8),0.4);
+      smooth(cascade.pan.pan,0.8*Math.sin(fallBearing)*Math.min(1,fallDistance/4));
       smooth(lake.g.gain, 0.09 / (1 + lakeDistance / 2.5));
       smooth(lake.pan.pan, Math.sin(lakeBearing) * Math.min(1, lakeDistance / 5), 0.15);
       smooth(rain.g.gain, 0.16 * storm, 0.8);

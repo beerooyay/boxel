@@ -161,19 +161,34 @@ export function riverX(z) {
 function riverDistance(x, z) {
   return Math.hypot(x - riverX(Math.max(spring.z, Math.min(-8, z))), Math.max(0, spring.z - z, z + 8));
 }
-function riverLevel(z) {
-  return Math.min(spring.level, Math.max(0, -z - 12) * 0.055 + 1.15 * (1 - smooth(-49, -44, z)) + 0.65 * smooth(65, 82, -z));
+// At the bedrock lip the upper channel spills forward of the cut face.
+export const falls = { lip: -46.6, reach: 1.55, halfWidth: 1.76 };
+function channelGrade(z) {
+  return Math.min(spring.level, Math.max(0,-z-12)*0.055 + 1.15*(1-smooth(-49,-44,z)) + 0.65*smooth(65,82,-z));
+}
+const upperReach = (z, grade) => Math.max(grade,3.92+0.008*(falls.lip-z));
+const lowerReach = (z, grade) => Math.min(grade,1.22+0.012*(falls.lip-z));
+export function riverLevel(z) {
+  const grade=channelGrade(z);
+  if (z < -67 || z > -29) return grade;
+  const upper=upperReach(z,grade), lower=lowerReach(z,grade);
+  return upper+(lower-upper)*smooth(falls.lip,falls.lip+0.48,z);
 }
 // Both lakes are still. Water and drifting impacts pick up the current below the spring's outlet.
 export function riverFlow(z, level) {
   return smooth(0.02, 0.65, level) * smooth(spring.z + 10, spring.z + 20, z);
 }
-export function waterLevel(x, z) {
+export function waterLevel(x, z, shapedBanks=true) {
   if (z < -80 && z > -120 && x > -45 && x < 10 && springRadius(x, z) < 1.40) return spring.level;
-  if (x < -25 || x > 5 || z < spring.z || z > -8) return 0;
-  return riverDistance(x, z) < 3.6 ? riverLevel(z) : 0;
+  if (x < -26 || x > 8 || z < spring.z || z > -8) return 0;
+  if (riverDistance(x,z) >= (shapedBanks ? 5.45 : 3.6)) return 0;
+  return shapedBanks ? riverLevel(z) : channelGrade(z);
 }
-export function terrainHeight(x, z, base) {
+function joinBank(base, bed, bankTop, d, z) {
+  const bank=bed+(Math.min(base,bed)-bed)*smooth(-18,-14,z);
+  return base+(bank-base)*(1-smooth(bankTop,7.5,d))*smooth(spring.z,spring.z+10,z);
+}
+export function terrainHeight(x, z, base, shapedBanks=true) {
   for (const [cx, cz, rx, rz, height, phase] of hills) {
     if (Math.abs(x - cx) > rx || Math.abs(z - cz) > rz) continue;
     const dx = (x - cx) / rx, dz = (z - cz) / rz, r = Math.hypot(dx, dz);
@@ -205,13 +220,46 @@ export function terrainHeight(x, z, base) {
     const basin = spring.level - 1.9 + 2.95 * smooth(0.28, 1.18, r);
     base += (basin - base) * (1 - smooth(1.06, 1.62, r));
   }
-  const d = riverDistance(x, z), level = riverLevel(Math.max(spring.z, z));
+  const d=riverDistance(x,z), level=(shapedBanks?riverLevel:channelGrade)(Math.max(spring.z,z));
   // A shallow gravel ford just upstream of the lake connects both sides of
   // the watershed. Its longer banks can be climbed straight out of the water.
   const ford = 1 - smooth(1.3, 4.6, Math.abs(z + 25));
-  const bankToe = 1.2 - 0.6 * ford, bankTop = 3.4 + 0.7 * ford;
-  const bed = level - 0.58 + 0.26 * ford + (1.65 - 0.30 * ford) * smooth(bankToe, bankTop, d);
+  if (!shapedBanks) {
+    // Established grove seeds were planted on this terrain. Reusing its
+    // acceptance mask prevents an edit at the river from reseeding distant trees.
+    const top=3.4+0.7*ford;
+    const bed=level-0.58+0.26*ford+(1.65-0.30*ford)*smooth(1.2-0.6*ford,top,d);
+    return joinBank(base,bed,top,d,z);
+  }
+  const pool = smooth(falls.lip+0.55, falls.lip+1.6, z) * (1-smooth(falls.lip+3, falls.lip+7, z));
+  // The deep cut ends below water. Gravel fans rise gently through the
+  // waterline and widen on alternate bends, before joining the meadow.
+  const side = Math.sign(x-riverX(z));
+  const bar = side*(0.33*Math.sin(z*0.19+0.7)+0.15*Math.sin(z*0.46));
+  const bankTop = 5.45+bar, depth = 0.58-0.26*ford+0.53*pool;
+  const sill = smooth(0.20+0.10*pool,1.66+0.14*pool+0.90*bar,d);
+  let bed = level-depth+(depth-0.24)*sill+1.31*smooth(1.56+bar,bankTop,d);
+  const run=z-falls.lip;
+  if (run > -2 && run < 6.3 && d>3.0) {
+    // Only the wetted ledge drops vertically. Outside it the two dry banks
+    // descend at different lengths along the river, around the rock face.
+    const grade=channelGrade(z);
+    const head=upperReach(z,grade), tail=lowerReach(z,grade);
+    const terrace=head+(tail-head)*smooth(-1.1+0.42*side,5.0+0.81*side,run);
+    bed+=(terrace-level)*smooth(3.50+bar,5.22+bar,d);
+  }
+  if (run > -2.5 && run < 2.6) {
+    // A tongue of bedrock splits off a narrower race. Its foot projects
+    // past the vertical cut and stays exposed between the sheets.
+    const lane=x-riverX(z);
+    const rib=(1-smooth(0.10,0.56,Math.abs(lane+0.67-0.09*run)));
+    const flank=Math.abs(lane+0.11*Math.sin(3.4*run));
+    const shoulder=smooth(1.58,2.15,flank)*(1-smooth(2.17,3.22,flank));
+    const crown=riverLevel(falls.lip)+0.22-0.18*Math.max(0,run);
+    const reach=1.05+0.24*Math.sin(lane*2.4);
+    const prow=(1-smooth(reach,reach+1.14,run))*smooth(-2.4,-0.8,run);
+    bed+=Math.max(0,crown-bed)*Math.max(rib,shoulder)*prow;
+  }
   // At the mouth, the channel opens into the existing lake basin.
-  const bank = bed + (Math.min(base, bed) - bed) * smooth(-18, -14, z);
-  return base + (bank - base) * (1 - smooth(bankTop, 7.5, d)) * smooth(spring.z, spring.z + 10, z);
+  return joinBank(base,bed,bankTop,d,z);
 }

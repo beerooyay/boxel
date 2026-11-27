@@ -81,14 +81,18 @@ Tarn spans 256 × 256 metres, about 16 acres. Four connected upland walks add ab
 around the original lake. Follow the river north to a spring, take the west walk through the coilferns,
 climb the eastern rock shelf or look back across the lake from the arrowleaf groves on the southern ridge.
 Switchbacks cross the lake-facing hill with resting shelves on the way to the summit.
-Play as the fox. A deer grazes in the pink meadow above the shore, a stag walks beyond the hillside oak,
+Play as the fox. A deer grazes in the pink meadow above the shore, a stag walks beyond the hillside grove,
 and nine more animals range from the headwaters to the southern pastures.
-The forest mixes six shared broadleaf shapes with one hand-authored oak. [Tree and flora census](docs/flora-audit.md)
+The forest uses six native broadleaf shapes across 1,233 tree sites. [Tree and flora census](docs/flora-audit.md)
 A separate Boxel field spreads and dissipates gusts in a moving air mass. The hills shelter the lee.
 Grass, crowns, sailwings, the sound of wind and rough patches on the water sample the same fronts.
-Grass and low leaves part as you pass. Wading, skimming sailwings and thrown stones send ripples
-across the lake and downstream with the river current. Disturb the moss with a footstep or
-glowstone and its filaments pick up the local glow field. Cloud shadows cross the valley by
+Grass and low leaves part as you pass. Follow the river upstream from the lake to a 2.7-metre waterfall.
+Water splits at the rock lip. Rounded crests roll out of the plunge pool and break into patches of foam.
+Along the banks, wind waves turn toward the shallows and run up onto gravel between pockets of sedge.
+Wading, skimming sailwings and thrown stones send ripples through one another and back off rocks.
+The current and local wind carry disturbed bioluminescent plankton away from contact.
+Footsteps and glowstones light the moss where they touch. [Play at the waterfall](https://beerooyay.github.io/boxel/?falls)
+Cloud shadows cross the valley by
 day, and the pigments in leaves and wetland flowers set the colour of their light at night.
 Spiral rosettes grow beside the paths and sheltered banks. Their folded leaves take a wet sheen
 from moisture at the root. At night a nearby glowstone picks out the branching veins. Sailwings
@@ -105,8 +109,10 @@ turns the sound, made as it plays, on or off. Touch controls offer each of these
 
 Above the valley, a separate Boxel field tracks cloud water in 32-metre cells. Humidity and
 temperature set the condensation level. Heating drives the updrafts, and evaporation from the lake and spring feeds them downwind.
-Broad updrafts grow taller crowns. The renderer integrates density toward the eye and toward the light. It reuses
-that sky for the planets’ foreground, water reflections and moving shadows. Boxel reports its error bound for
+Broad updrafts grow taller crowns. The renderer integrates density toward the eye and toward the light.
+While two sky snapshots blend, a third builds in the background. Their optical distances keep nearby and
+distant banks moving at different rates as the fox walks. The planets’ foreground, water reflections and
+moving shadows share the weather. Boxel reports its error bound for
 horizontal condensate against the dense solver, with a target of 1/255. A separate browser test compares all four
 rendered cloud channels with empty-space skipping enabled and disabled in three weather states.
 
@@ -211,8 +217,8 @@ The tree and understory leaf atlases ship with coverage-preserving mip levels in
 To rebuild both sizes, install the [Khronos KTX tools](https://github.com/KhronosGroup/KTX-Software)
 and run `node tools/bake-leaf-sprays.mjs`.
 
-The starting hillside has twelve summer oaks from three forms in LOLIPOP’s oak pack under CC Attribution 4.0.
-Tarn extracts two detail levels per form, shares the resized material maps and fits each root flare to the terrain. [Visit the oak](https://beerooyay.github.io/boxel/?oak) · [Original pack](https://sketchfab.com/3d-models/oak-trees-pack-17var-lods-seasons-gameready-a5e4e64f9f1d4089bdcc6170a9333393) · [License](https://creativecommons.org/licenses/by/4.0/)
+The archived hillside trial contains three summer oak forms from LOLIPOP’s oak pack. Tarn extracted two
+detail levels per form and resized the shared material maps. [Original pack](https://sketchfab.com/3d-models/oak-trees-pack-17var-lods-seasons-gameready-a5e4e64f9f1d4089bdcc6170a9333393) · [CC Attribution 4.0](https://creativecommons.org/licenses/by/4.0/)
 
 Quaternius made the fox and its eleven neighbours and released the pack under CC0. The ambient animals use
 the authored walk, idle and eating clips. To rebuild their runtime GLBs, run
