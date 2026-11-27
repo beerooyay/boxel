@@ -457,22 +457,17 @@ vec3 skyColor(vec3 d){
   c = companions(d, c);
   if (d.y > 0.) {
     vec4 cloud = cloudColumn(uCam, d);
-    c = cloudLight(c, d, cloud);
+    c = cloudLight(c, gBehind, d, cloud);
     starTransmission *= 1. - cloud.a;
   }
   return c;
 }
 ${canopyShelter}
+uniform mat3 uAmbientLight;
 vec3 ambient(vec3 n){
-  vec3 day = mix(vec3(0.026, 0.026, 0.029), vec3(0.075, 0.117, 0.164), n.y * 0.5 + 0.5);
-  // the open sky gives less as the star sinks
-  float low = 1. - smoothstep(0.03, 0.36, uStarDir.y);
-  day *= mix(vec3(1.), vec3(0.66, 0.64, 0.8), low * low);
-  vec3 nite = mix(vec3(0.004, 0.007, 0.015), vec3(0.015, 0.026, 0.060), n.y * 0.5 + 0.5);
-  vec3 a = mix(day, nite, uNight);
-  // under a storm deck the light goes flat and grey; lightning floods everything for an instant
-  a = mix(a, vec3(dot(a, vec3(0.3333))) * vec3(0.9, 0.97, 1.06), uStorm * 0.55);
-  return a + vec3(0.15, 0.17, 0.26) * uFlash * (0.55 + 0.45 * n.y);
+  // Ground bounce, open sky and a broad sunward fill. The baked canopy and
+  // contact maps attenuate this incident light at the receiving surface.
+  return uAmbientLight[0] + n.y * uAmbientLight[1] + dot(n.xz, uStarDir.xz) * uAmbientLight[2];
 }
 // A ground-space irradiance map transfers a little of each colony's pigment onto
 // nearby diffuse surfaces. Height falloff keeps the crowns above it dark.
@@ -784,10 +779,9 @@ void main(){
     N = normalize(N - dn * (1. - 0.6 * moist) * 0.30 * steep * (relief - N * dot(relief, N)));
   }
   if (dn > 0. && steep < 1.) {
-    vec2 q = p * 2.6, grad = 0.5 * noiseSlope(q).yz;
-    q = 2.03 * q + 17.; grad += 0.5075 * noiseSlope(q).yz;
-    q = 2.03 * q + 17.; grad += 0.5151 * noiseSlope(q).yz;
-    N = normalize(N - dn * (1. - steep) * (1. - 0.7 * wear) * (1. - 0.6 * moist) * vec3(grad.x, 0., grad.y) * 0.48);
+    // Broad hollows only. The mipmapped earth tile supplies the close relief.
+    vec2 grad = noiseSlope(p * 2.6).yz;
+    N = normalize(N - dn * (1. - steep) * (1. - 0.7 * wear) * (1. - 0.6 * moist) * vec3(grad.x, 0., grad.y) * 0.19);
   }
   // Split the distant cliffs along two intersecting families of joints. Stretched
   // folds produce long rock ribs with snow chutes between them, even on the phone mesh.
@@ -833,14 +827,8 @@ void main(){
   // Under the meadow lies its own litter: last season's blades flat in fine strokes over dark soil, the colour of the
   // stand above it, so distant grass cover carries the same pigment as nearby blades.
   vec3 stand = meadowStand(p).rgb;
-  float thatch = 0.5, clump = vnoise(p * 2.3 + 4.1);
-  if (fine > 0.) {
-    // strokes of fallen blades lying every which way in tufts, and specks of bare soil between them
-    vec2 q = mat2(0.8, 0.6, -0.6, 0.8) * p, r = mat2(0.34, -0.94, 0.94, 0.34) * p;
-    float strokes = mix(vnoise(q * vec2(17., 2.6) + n1 * 2.), vnoise(r * vec2(19., 2.9) - 3.), smoothstep(0.3, 0.7, clump));
-    float soil = smoothstep(0.62, 0.8, vnoise(p * 7.3 - 2.));
-    thatch = mix(0.5, clamp(strokes * 1.25 - 0.12 - 0.45 * soil, 0., 1.), fine);
-  }
+  float clump = vnoise(p * 2.3 + 4.1);
+  float thatch = mix(0.5, smoothstep(0.26, 0.76, 0.63 * clump + 0.37 * n3), fine);
   vec3 litter = stand * mix(0.16, 0.52, smoothstep(0.18, 0.85, thatch)) * (0.8 + 0.4 * clump) + vec3(0.012, 0.010, 0.009);
   vec3 moss = mix(litter * 0.78, litter * 1.12 + vec3(0.01, 0.02, 0.008), hummocks) * (0.82 + 0.36 * n3);
   vec3 sand = mix(vec3(0.16, 0.12, 0.083), vec3(0.41, 0.34, 0.22), n1) * (0.75 + 0.42 * n2);
@@ -907,40 +895,49 @@ void main(){
   // The smaller offset, rotated soil patch neither copies the chip pattern nor
   // inherits its slope direction. Use explicit derivatives across the verge.
   vec2 dx=dFdx(p), dy=dFdy(p);
-  float pathMask=smoothstep(0.075,0.93,vGround.x+(n2-0.5)*0.43);
+  // The same tread that suppresses grass roots governs the material. Break
+  // only the partially worn edge so the packed centre stays readable.
+  float edge = 4. * vGround.x * (1. - vGround.x);
+  float pathMask=smoothstep(0.09,0.91,vGround.x+edge*((n2-0.5)*0.43+(clump-0.5)*0.22));
   float soilCover = max(pathMask, mantleSoil);
+  float compact = max(pathMask, smoothstep(0.025,0.60,wear));
+  float pore = 0.50;
   // where the meadow's floor still shows through what has been laid over it
   float meadowFloor = fine * (1. - shore) * (1. - under) * (1. - rk) * (1. - cliff) * (1. - islandStone) * (1. - 0.6 * upland);
   if (vGround.x>0.01 || mantleSoil>0. || meadowFloor>0.01) {
     mat2 rot = mat2(0.80,0.60,-0.60,0.80);
-    vec2 soilUV = p*0.30+vec2(0.34*n1,0.17*n2);
-    vec4 coarse = textureGrad(uTrailMaterial,soilUV,0.30*dx,0.30*dy);
+    vec2 soilUV = p*0.38+vec2(0.12*n1,0.045*n2);
+    vec4 coarse = textureGrad(uTrailMaterial,soilUV,0.38*dx,0.38*dy);
     vec4 detail = textureGrad(uTrailMaterial,1.21*(rot*p)+vec2(0.19,0.61),1.21*(rot*dx),1.21*(rot*dy));
     float grains = 0.56*coarse.a + 0.44*detail.a;
-    float grit = max(coarse.b, 0.57*detail.b);
+    // Signed inclusion around 102/255. Organics and shale filter smoothly
+    // into the neutral earth value as the texture recedes.
+    float grit = max(0.,max(coarse.b-0.4,0.57*(detail.b-0.4))) / 0.6;
+    float scraps = max(0.,max(0.4-coarse.b,0.73*(0.4-detail.b))) / 0.4;
     vec3 clay=mix(vec3(0.102,0.069,0.051),vec3(0.38,0.239,0.151),0.19+0.48*n1+0.33*n2);
-    float crumb = smoothstep(0.33,0.71,grains);
-    vec3 tread = mix(clay*(0.52+0.97*crumb),shale(0.15+0.67*detail.a),grit);
-    // One soil runs under everything. The tread is that soil packed bare. Under the meadow it is the same soil,
-    // olive with old roots, and the stand's litter lies over it in drifts, thinnest toward the tread, so the path is
-    // where the cover ends rather than a different ground.
-    float drifts = 0.51*thatch + 0.32*clump + 0.17*hummocks;
-    float cover = smoothstep(0.32,0.78,drifts - 0.49*pathMask);
-    // Earth and embedded grit show between grass roots. Fallen material takes
-    // on a little of the stand's pigment even where the live blades fan apart.
-    float bare = smoothstep(0.11,0.66,pathMask + 0.22 * smoothstep(0.04,0.55,wear));
-    vec3 rootMat = stand * mix(0.23,0.57,thatch) * (0.72 + 0.4 * clump);
-    float litterBits = smoothstep(0.38, 0.69, thatch + 0.08 * detail.a);
-    vec3 chaff = mix(rootMat, NEW_GROWTH * vec3(0.41, 0.32, 0.23), 0.22);
-    // Fine litter collects in the hollows. Raised chips of shale stay exposed
-    // and keep the same mineral colour and relief across the path margin.
-    float litterCover=cover*(0.17+0.56*litterBits)*(1.-0.92*grit)*(1.-bare);
-    vec3 meadow=mix(tread,chaff*(0.75+0.33*detail.a),litterCover);
+    float crumb = smoothstep(0.32,0.72,grains);
+    float loose = 1.-compact;
+    // Humus accumulates under crowns. On the verge the stand takes hold in
+    // pockets in the loam, leaving mineral chips visible through the roots.
+    float humus = loose*(0.20+0.66*vCover);
+    clay *= mix(vec3(1.),vec3(0.52,0.64,0.58),humus);
+    vec3 earth = clay*(0.50+0.96*crumb+0.06*compact);
+    vec3 flakes = shale(0.15+0.75*coarse.a) * (0.83+0.45*detail.a);
+    earth = mix(earth,flakes,grit);
+    float margin = smoothstep(0.20,0.79,0.50*thatch+0.32*hummocks+0.18*(1.-crumb));
+    float rootCover = loose*loose*margin*(1.-grit)*(1.-0.50*vCover);
+    vec3 roots = mix(stand*0.36,earth,0.20)*(0.77+0.42*detail.a);
+    vec3 floorCol = mix(earth,roots,rootCover);
+    float litterCover = scraps*(0.24+loose*(0.54+0.22*vCover))*(1.-grit);
+    vec3 leafMould = mix(vec3(0.118,0.054,0.021),vec3(0.45,0.248,0.088),crumb);
+    floorCol = mix(floorCol,leafMould,litterCover);
     float soilWeight=max(soilCover,meadowFloor);
-    alb=mix(alb,mix(meadow,tread,soilCover),soilWeight);
+    alb=mix(alb,floorCol,soilWeight);
     vec2 relief=(2.*coarse.rg-1.)*0.65 + transpose(rot)*(2.*detail.rg-1.)*0.53;
-    N=normalize(N+vec3(relief.x,0.,relief.y)*soilWeight*(1.-0.42*litterCover)*0.83);
-    rough=mix(rough,0.90-0.16*grit,soilWeight);
+    float surfaceRelief = mix(1.05,0.55,compact*(1.-grit));
+    N=normalize(N+vec3(relief.x,0.,relief.y)*soilWeight*surfaceRelief);
+    rough=mix(rough,0.93-0.14*compact-0.16*grit,soilWeight);
+    pore=mix(pore,0.16+0.78*(1.-crumb)*(1.-grit),soilWeight);
   }
   float vein = rk * smoothstep(0.74, 0.8, n3) * (1. - smoothstep(12., 28., dist));
   // Pale seams are silica in the bedrock, so they keep a broad dielectric highlight.
@@ -949,10 +946,14 @@ void main(){
   // forest under the snow line on the far slopes, rock laid down in strata, and snow that settles on ledges and in
   // gullies while steep faces and the sharpest crests stay bare
   float treeline = far * smoothstep(9., 15., y) * (1. - smoothstep(24., 36., y + n1 * 8.)) * (1. - smoothstep(0.45, 0.7, slope));
-  alb = mix(alb, vec3(0.045, 0.075, 0.085) * (0.75 + 0.5 * vnoise(p * 0.7)), treeline * 0.7);
+  // Tree cover climbs the sheltered folds in small tongues. The joints
+  // already sampled for relief give these patches a stable scale at range.
+  float grove = smoothstep(0.25, 0.71, 0.66 * seam + 0.34 * chute);
+  vec3 forestFloor = mix(vec3(0.066, 0.078, 0.061), vec3(0.026, 0.062, 0.066), grove);
+  alb = mix(alb, forestFloor, treeline * (0.48 + 0.45 * grove));
   // Broad, tilted beds cut across the relief. Narrow benches weather to a lighter colour.
   float bedding = y * 0.45 + dot(p, vec2(0.048, -0.033)) + 3.4 * n1;
-  float bench = smoothstep(0.43, 0.78, vnoise(vec2(dot(p,vec2(0.021,0.032)), bedding*0.45 + seam*0.83)));
+  float bench = smoothstep(0.30, 0.72, 0.64 * crag + 0.36 * seam);
   alb = mix(alb, mix(alb * vec3(0.74, 0.78, 0.90), alb * vec3(1.24, 1.14, 0.96), bench), rk * far);
   float alpine = smoothstep(31., 52., y + (0.5 - crag) * 13.);
   // Wind scours rock ribs bare. The lee and the shallow gullies hold snow
@@ -977,23 +978,27 @@ void main(){
     N = normalize(N + 0.94 * exposed * (relief - N * dot(N, relief)));
   }
   vec3 schist = mix(vec3(0.052, 0.069, 0.095), vec3(0.37, 0.33, 0.30), 0.12 * bench + 0.30 * crag + 0.58 * chute);
-  // Broad cross-beds and displaced seams read from the opposite side of the lake.
-  // Bedding is displaced and broken at a scale that survives the lake view.
+  // Folded beds have a warm weathered edge and a cold broken face.
+  // Subpixel bands converge on their average coverage on the far ridges.
   float beds = bedding * 0.42 + 4.1 * seam + 1.5 * chute;
   float layer = fract(beds);
-  float strataAA = clamp(fwidth(beds), 0.015, 0.32);
+  float bedWidth = fwidth(beds), strataAA = clamp(bedWidth, 0.015, 0.32);
   float lamina = smoothstep(0.12, 0.23 + strataAA, layer) * (1. - smoothstep(0.43, 0.67 + strataAA, layer));
+  lamina = mix(lamina, 0.38, smoothstep(0.22, 0.85, bedWidth));
   float spall = smoothstep(0.34, 0.72, stoneGrain + 0.22 * chute - 0.09);
   float fracture = smoothstep(0.08, 0.31, abs(seam - 0.48) + 0.24 * chute);
   schist *= (0.53 + 0.75 * fracture) * (0.78 + 0.52 * lamina) * (0.60 + 0.88 * spall);
-  schist += vec3(0.035, 0.030, 0.023) * lamina * spall;
+  schist += vec3(0.068, 0.043, 0.022) * lamina * spall;
   alb = mix(alb, schist, alpine);
-  vec3 frost = mix(vec3(0.50, 0.64, 0.78), vec3(0.86, 0.86, 0.92), smoothstep(-0.01, 0.22, mantle));
+  // Snow thins to blue ice on exposed ledges. Powder fills the wider,
+  // sheltered chutes and retains broken rock at the melt line.
+  float powder = smoothstep(-0.025, 0.24, mantle + 0.11 * (chute - 0.5));
+  vec3 frost = mix(vec3(0.37, 0.56, 0.69), vec3(0.87, 0.89, 0.91), powder);
   float scoured = smoothstep(0.04, 0.17, mantle) * smoothstep(0.33, 0.70, chute);
   frost *= mix(0.72 + 0.34 * stoneGrain + 0.14 * lamina, 1., scoured);
   // Cornices expose stone at broken edges and hold bright snow in sheltered ribs.
   snow *= 1. - 0.27 * lamina * (1. - spall) * (1. - scoured);
-  alb = mix(alb, frost, snow); rough = mix(rough, 0.60, snow);
+  alb = mix(alb, frost, snow); rough = mix(rough, mix(0.42, 0.76, powder), snow);
   // Sand sorts into pockets of shingle. Loose cobbles here are actual settled meshes.
   float cobZ = smoothstep(0.34, 0.72, normalize(vN).y) * (1. - smoothstep(0.30, 0.83, bank)) * smoothstep(-1.6, -0.9, bank) * (1. - smoothstep(14., 32., dist)) * (1. - 0.6 * rk);
   // Only exposed faces need surface light. Caustics also tint indirect light
@@ -1006,25 +1011,32 @@ void main(){
     vec2 bedUV = (driftDir*p)*stretch + vec2(n1,n2)*0.51;
     vec4 grit = textureGrad(uTrailMaterial, bedUV, (driftDir*dx)*stretch, (driftDir*dy)*stretch);
     float deposit = smoothstep(0.25,0.74, 0.57*n1 + 0.43*n2 + 0.23*(grit.a-0.5));
-    vec3 shingle = mix(alb * (0.73 + 0.52*grit.a), shale(0.29+0.69*grit.a), 0.15+0.69*grit.b);
+    float chip = max(0.,grit.b-0.4)/0.6;
+    vec3 shingle = mix(alb * (0.73 + 0.52*grit.a), shale(0.29+0.69*grit.a), 0.15+0.69*chip);
     float wcob = cobZ * (0.40 + 0.60*deposit);
     alb = mix(alb, shingle, wcob);
     vec2 relief = transpose(driftDir)*((grit.rg*2.-1.)*stretch);
     N = normalize(N + vec3(relief.x,0.,relief.y)*wcob*0.50);
     rough = mix(rough, 0.65-0.12*under, wcob);
+    pore=mix(pore,0.23+0.69*(1.-grit.a)*(1.-chip),wcob);
     // Soft moving caustic patches break across the sand and gravel in sunlit shallows.
     float drift = dot(p, vec2(1.6, 1.0)) + uTime * 0.70 + 4.0 * n1;
     float focus = 0.5 + 0.5 * sin(drift * 2.6 + sin(p.y * 1.7 - uTime * 0.43) * 2.8);
     alb *= 1. + 0.48 * under * (1. - uNight) * sun * wcob * focus * focus * n2 * (1. - 0.85*uStorm);
   }
-  alb = mix(alb, vec3(0.21, 0.15, 0.19), smoothstep(0.03, 0.6, wear) * mix(0.70,0.22,pathMask)); rough = mix(rough, 0.75, wear);
-  // Keep wet sand granular; only a film of standing water gives a tight sky highlight.
-  alb *= 1. - 0.44 * moist;
-  rough = mix(rough, 0.30, smoothstep(0.04, 0.65, moist) * 0.87);
+  // Fresh pressure darkens the loose grains even where an old path is fully packed.
+  float printWear = smoothstep(0.03,0.59,wear)*(1.-under)*(1.-rk);
+  alb *= 1.-printWear*mix(0.25,0.15,pathMask);
+  rough = mix(rough,0.66,printWear);
+  // Water darkens porous earth before a continuous film covers its raised grit.
+  float damp = clamp(moist*(0.68+0.64*pore),0.,1.);
+  alb *= mix(vec3(1.),vec3(0.48,0.55,0.60),damp);
+  rough = mix(rough,0.30,smoothstep(0.11,0.78,damp)*0.87);
   vec3 V = normalize(uCam - vWP);
   vec3 col = pbr(alb, rough, metal, N, V, vWP, sun, vCover);
-  // the last of the low sun catching the snowy peaks
-  col += vec3(1., 0.52, 0.58) * 0.14 * snow * smoothstep(40., 110., y) * max(dot(N, uSunDir), 0.) * (1. - uNight);
+  // The last warm light catches sun-facing peaks while the valleys cool.
+  float alpenglow = (1. - smoothstep(0.07, 0.40, uStarDir.y)) * smoothstep(-0.07, 0.08, uStarDir.y);
+  col += vec3(1., 0.43, 0.28) * 0.19 * alpenglow * snow * smoothstep(40., 110., y) * max(dot(N, uSunDir), 0.) * sun * (1. - uNight);
   col += moss * uNight * 0.16 * (1. - rk) * (1. - shore);
   float wake = glowI(glow) * uNight;
   float pixelSize = max(length(dFdx(p)), length(dFdy(p)));
@@ -1042,7 +1054,12 @@ void main(){
     twigs = (1. - smoothstep(0.02, 0.10 + aa, twigs)) * (1. - smoothstep(0.04, 0.54, gap)) * (1. - smoothstep(0.42, 0.84, across));
     float filament = max(stems, max(0.70 * forks, 0.43 * twigs)) * (1. - smoothstep(0.025, 0.095, pixelSize));
     vec3 sap = mix(vec3(0.045, 0.53, 0.34), vec3(0.43, 0.12, 0.65), smoothstep(0.30, 0.63, n1));
-    col += sap * wake * (0.045 + filament * (0.78 + 0.85 * n2)) * (1. - 0.68 * rk) * (1. - 0.42 * wear);
+    // Narrow bright cores read through broad dim roots. The footprint fades
+    // these filaments before their spacing falls below a pixel.
+    float core = filament * filament * smoothstep(0.11, 0.55, glow);
+    vec3 emission = sap * (0.025 + filament * (0.85 + 1.07 * n2));
+    emission += core * mix(sap, vec3(0.75, 0.94, 0.84), 0.38);
+    col += emission * wake * (1. - 0.68 * rk) * (1. - 0.42 * wear);
   }
   vec2 foxDelta = p - uFoxShadow.xy;
   if (uFoxShadow.w > 0. && dot(foxDelta, foxDelta) < 1.6) {
@@ -1455,8 +1472,8 @@ void main(){
   float y = clamp(vGA.x, 0., 1.);
   vec3 tip = vGrassColour.rgb;
   float rose = smoothstep(0.04,0.40,tip.r-tip.g);
-  vec3 sheath = mix(vec3(0.061,0.057,0.031),tip*0.33,0.55);
-  sheath = mix(sheath,vec3(0.060,0.020,0.049),rose);
+  // A little warm, papery tissue at the soil line grounds both pink and green clumps.
+  vec3 sheath = vec3(0.113,0.084,0.045) + tip*mix(0.16,0.065,rose);
   tip += vec3(0.060,0.042,0.030)*rose*y*y;
   vec3 gc = mix(sheath, tip * (0.63 + 0.31*y), smoothstep(0.,0.76,y));
   float pn = vGrassColour.a;
@@ -1689,8 +1706,10 @@ vec2 waveGrad(vec2 p, float pixelMetres){
   // wind gust patches ("cat's paws"): the same rolling waves that move the grass roughen the water as they pass
   float gusts = smoothstep(0.17, 1.3, vGust);
   float capillary = 1. - smoothstep(0.15, 0.49, pixelMetres);
-  g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. - uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.048 * gusts * capillary;
-  g += vec2(-WIND_DIR.y, WIND_DIR.x) * cos(dot(p, vec2(-WIND_DIR.y, WIND_DIR.x)) * 13. + uTime * 6.1) * 0.012 * gusts * capillary;
+  if (gusts * capillary > 0.) {
+    g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. - uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.048 * gusts * capillary;
+    g += vec2(-WIND_DIR.y, WIND_DIR.x) * cos(dot(p, vec2(-WIND_DIR.y, WIND_DIR.x)) * 13. + uTime * 6.1) * 0.012 * gusts * capillary;
+  }
   return g;
 }
 void main(){
@@ -1742,22 +1761,31 @@ void main(){
   vec3 refl = texture(uRefl, clamp(warped, 0., 1.)).rgb;
   if (planar < 1.) {
     vec3 ray = reflect(-V, N), sky = skyBase(ray);
-    if (ray.y > 0.) sky = cloudLight(sky, ray, cloudColumn(vWP, ray));
+    if (ray.y > 0.) sky = cloudLight(sky, sky, ray, cloudColumn(vWP, ray));
     refl = mix(tonemap(sky), refl, planar);
   }
 
-  // At a grazing angle the ray travels farther through water. Alpha carries the
-  // fraction blocked by reflection and extinction; the actual bed shows through the rest.
-  float path = max(0., depth) / max(0.18, NdV);
-  float absorb = 1. - exp(-path * 0.66);
+  // The ray bends toward the normal as it enters the lake (air/water index ratio 0.75).
+  // Its vertical component gives the distance to the bed even when the eye skims the bank.
+  float cosWater = sqrt(0.4375 + 0.5625 * NdV * NdV);
+  float rayDown = 0.75 * V.y + (cosWater - 0.75 * NdV) * N.y;
+  float path = max(0., depth) / max(0.25, rayDown);
+  float through = exp(-path * mix(0.53, 0.69, stream));
+  float absorb = 1. - through;
+  // Red light dies out fastest. T*(1-loss*(1-T)) blends one and two absorption
+  // lengths per channel using one exponential. Scattering takes the complementary share.
+  const vec3 loss = vec3(0.78, 0., 0.16);
   float scatter = (1. - F) * absorb;
-  vec3 body = mix(vec3(0.045, 0.28, 0.19), vec3(0.010, 0.087, 0.115), absorb);
+  vec3 body = mix(vec3(0.046, 0.255, 0.184), vec3(0.008, 0.077, 0.117), absorb) * (1. + loss * through);
   float sun = directLight(vWP);
   body *= ambient(N) * 2.8 + uSunCol * sun * (0.12 + 0.14 * max(uSunDir.y, 0.));
   float alpha = F + scatter;
   vec3 col = (F * refl + scatter * tonemap(fogged(body, vWP))) / max(alpha, 0.022);
   vec3 Hh = normalize(uSunDir + V);
-  float sunGlint = pow(clamp(dot(N, Hh), 0., 1.), 510.) * 3.5;
+  // Unresolved ripples spread the same reflected sunlight across a wider lobe.
+  float roughWater = clamp(vGust*0.38 + uStorm*0.46 + pixelMetres*2.4, 0., 1.);
+  float gloss = mix(610., 185., roughWater);
+  float sunGlint = pow(clamp(dot(N, Hh), 0., 1.), gloss) * (gloss * 0.0069);
   col += tonemap(uSunCol * sun * sunGlint * F) * (1. - 0.85 * uNight);
 
   // A tilted crest reflects a brighter or darker part of the overcast sky.
@@ -1783,26 +1811,40 @@ void main(){
   float churn=smoothstep(0.05,0.57,disturbance.a)*(0.24+0.76*smoothstep(0.010,0.107,steepness));
   // Deep, undisturbed water has no foam. Only evaluate the noise bands
   // whose amplitude can contribute to this fragment.
-  float breaker=0., foam=0., wash=0.;
-  if (cap>0. || currentCap>0. || churn>0.001) {
+  float breaker=0., foam=0., wash=0., flecks=0.;
+  float light = uNight * uNight * glowI(glow);
+  float resolved=(1.-smoothstep(0.012,0.050,pixelMetres))*smoothstep(0.001,0.09,light);
+  if (cap>0. || currentCap>0. || churn>0.001 || resolved>0.) {
     wash=vnoise(p*vec2(3.9,2.6)-downstream*uTime*(0.21+0.53*stream));
     if (cap>0.) breaker=cap*smoothstep(0.19,0.80,wash+0.23*(vnoise(15.*p-0.45*uTime)-0.5));
-    if (churn>0.001) {
-      float flecks=smoothstep(0.51,0.77,vnoise(p*21.+wash*1.6-downstream*uTime*(0.22+stream)));
+    if (churn>0.001 || resolved>0.) {
+      flecks=smoothstep(0.51,0.77,vnoise(p*21.+wash*1.6-downstream*uTime*(0.22+stream)));
       foam=churn*(0.10+0.50*flecks);
     }
   }
   float bankFoam=swash+currentCap*smoothstep(0.44,0.74,wash);
   if (bankFoam>0.) foam+=bankFoam*shoreFroth(p);
   foam=min(1.,foam+breaker+whitewater);
-  float light = uNight * uNight * glowI(glow);
   col = mix(col, tonemap(vec3(0.75, 0.82, 0.82) * (ambient(N) * 2.4 + uSunCol * sun * 0.16)), min(1.,foam*0.58+whitewater*0.38+breaker*0.20));
-  if (light > 0.) col += tonemap(glowCol(p) * light * (0.5 + 1.3 * uNight));
+  if (light > 0.) {
+    // Resolve small colonies in the same moving water as the bubbles. As their
+    // spacing falls below a pixel, return to their mean light to avoid glitter.
+    float colonies = 1.;
+    if (resolved > 0.) {
+      vec2 drift = p - vec2(0.025,0.064)*uTime + 0.07*disturbance.yz;
+      vec2 grains = mat2(0.87,0.49,-0.49,0.87)*drift*49. + vec2(1.7*wash,1.3*flecks);
+      float pinpoints = mix(smoothstep(0.38,0.86,vnoise(grains)),0.34,smoothstep(0.006,0.021,pixelMetres));
+      colonies = mix(1.,0.60+0.34*wash+flecks*(0.24+1.30*pinpoints),resolved);
+    }
+    col += tonemap(glowCol(p) * light * colonies * (0.5 + 1.3 * uNight));
+  }
   alpha = min(1., alpha + foam * 0.2 + light * 0.40);
   // the bed and whatever stands in the water, seen through the surface: bent by the same waves, more as it deepens,
   // and tinted by the water it passes through. At the very edge the true bed shows, unbent.
   vec2 bend = suv - distortion * clamp(depth * 0.25, 0., 0.09) * frame;
-  vec3 under = texture(uUnder, clamp(bend, 0.002, 0.998)).rgb * mix(vec3(1.), vec3(0.78, 0.95, 0.92), absorb);
+  vec3 transmission = 1. - loss * absorb;
+  if (uHDR < 0.5) transmission = pow(transmission,vec3(1./2.2));
+  vec3 under = texture(uUnder, clamp(bend, 0.002, 0.998)).rgb * transmission;
   o = vec4(mix(under, col, alpha), smoothstep(-0.02, 0.035, depth));
 }`;
 const WATERP = program(waterVertex, waterFragment);
@@ -3142,9 +3184,13 @@ void main(){
   else c = pow(clamp(pow(clamp(c + b * uBloom * 0.7 + r * uRays * 0.6, 0., 1.), vec3(2.2)) * fog.a + fog.rgb, 0., 1.), vec3(1./2.2));
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   float clear = (1.-uNight)*(1.-uStorm);
-  c *= 1. + 0.30*clear*(l-0.46)*(1.-l);
-  c = mix(vec3(dot(c,vec3(0.2126,0.7152,0.0722))),c,1.12);
-  vec2 q = vUv - 0.5; c *= 1. - dot(q, q) * 0.55;
+  // Bring out quiet earth and midtone leaves. Roll off the chroma boost
+  // toward saturated pigments and bright water, snow and cloud highlights.
+  float chroma = max(c.r,max(c.g,c.b)) - min(c.r,min(c.g,c.b));
+  float vibrance = (0.075 + 0.12*clear) * (1.-smoothstep(0.17,0.65,chroma)) * (1.-smoothstep(0.64,0.96,l));
+  c += (c - l) * vibrance;
+  c *= 1. + 0.29*clear*(l-0.35)*(1.-l);
+  vec2 q = vUv - 0.5; c *= 1. - dot(q, q) * 0.32;
   c += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.;
   o = vec4(c, 1.); }`);
 
@@ -4012,6 +4058,26 @@ function toggleTimelapse() {
 }
 
 let frameNumber = 0, lightDirection = SUN, lightColor = SUNCOL, exposure = 0.95;
+// First-order diffuse sky lighting. Compute its three RGB coefficients once
+// for both the scene and the reflection, including dusk, overcast and flashes.
+const ambientLight = new Float32Array(9);
+const skyIrradiance = [0.094, 0.132, 0.181], soilBounce = [0.047, 0.038, 0.029];
+const moonSky = [0.019, 0.032, 0.067], moonGround = [0.006, 0.009, 0.015];
+const duskLoss = [0.22, 0.37, 0.30], sunwardFill = [0.016, 0.010, 0.002];
+const overcastSky = [0.093, 0.105, 0.121], overcastGround = [0.035, 0.038, 0.044];
+const flashLight = [0.15, 0.17, 0.26];
+function updateAmbientLight(skyFlash) {
+  const low = 1 - sm(0.03, 0.36, starDirection[1]);
+  const day = 1 - night, deck = storm * 0.70;
+  for (let i = 0; i < 3; i++) {
+    const daylight = day * (1 - low * low * duskLoss[i]);
+    const top = (skyIrradiance[i] + deck * (overcastSky[i] - skyIrradiance[i])) * daylight + moonSky[i] * night;
+    const base = (soilBounce[i] + deck * (overcastGround[i] - soilBounce[i])) * daylight + moonGround[i] * night;
+    ambientLight[i] = 0.5 * (top + base) + flashLight[i] * skyFlash * 0.55;
+    ambientLight[3+i] = 0.5 * (top - base) + flashLight[i] * skyFlash * 0.45;
+    ambientLight[6+i] = sunwardFill[i] * starTint[i] * daylight * (1 - storm);
+  }
+}
 function windStrength() { return (rain && !TEST ? 1.18 : 1.0) + 0.7 * storm; }
 function common(p, eye, VP, mirror, t) {
   gl.useProgram(p);
@@ -4033,6 +4099,7 @@ function common(p, eye, VP, mirror, t) {
     gl.uniform4fv(p.u('uCloudEye'), clouds.eyeUniform); gl.uniform4fv(p.u('uLastCloudEye'), clouds.lastEyeUniform);
     gl.uniform3f(p.u('uCloudLayerMix'), clouds.front, clouds.blend, clouds.lastLayer);
     gl.uniform3fv(p.u('uSunDir'), lightDirection); gl.uniform3fv(p.u('uSunCol'), lightColor);
+    gl.uniformMatrix3fv(p.u('uAmbientLight'), false, ambientLight);
     gl.uniform3fv(p.u('uStarDir'), starDirection); gl.uniform3fv(p.u('uStarTint'), starTint); gl.uniform3fv(p.u('uCloudTint'), cloudTint);
     if (p.shadowVersion !== valleyShadows.version) {
       p.shadowVersion = valleyShadows.version;
@@ -4222,6 +4289,7 @@ function render(t, camOverride, glowTexture = texGlow, dt = 0) {
   frameNumber++;
   lightDirection = norm(starDirection.map((v, i) => v * (1 - night) + PLANET[i] * night));
   lightColor = starColor.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
+  updateAmbientLight(flash * storm * (0.3 + 0.7 * night));
   if (bladeContact && contactOn && fox && started) {
     bladeContact.advance(dt,player.x,foxPose.height,player.z,H(player.x,player.z),fox,foxBasis(),grass,p => {
       common(p,cam.eye,VP,1,t);

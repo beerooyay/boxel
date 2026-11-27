@@ -28,9 +28,10 @@ function installMeter() {
     const run = job, n = run.frame++;
     if (n === 0) {
       release();
+      __game.setNight(run.view === 'night' ? 1 : 0);
       if (run.view === 'swim') {
         __game.look({ eye: [14,__game.H(14,12)+1.65,12], yaw: -Math.PI/2, pitch: -0.82 });
-      } else __game.look(run.view);
+      } else __game.look(run.view === 'night' ? 'river' : run.view);
     }
     if (run.view === 'swim') {
       if (n === 48) key('keydown','KeyW');
@@ -88,7 +89,7 @@ function installMeter() {
     await page.waitForFunction(() => window.__game?.ready || document.querySelector('#err')?.textContent, null, {timeout:120000});
     assert.equal(await page.locator('#err').textContent(), '');
     await page.locator('#go').click();
-    const views = process.env.ROUTE ? [process.env.ROUTE] : ['swim','shore','falls'];
+    const views = process.env.ROUTE ? process.env.ROUTE.split(',') : ['swim','shore','falls'];
     const routes = [];
     for (const view of views) {
       const result = await page.evaluate(v => measureRoute(v), view);

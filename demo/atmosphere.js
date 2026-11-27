@@ -4,8 +4,12 @@ uniform vec3 uCam, uStarDir, uPlanetDir, uStarTint;
 uniform float uNight, uStorm, uFlash;
 const vec3 STAR_COL = vec3(2.7, 1.9, 1.35);
 vec3 skyBase(vec3 d){
-  float h = d.y;
-  vec3 c = mix(vec3(0.34, 0.415, 0.54), vec3(0.025, 0.112, 0.276), smoothstep(-0.055, 0.31, h));
+  float h = d.y, mu = dot(d, uStarDir), s = max(mu, 0.);
+  // Low air takes the star's warmth on its side of the valley. At right
+  // angles to the light the shorter blue wavelengths dominate the vault.
+  vec3 horizon = vec3(0.29, 0.395, 0.54) + vec3(0.14, 0.085, 0.025) * s * s;
+  vec3 vault = mix(vec3(0.017, 0.093, 0.263), vec3(0.035, 0.133, 0.30), mu * mu);
+  vec3 c = mix(horizon, vault, smoothstep(-0.055, 0.38, h));
   c = mix(c, vec3(0.009, 0.046, 0.148), smoothstep(0.16, 0.86, h));
   // As the star sinks the day sky dims and cools, a band of fire lies along the horizon under it, and a rose belt
   // rises opposite. None of it shows while the star stands at its hand-set afternoon height or above.
@@ -20,7 +24,6 @@ vec3 skyBase(vec3 d){
   vec3 n = mix(vec3(0.030, 0.040, 0.088), vec3(0.008, 0.014, 0.047), smoothstep(0.0, 0.35, h));
   n = mix(n, vec3(0.0018, 0.003, 0.014), smoothstep(0.28, 0.94, h));
   c = mix(c, n, uNight);
-  float s = max(dot(d, uStarDir), 0.);
   c += STAR_COL * uStarTint * (1. - uNight) * (0.05 * pow(s, 5.) + 0.25 * pow(s, 60.));
   c += vec3(0.10, 0.08, 0.20) * pow(max(dot(d, uPlanetDir), 0.), 4.) * mix(0.07,0.5,uNight);
   // A storm closes the sky over in grey. Lightning lights the whole of it at once.
@@ -34,7 +37,11 @@ float clearAfternoon(){ return (1. - uNight) * (1. - uStorm) * smoothstep(0.055,
 vec4 airAt(vec3 wp){
   vec3 d = wp - uCam; float dist = length(d);
   float clear = clearAfternoon();
-  float f = (1. - exp(-dist * mix(0.00215, 0.0017, uNight) * (1. - 0.41 * clear))) * (1. - 0.49 * smoothstep(0., 135., wp.y));
+  // Thinner air at altitude reduces extinction per metre. Distance can
+  // still separate one high ridge from another through that same air.
+  float meanHeight = 0.5 * (max(uCam.y, 0.) + max(wp.y, 0.));
+  float density = 1. - 0.44 * smoothstep(0., 125., meanHeight);
+  float f = 1. - exp(-dist * density * mix(0.00215, 0.0017, uNight) * (1. - 0.41 * clear));
   // rain thickens the air: the far ridges go first
   if (uStorm > 0.) f = 1. - (1. - f) * exp(-dist * 0.0055 * uStorm);
   // Integrate exponential density between the eye and the surface. Looking

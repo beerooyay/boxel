@@ -36,17 +36,19 @@ vec4 cloudColumn(vec3 origin, vec3 ray) {
     col = mix(cloudSample(origin,ray,uLastCloudEye,uCloudLayerMix.z),col,uCloudLayerMix.y);
   return col;
 }
-vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
+vec3 cloudLight(vec3 behind, vec3 clearSky, vec3 ray, vec4 col) {
   if (all(equal(col, vec4(0.)))) return behind;
   float dusk = 1. - smoothstep(0.025, 0.39, uStarDir.y);
-  vec3 ambientLight = mix(vec3(0.049, 0.084, 0.161), vec3(0.044, 0.061, 0.120), dusk);
-  vec3 topLight = mix(vec3(0.13, 0.15, 0.215), vec3(0.21, 0.14, 0.15), dusk);
+  vec3 ambientLight = mix(vec3(0.043, 0.079, 0.154), vec3(0.044, 0.061, 0.120), dusk);
+  vec3 topLight = mix(vec3(0.15, 0.19, 0.245), vec3(0.23, 0.15, 0.15), dusk);
   float forward = pow(max(dot(ray, uStarDir), 0.), 12.);
   vec3 direct = vec3(1.72, 1.265, 0.97) * uCloudTint * (1. + 0.8 * forward);
   // The atlas stores premultiplied light. Keeping it premultiplied all the
   // way to the composite lets a single quantization level fade into blue sky.
-  float rim = col.a * (1. - col.a) * forward;
-  vec3 lit = ambientLight * col.a + topLight * col.g + direct * (col.r + 0.46 * rim);
+  // Only a sunlit, translucent edge can acquire a silver lining. The atlas
+  // carries incident light as well as opacity, even through a crossfade.
+  float rim = col.r * (1. - col.a) * (0.20 + 0.80 * forward);
+  vec3 lit = ambientLight * col.a + topLight * col.g + direct * (col.r + 0.60 * rim);
   lit = mix(lit, col.a * vec3(0.050, 0.067, 0.098) + col.g * vec3(0.16, 0.175, 0.20)
     + direct * col.r * 0.42, uStorm);
   float towardsMoon = pow(max(dot(ray, uPlanetDir), 0.), 5.);
@@ -54,7 +56,7 @@ vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
     + vec3(0.038, 0.051, 0.080) * towardsMoon * (col.g + 0.70 * col.a * (1. - col.a));
   lit = mix(lit, moon, uNight);
   float haze = 0.45 * smoothstep(1700.,8000.,8300.*col.b/max(col.a,0.001));
-  lit = mix(lit, col.a*skyBase(ray), haze);
+  lit = mix(lit, col.a * clearSky, haze);
   lit += vec3(0.43, 0.48, 0.69) * uFlash * (0.38 * col.a + 0.62 * col.g);
   return behind * (1. - col.a) + lit;
 }`;

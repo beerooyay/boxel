@@ -131,3 +131,31 @@ UNCAPPED=1 CHROME_CHANNEL=chrome node bench/performance.cjs http://127.0.0.1:884
 CHROME_CHANNEL=chrome node bench/picture.cjs 'http://127.0.0.1:8841/demo/?test'
 CHROME_CHANNEL=chrome node bench/fox-grass.cjs 'http://127.0.0.1:8841/demo/?grass-lab'
 ```
+
+## Valley materials and lighting
+
+We compared the material update with the public build at `f093f24`. On the trail, the same 256 × 256 earth tile now carries clay aggregates, shale chips and tapered leaf scraps. The path mask that thins the grass also controls soil compaction. The verge gains root litter as the packed tread gives way, and wet pockets darken around raised grit. Fresh paw pressure can still mark compacted dirt and sand.
+
+In shallow water, refraction and depth determine how much of the bed shows through. Gusts broaden reflected sunlight, and the moving contact field lights small clusters of plankton in the wake. On land, disturbed moss has fine luminous branches. The mountain material uses sheltered folds for snow, exposed ribs for rock and thinner air at altitude. The clouds pick up light around their translucent edges from the same volume as before. Leaf undersides receive warm ground light while upward faces receive cooler sky light. The renderer computes the three ambient-light coefficients once per frame.
+
+The table reports whole-frame GPU time in milliseconds on the M4 Max, Chrome 158 with ANGLE Metal, at 1920 × 1200, HDR and 4× MSAA. Each route had 48 warm-up frames, 180 measured frames and 36 GPU timer samples per run. We ran each build twice, in updated–previous–previous–updated order, and averaged each pair of medians and p95s. The swim used forward motion, sprint and a turn. The other six views held the camera still.
+
+| View | Previous median | Updated median | Previous p95 | Updated p95 |
+|---|---:|---:|---:|---:|
+| Swimming | 9.28 | 8.63 | 10.11 | 9.97 |
+| Wooded shore | 20.19 | 19.27 | 21.51 | 20.79 |
+| Waterfall | 16.39 | 16.30 | 17.62 | 17.57 |
+| Trail verge | 6.18 | 6.01 | 8.97 | 8.48 |
+| Summit | 23.19 | 22.70 | 24.85 | 24.00 |
+| Grove | 15.93 | 15.19 | 16.80 | 16.07 |
+| Night river | 13.17 | 13.25 | 14.85 | 14.12 |
+
+The summit and wooded shore still exceeded the 16.67 ms GPU budget for 60 Hz at this resolution. The night river median rose by 0.08 ms and its p95 fell by 0.73 ms. These results cover one desktop GPU. We also played a swim with Chrome's 8-bit color target and a touch-controlled jump in desktop WebKit.
+
+Both builds requested 50 same-origin resources on this route. Response bodies from the uncompressed local server totaled 4,938,435 B before and 4,944,798 B after. The four changed runtime modules grew by 6,363 B in source, or 2,432 B when gzip-compressed individually at level 9. The new detail uses the existing texture allocations, shadow maps and render passes.
+
+To repeat these routes, run the current benchmark against each checkout with the same window size.
+
+```sh
+ROUTE=swim,shore,falls,verge,summit,grove,night UNCAPPED=1 CHROME_CHANNEL=chrome node bench/performance.cjs http://127.0.0.1:8841/demo/ 1920 1200
+```
