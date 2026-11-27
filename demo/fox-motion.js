@@ -28,17 +28,23 @@ export function advanceFlight(player, ground, dt) {
 
 export function steerFox(pose, mx, forward, cameraYaw, sprint, dt, airborne) {
   const strength = Math.min(1, Math.hypot(mx, forward));
-  pose.backing = forward < -0.24 && -forward > Math.abs(mx)*0.9 && !sprint;
-  const direction = pose.backing ? -1 : 1;
-  const desired = cameraYaw + Math.atan2(mx*direction, forward*direction);
+  const reverse = forward < -0.24 && -forward > Math.abs(mx)*0.9;
+  pose.backing = reverse && !sprint;
+  // When backing, the fox keeps its own heading even if the camera orbits.
+  // Lateral input steers the haunches. Commit a running about-face once per press.
+  if (reverse && sprint) pose.reverseYaw ??= pose.yaw + Math.PI;
+  else pose.reverseYaw = null;
+  let desired = cameraYaw + Math.atan2(mx, forward);
+  if (pose.backing) desired = pose.yaw - 0.42*mx;
+  else if (pose.reverseYaw !== null) desired = pose.reverseYaw + Math.atan2(-mx,-forward);
   const error = strength > 0.04 ? Math.atan2(Math.sin(desired-pose.yaw), Math.cos(desired-pose.yaw)) : 0;
   // Bleed speed in a tight switchback. The paws can step through the turn
   // while the hindquarters catch up and the chest starts the new heading.
-  const rate = airborne ? 1.7 : sprint ? 4.6 : 5.6;
+  const rate = airborne ? 1.7 : pose.backing ? 2.4 : sprint ? 4.6 : 5.6;
   const turn = Math.max(-rate*dt, Math.min(rate*dt, error * -Math.expm1(-10*dt)));
   pose.yaw += turn;
   pose.turn = turn;
   pose.bend = Math.max(-0.36, Math.min(0.36, 0.32*error + 0.038*turn/dt));
   const alignment = Math.max(0, Math.cos(error-turn));
-  return direction * strength * (pose.backing ? 1.24 : sprint ? 4.2 : 1.9) * alignment;
+  return strength * (pose.backing ? -1.24 : sprint ? 4.2 : 1.9) * alignment;
 }

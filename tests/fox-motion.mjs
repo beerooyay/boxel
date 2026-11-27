@@ -40,6 +40,8 @@ test('backing preserves heading and a sprint reversal turns before accelerating'
     const back = steerFox(pose, 0, -1, 0, false, dt, false);
     assert(back < 0 && pose.backing);
     assert.equal(pose.yaw, 0);
+    assert(steerFox(pose, 0, -1, 1.2, false, dt, false) < 0);
+    assert.equal(pose.yaw, 0, 'orbiting the camera must not redirect a backstep');
     assert.equal(steerFox(pose, 0, -1, 0, true, dt, false), 0);
     assert(Math.abs(pose.bend) > 0.1);
     let speed = 0;
@@ -53,4 +55,12 @@ test('backing preserves heading and a sprint reversal turns before accelerating'
     steerFox(pose, 1, 0, 0, false, dt, true);
     assert(Math.abs(pose.yaw-prior) <= 1.7*dt + 1e-8);
   }
+});
+
+test('a running about-face finishes opposite the original heading as the camera orbits', () => {
+  const initial = -1.26, pose = {yaw: initial};
+  for (let i=0; i<120; i++) steerFox(pose, 0, -1, i/40, true, 1/60, false);
+  assert(Math.cos(pose.yaw-initial) < -0.9999);
+  assert(steerFox(pose, 0.65, -1, 2.6, false, 1/60, false) < 0);
+  assert(pose.turn < 0, 'right input steers the tail right in reverse');
 });

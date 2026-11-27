@@ -3437,7 +3437,7 @@ const chase = { height: player.y, arm: 3.55 };
 const contactGrid = TEST ? null : contactVolume();
 const bladeContact = TEST ? null : createBladeContact(gl,solveBlades,stampBlades,contactGrid);
 let contactOn = true, coupled = true, markContacts = false, stillGrass = true, labView = 0;
-const foxPose = { yaw: player.yaw, turn: 0, bend: 0, backing: false, pitch: 0, roll: 0, height: player.y };
+const foxPose = { yaw: player.yaw, turn: 0, bend: 0, backing: false, reverseYaw: null, pitch: 0, roll: 0, height: player.y };
 const boulderCells = new Map();
 for (let group = 0; group < 3; group++) {
   for (let i = 0; i < sc.rv[group].length; i += 4) {
@@ -4552,7 +4552,7 @@ function scripted(m, frames = 900, view = 'shore') {
   window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
     runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, look: (view, pitch, yaw) => { const c = typeof view === 'string' ? VIEWS[view] : view; Object.assign(player, { x: c.eye[0], y: c.eye[1] - 1.65, z: c.eye[2], yaw: c.yaw + (yaw ?? 0), pitch: pitch ?? c.pitch, bob: 0, vx: 0, vz: 0 });
       player.grounded = true; player.onStone = false; player.vy = player.flight = 0;
-      foxPose.yaw = player.yaw; foxPose.pitch = foxPose.roll = 0; foxPose.height = chase.height = H(player.x, player.z);
+      foxPose.yaw = player.yaw; foxPose.reverseYaw = null; foxPose.pitch = foxPose.roll = 0; foxPose.height = chase.height = H(player.x, player.z);
       chase.arm = 3.55; post.previous = null;
     }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started,
     ...(GRASS_LAB && { grassLab: { occupied: contactOn ? contactGrid.occupied : 0, contactMs: bladeContact.stats.cpuMs, activeRoots: bladeContact.stats.roots, uploadBytes: bladeContact.stats.uploadBytes, coupled, markContacts, stillGrass, contactOn, view: labView } }),
