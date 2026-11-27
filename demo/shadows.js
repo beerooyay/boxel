@@ -1,18 +1,18 @@
 // Capture each light's depth from the actual terrain, boulders and forest, then reuse it in the scene and its
 // reflection. The planet holds still and is baked once. The star does too, until the day is let run: then `rebake`
 // draws one spare layer at a time for where the star is about to be.
-export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
+export function createShadows(gl, size, half, layers, casters) {
   size = Math.min(size, gl.getParameter(gl.MAX_TEXTURE_SIZE));
   const texture = gl.createTexture();
   gl.activeTexture(gl.TEXTURE9);
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-  gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.DEPTH_COMPONENT16, size, size, directions.length + spare);
+  gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.DEPTH_COMPONENT16, size, size, layers);
   for (const parameter of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D_ARRAY, parameter, gl.LINEAR);
   for (const parameter of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D_ARRAY, parameter, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
 
-  const targets = Array.from({ length: directions.length + spare }, (_, layer) => {
+  const targets = Array.from({ length: layers }, (_, layer) => {
     const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, texture, 0, layer);
@@ -81,7 +81,7 @@ export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
   gl.deleteShader(fragment);
   for (const fs of own) gl.deleteShader(fs);
 
-  const matrices = new Float32Array(16 * (directions.length + spare));
+  const matrices = new Float32Array(16 * (layers));
   const prepare = (layer, [x, y, z]) => {
     const horizontal = Math.hypot(x, z), rx = z / horizontal, rz = -x / horizontal;
     // Fit the projection to the whole square, including its diagonal and the upland canopy.
@@ -113,6 +113,5 @@ export function bakeShadows(gl, size, half, directions, casters, spare = 0) {
     },
     rebake(layer, direction) { shadows.advance(prepare(layer, direction), draws.length); },
   };
-  directions.forEach((direction, layer) => shadows.rebake(layer, direction));
   return shadows;
 }

@@ -41,7 +41,7 @@ impl Plugin for BoxelPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(FixedUpdate, step_fields.in_set(BoxelStep));
         #[cfg(feature = "image")]
-        app.add_systems(bevy_app::PostUpdate, image::paint);
+        app.add_systems(bevy_app::PostUpdate, image::paint.before(bevy_asset::AssetEventSystems));
     }
 }
 
@@ -80,14 +80,12 @@ mod image {
         }
 
         /// Copy the blocks the engine holds into `texels`, clear the ones it let go.
-        fn paint(&self, field: &mut boxel::Field, texels: &mut [u8], reset: bool) {
+        fn paint(&self, field: &mut boxel::Field, texels: &mut [u8], reset: bool) -> bool {
             let side = i64::from(self.side);
-            if (self.side as usize).checked_mul(self.side as usize) != Some(texels.len()) {
-                return;
+            if side == 0 || (self.side as usize).checked_mul(self.side as usize) != Some(texels.len()) {
+                return false;
             }
-            if reset {
-                texels.fill(0);
-            }
+            let mut changed = false;
             let mut put = |bx: i32, by: i32, values: Option<&[f32; 256]>| {
                 let x = i64::from(bx) * 16 - i64::from(self.origin.x);
                 let y = i64::from(by) * 16 - i64::from(self.origin.y);
@@ -103,20 +101,43 @@ mod image {
                         Some(v) => {
                             let src = &v[(16 * r + first) as usize..(16 * r + last) as usize];
                             for (t, &c) in row.iter_mut().zip(src) {
-                                *t = (c * 255.0 + 0.5).min(255.0) as u8;
+                                let value = (c * 255.0 + 0.5).min(255.0) as u8;
+                                changed |= value != *t;
+                                *t = value;
                             }
                         }
-                        None => row.fill(0),
+                        None if row.iter().any(|&t| t != 0) => {
+                            row.fill(0);
+                            changed = true;
+                        }
+                        None => {}
                     }
                 }
             };
-            for &(bx, by) in field.freed() {
-                put(bx, by, None);
-            }
-            for (bx, by, values) in field.blocks() {
-                put(bx, by, Some(values));
+            if reset {
+                // A moved window can expose empty blocks. Compare its final bytes directly,
+                // including the partial blocks along its edges.
+                let span = |origin: i32| {
+                    let end = (i64::from(origin) + side - 1).div_euclid(16) as i32;
+                    origin.div_euclid(16)..=end
+                };
+                for by in span(self.origin.y) {
+                    for bx in span(self.origin.x) {
+                        put(bx, by, field.block(bx, by));
+                    }
+                }
+            } else {
+                for &(bx, by) in field.freed() {
+                    if field.block(bx, by).is_none() {
+                        put(bx, by, None);
+                    }
+                }
+                for (bx, by, values) in field.blocks() {
+                    put(bx, by, Some(values));
+                }
             }
             field.forget_freed();
+            changed
         }
     }
 
@@ -125,9 +146,12 @@ mod image {
         let Some(mut images) = images else { return };
         for (mut field, window) in &mut fields {
             if let Some(mut image) = images.get_mut(&window.image)
-                && let Some(texels) = image.data.as_mut()
+                && let Some(texels) = image.bypass_change_detection().data.as_mut()
+                && window.paint(&mut field.bypass_change_detection().0, texels, window.is_changed())
             {
-                window.paint(&mut field.0, texels, window.is_changed());
+                // Notify Bevy's renderer only when a visible byte changed.
+                // Reading or acknowledging retired blocks does not change the simulation.
+                image.into_inner();
             }
         }
     }
@@ -186,6 +210,66 @@ mod tests {
                 assert_eq!(value, (field.sample(x, y) * 255.0 + 0.5) as u8);
             }
         }
+    }
+
+    #[test]
+    fn extraction_waits_for_a_change_in_the_visible_window() {
+        use bevy_asset::{AssetApp, AssetEvent, AssetPlugin};
+        let mut app = App::new();
+        app.add_plugins((AssetPlugin::default(), BoxelPlugin)).init_asset::<Image>();
+        let field = Field::new(Spec { spread: 0.13, fade: 0.005, tolerance: 1.0 / 255.0, events: 64 }).unwrap();
+        let window = BoxelImage::new(IVec2::ZERO, 32, &mut app.world_mut().resource_mut::<Assets<Image>>());
+        let id = window.image.id();
+        let entity = app.world_mut().spawn((BoxelField(field), window)).id();
+        let updates = |app: &mut App| {
+            app.update();
+            app.world_mut().resource_mut::<Messages<AssetEvent<Image>>>().drain().filter(|e| e.is_modified(id)).count()
+        };
+        assert_eq!(updates(&mut app), 0);
+        app.world_mut().get_mut::<BoxelField>(entity).unwrap().0.deposit(99, 99, 1, 0.8);
+        app.world_mut().run_schedule(FixedUpdate);
+        assert_eq!(updates(&mut app), 0);
+        app.world_mut().get_mut::<BoxelField>(entity).unwrap().0.deposit(7, 8, 1, 0.8);
+        assert_eq!(updates(&mut app), 1);
+        assert_eq!(updates(&mut app), 0);
+        app.world_mut().get_mut::<BoxelImage>(entity).unwrap().origin = IVec2::ZERO;
+        app.world_mut().get_mut::<BoxelField>(entity).unwrap().0.deposit(18, 19, 1, 0.0001);
+        assert_eq!(updates(&mut app), 0);
+        app.world_mut().get_mut::<BoxelImage>(entity).unwrap().origin = IVec2::splat(512);
+        assert_eq!(updates(&mut app), 1);
+        assert_eq!(updates(&mut app), 0);
+    }
+
+    #[test]
+    fn native_materials_decode_the_shipped_forest_textures() {
+        use bevy_image::{CompressedImageFormats, ImageSampler, ImageType};
+        use wgpu_types::TextureFormat::{Rgba8Unorm, Rgba8UnormSrgb};
+        let decode = |data: &[u8], ext: &str, srgb: bool| {
+            Image::from_buffer(
+                data,
+                ImageType::Extension(ext),
+                CompressedImageFormats::NONE,
+                srgb,
+                ImageSampler::default(),
+                Default::default(),
+            )
+            .unwrap()
+            .texture_descriptor
+        };
+        let leaves = decode(include_bytes!("../../../demo/leaf-sprays.ktx2"), "ktx2", false);
+        let small = decode(include_bytes!("../../../demo/leaf-sprays-small.ktx2"), "ktx2", false);
+        assert_eq!(
+            (leaves.size.width, leaves.size.height, leaves.mip_level_count, leaves.format),
+            (1024, 512, 7, Rgba8Unorm)
+        );
+        assert_eq!(
+            (small.size.width, small.size.height, small.mip_level_count, small.format),
+            (512, 256, 6, Rgba8Unorm)
+        );
+        let bark = decode(include_bytes!("../../../demo/bark-color.jpg"), "jpg", true);
+        let normal = decode(include_bytes!("../../../demo/bark-normal.jpg"), "jpg", false);
+        assert_eq!((bark.size, bark.format), (normal.size, Rgba8UnormSrgb));
+        assert_eq!(normal.format, Rgba8Unorm);
     }
 
     #[test]

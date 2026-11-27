@@ -37,38 +37,46 @@ export function highCanopyMesh(random, variant = 0) {
     return [p[0] + Math.cos(angle) * reach, p[1] + rise, p[2] + Math.sin(angle) * reach];
   }
   // Each limb has its own axis. Broad root flutes die out before the trunk forks.
-  function wood(points, radii, sides, buttress = false) {
-    const start = tissue.length,
-      spin = random() * tau;
+  function wood(points, radii, sides, farRings, buttress = false) {
+    const start = tissue.length, ring = sides + 1, spin = random() * tau;
     const flares = Array.from({ length: sides }, () => 0.18 + 0.82 * random());
+    const girth = tau * radii[1];
+    let across, arc = 0;
     for (let k = 0; k < points.length; k++) {
-      const p = points[k],
-        next = points[Math.min(k + 1, points.length - 1)],
-        prev = points[Math.max(0, k - 1)];
-      const [x, y, z] = normalise(...next.map((v, i) => v - prev[i]));
-      const tx = normalise(y, -x, 0),
-        tz = [-z * tx[1], z * tx[0], x * tx[1] - y * tx[0]];
-      for (let i = 0; i < sides; i++) {
-        const a = spin + (i * tau) / sides,
-          c = Math.cos(a),
-          s = Math.sin(a);
-        const n = tx.map((v, j) => v * c + tz[j] * s);
-        const flare = buttress && k < 2 ? (k === 0 ? 1.48 : 0.28) * flares[i] ** 2 : 0;
-        const r = radii[k] * (0.87 + 0.23 * flares[i] + flare);
-        vertex(
-          p.map((v, j) => v + r * n[j]),
-          n,
-          -1 - p[1],
-        );
-      }
-      if (k === 0) continue;
-      for (let i = 0; i < sides; i++) {
-        const a = start + (k - 1) * sides + i,
-          b = start + (k - 1) * sides + ((i + 1) % sides);
-        near.push(a, b, a + sides, b, b + sides, a + sides);
-        far.push(a, b, a + sides, b, b + sides, a + sides);
+      const p = points[k], next = points[Math.min(k + 1, points.length - 1)], prev = points[Math.max(k - 1, 0)];
+      const axis = normalise(...next.map((v, i) => v - prev[i]));
+      if (k) arc += Math.hypot(...p.map((v, i) => v - prev[i]));
+      // Transport the last ring's frame through the bend so fibres follow the
+      // fork. Duplicate the seam to carry a full cylindrical UV interval.
+      if (!across) across = Math.abs(axis[0]) < 0.8 ? [1,0,0] : [0,0,1];
+      const axial = across.reduce((sum, v, j) => sum + v * axis[j], 0);
+      across = normalise(...across.map((v,j) => v - axial * axis[j]));
+      const [x,y,z] = axis, [a,b,c] = across;
+      const binormal = [y*c-z*b, z*a-x*c, x*b-y*a];
+      for (let i = 0; i <= sides; i++) {
+        const theta = spin + (i % sides) * tau / sides;
+        const n = across.map((v,j) => v * Math.cos(theta) + binormal[j] * Math.sin(theta));
+        const ridge = flares[i % sides];
+        const flare = buttress && k < 2 ? (k === 0 ? 1.48 : 0.28) * ridge ** 2 : 0;
+        const radius = radii[k] * (0.87 + 0.23 * ridge + flare);
+        vertex(p.map((v,j) => v + radius*n[j]), n, -1-p[1], i/sides, arc, axis, girth);
       }
     }
+    function connect(indices, lower, upper, facets) {
+      for (let j = 0; j < facets; j++) {
+        const left = Math.round(j*sides/facets), right = Math.round((j+1)*sides/facets);
+        const lo = start + lower*ring, hi = start + upper*ring;
+        indices.push(lo+left,lo+right,hi+left, lo+right,hi+right,hi+left);
+      }
+    }
+    for (let k = 1; k < points.length; k++) connect(near,k-1,k,sides);
+    for (let k = 1; k < farRings.length; k++)
+      connect(far,farRings[k-1],farRings[k],buttress ? 7 : 4);
+    if (!farRings.length) return; // the terminal shoot already tapers to a point
+    const last = points.length - 1, limb = normalise(...points[last].map((v,i) => v-points[last-1][i]));
+    const tip = vertex(points[last].map((v,i) => v + limb[i]*radii[last]*1.8),
+      limb, -1-points[last][1], 0.5, arc+radii[last], across, girth);
+    for (let i = 0; i < sides; i++) near.push(start+last*ring+i,start+last*ring+i+1,tip);
   }
 
   // A card carries a whole twig of veined leaves. Near and far share its four
@@ -76,13 +84,16 @@ export function highCanopyMesh(random, variant = 0) {
   function frond(root, angle, length, slope, droop, tone) {
     const c = Math.cos(angle),
       s = Math.sin(angle);
-    const roll = (random() - 0.5) * 1.48,
+    const roll = (random() - 0.5) * 1.95,
       curl = (random() - 0.5) * 0.27;
-    const breadth = length * (0.49 + 0.1 * random());
+    const breadth = length * (0.47 + 0.12 * random());
     const start = tissue.length;
     function row(t) {
       const drift = curl * t * t * length;
-      for (const side of [-1, 1]) {
+      // All four silhouettes fit this tapered hull at both detail levels.
+      // Trim the transparent sides before rasterization.
+      const edge = 0.96 - 0.28*t;
+      for (const side of [-edge, edge]) {
         const lateral = drift + side * breadth;
         const y = length * (slope * t - droop * t * t) + side * breadth * roll;
         const tilt = slope - 2 * droop * t;
@@ -106,7 +117,7 @@ export function highCanopyMesh(random, variant = 0) {
       root[0] + 0.54 * c * length,
       root[1] + length * (0.54 * slope - 0.29 * droop),
       root[2] + 0.54 * s * length,
-      0.45 * length * breadth,
+      0.59 * length * breadth,
     );
   }
 
@@ -114,15 +125,15 @@ export function highCanopyMesh(random, variant = 0) {
     const turn = (random() - 0.5) * 0.86;
     const mid = extend(root, angle, reach * 0.54, lift * 0.76 + 0.02);
     const tip = extend(mid, angle + turn, reach * 0.46, lift * 0.24 - 0.014);
-    wood([root, mid, tip], [0.005, 0.0032, 0.0009], 4);
+    wood([root, mid, tip], [0.0064, 0.0034, 0.0002], 4, []);
     const pairs = 3 + Math.floor(2 * random()),
       tone = random();
     for (let j = 0; j < 2 * pairs; j++) {
-      const t = (j + 0.45 + 0.3 * random()) / (2 * pairs);
+      const t = 0.20 + 0.79 * (j + 0.3 + 0.55 * random()) / (2 * pairs);
       const p = t < 0.54 ? mix(root, mid, t / 0.54) : mix(mid, tip, (t - 0.54) / 0.46);
       const az = angle + turn * t + (j % 2 ? 1 : -1) * (0.8 + 0.49 * (1 - t) + 0.23 * random());
       const length = (0.18 + 0.085 * random()) * (1.06 - 0.29 * t);
-      const slope = 0.12 + 0.69 * random() + 0.32 * t;
+      const slope = -0.08 + 0.94 * random() + 0.32 * t;
       const droop = 0.33 + 0.58 * random() + 0.19 * (1 - t);
       frond(p, az, length, slope, droop, 0.06 + 0.5 * tone + 0.38 * random());
     }
@@ -135,8 +146,7 @@ export function highCanopyMesh(random, variant = 0) {
   wood(
     [0, 0.09, 0.25, 0.42, 0.63, 0.8, 0.94].map(spine),
     [0.065, 0.047, 0.04, 0.033, 0.024, 0.015, 0.004],
-    10,
-    true,
+    12, [0,1,3,5,6], true,
   );
   const forks = 7 + Math.floor(2 * random()),
     rotation = tau * random();
@@ -148,11 +158,17 @@ export function highCanopyMesh(random, variant = 0) {
     const reach = habit.spread * profile * (0.82 + 0.37 * random());
     const lift = habit.lift * (1 - 0.53 * t) * (0.76 + 0.4 * random()),
       turn = (random() - 0.5) * 1.0;
-    const elbow = extend(base, a, reach * 0.47, lift * 0.57);
-    const hand = extend(elbow, a + turn, reach * 0.53, lift * 0.43);
-    wood([base, elbow, hand], [0.028 - 0.013 * t, 0.016 - 0.008 * t, 0.004], 7);
+    // A swollen collar grows out of the trunk into a load-bearing crook.
+    // The branch rises close to the trunk, reaches sideways, then lifts its fork.
+    const collar = extend(base, a-0.12*turn, reach*0.13, lift*0.26);
+    const elbow = extend(collar, a, reach*0.34, lift*0.31);
+    const wrist = extend(elbow, a+turn*0.62, reach*0.29, lift*0.12);
+    const hand = extend(wrist, a+turn, reach*0.24, lift*0.31);
+    const baseRadius = 0.030 - 0.014*t;
+    wood([base, collar, elbow, wrist, hand],
+      [baseRadius*1.27, baseRadius*0.94, baseRadius*0.62, baseRadius*0.33, 0.0032], 7, [0,2,4]);
     shoot(elbow, a - 0.82, reach * 0.74, 0.055 + 0.075 * random());
-    shoot(mix(elbow, hand, 0.52), a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random());
+    shoot(wrist, a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random());
     shoot(hand, a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random());
   }
   for (let i = 0; i < 4; i++)
@@ -267,7 +283,7 @@ export function forestStands(localTrees, uplandTrees, isletTree, noise, random) 
   const sites = [],
     styles = [],
     tiles = [];
-  for (const tile of [...clusters.values()].sort((a, b) => a.variant - b.variant)) {
+  for (const tile of [...clusters.values()].sort((a, b) => a.variant - b.variant || a.z0 - b.z0 || a.x0 - b.x0)) {
     const { sites: local, styles: style, ...bounds } = tile;
     tiles.push({ ...bounds, start: sites.length / 4, count: local.length / 4 });
     sites.push(...local);

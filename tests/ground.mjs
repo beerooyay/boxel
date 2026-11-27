@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { readTuft, CLUMP } from '../demo/meadow.js';
 import { forestStands } from '../demo/high-canopy.js';
 import { bakeCanopy } from '../demo/atmosphere.js';
@@ -21,7 +22,8 @@ test('a root encodes its nearest tuft across cell boundaries, including in negat
   }
 });
 
-import { makeLeafSprays, SPRAY_COLUMNS, SPRAY_ROWS, SPRAY_MAX_LEVEL } from '../demo/leaf-spray.js';
+import { loadLeafSprays, SPRAY_COLUMNS, SPRAY_ROWS, SPRAY_MAX_LEVEL } from '../demo/leaf-spray.js';
+import { makeLeafSprays } from '../tools/bake-leaf-sprays.mjs';
 const seeded = (seed) => { let s = seed >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; }; };
 test('leaf sprays are the same for the same seed, and distant mips keep the crowns as full as near ones', () => {
   const a = makeLeafSprays(seeded(2024), 64), b = makeLeafSprays(seeded(2024), 64);
@@ -37,6 +39,22 @@ test('leaf sprays are the same for the same seed, and distant mips keep the crow
   for (let col = 0; col < SPRAY_COLUMNS; col++) {
     const visible = [0,1,tiny.width,tiny.width+1].filter(offset => tiny.bytes[4*(2*col + offset)+3] >= 128);
     assert.equal(visible.length, 1);
+  }
+});
+
+test('the desktop and mobile atlases decode to the baked leaf cutouts at every distance', async t => {
+  t.mock.method(globalThis, 'fetch', async url => new Response(await readFile(url)));
+  const expected = makeLeafSprays(seeded(2024)).levels;
+  for (const mobile of [false, true]) {
+    const levels = await loadLeafSprays(mobile);
+    assert.deepEqual(levels, expected.slice(mobile ? 1 : 0));
+  }
+  const stream = Object.getOwnPropertyDescriptor(globalThis, 'DecompressionStream');
+  try {
+    Object.defineProperty(globalThis, 'DecompressionStream', { value: undefined, configurable: true });
+    assert.deepEqual(await loadLeafSprays(false), expected.slice(1));
+  } finally {
+    Object.defineProperty(globalThis, 'DecompressionStream', stream);
   }
 });
 

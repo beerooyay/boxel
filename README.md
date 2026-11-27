@@ -148,7 +148,8 @@ whatever it draws with.
 - **Bevy** can step one field per entity in `FixedUpdate` with the optional
   [Boxel plugin](integrations/bevy/src/lib.rs). Match the fixed clock to the field spec.
   Fields step in parallel with each other, and a `BoxelImage` beside a field keeps a texture of
-  its window current, block by block, to sample in any material. Run its tests with
+  its window current, block by block, to sample in any material. It signals a texture update
+  when the visible R8 texels change. Run its tests with
   `cargo test --manifest-path integrations/bevy/Cargo.toml`.
 
 Fields compose. Each one has its own spread and fade, so footprints, wetness, heat, scent and
@@ -196,5 +197,13 @@ cargo run --release -p boxel-bench -- replay replay.json && node bench/replay.mj
 ## Credits
 
 The mathematics is Blaize Rouyea and Corey Bourgeois's paper. Boxel grew out of the field
-substrate in rawah (`cells.js`, `boxels.js`). The demo's grass and leaves are Corey's blade from
-[ceeboozwah/grass](https://github.com/ceeboozwah/grass), and its post pipeline is his.
+substrate in rawah (`cells.js`, `boxels.js`). The grass blades and post pipeline come from
+[Corey's Grass project](https://github.com/ceeboozwah/Grass). His
+[Unity tree generator](https://github.com/ceeboozwah/Grass/tree/main/unity-trees) also informed
+how Tarn attaches leaf clusters to forked shoots and wraps bark around each limb.
+The bark colour and normal textures use Rob Tuytel's CC0 scan,
+[Bark Brown 02 on Poly Haven](https://polyhaven.com/a/bark_brown_02).
+
+The tree and understory leaf atlases ship with coverage-preserving mip levels in KTX2.
+To rebuild both sizes, install the [Khronos KTX tools](https://github.com/KhronosGroup/KTX-Software)
+and run `node tools/bake-leaf-sprays.mjs`.

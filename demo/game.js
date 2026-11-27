@@ -8,8 +8,8 @@ import { bindCapture } from './capture.js';
 import { floraPalette, understoryPigment } from './flora-palette.js';
 import { createWind, windShader } from './wind.js';
 import { bakeTrailMaterial } from './trail-material.js';
-import { bakeLeafSpraysAsync, uploadLeafSprays, sprayGLSL, STRAP_ASPECT } from './leaf-spray.js';
-import { loadRockSurface, uploadRockSurface } from './rock-material.js';
+import { loadLeafSprays, uploadLeafSprays, sprayGLSL, STRAP_ASPECT } from './leaf-spray.js';
+import { loadSurface, uploadSurface } from './surface-texture.js';
 import { galaxyFragment } from './galaxy.js';
 import { FieldTexture } from './field-texture.js';
 import { bakeMeadow, BLADE_HEIGHT_RANGE, CLUMP, clumpGLSL } from './meadow.js';
@@ -24,7 +24,7 @@ import { bakeCanopy, valleyAir, canopyShelter } from './atmosphere.js';
 import { createAudio } from './audio.js';
 import { bakeGroundLight, groundLight, mistFragment, viewRay } from './valley-light.js';
 import { cameraJitter, depthRange, historyColor, temporalFragment } from './temporal.js';
-import { bakeShadows } from './shadows.js';
+import { createShadows } from './shadows.js';
 // Tarnished Promise: sixteen acres of lake shore and highlands on Tarn, under a ringed giant.
 //
 // The world remembers you through three boxel fields on the unbounded plane of 12.5 cm cells:
@@ -44,14 +44,14 @@ const LAKE = [-6, 8];                                     // lake centre (x, z)
 const WATER = 0;                                          // water level
 const BOXEL = 0, DENSE = 1;
 const MODE_NAME = { 0: 'boxel', 1: 'dense' };
-const rockSurfaceReady = loadRockSurface();
-const leafSpraysReady = bakeLeafSpraysAsync(2024, matchMedia('(pointer: coarse)').matches ? 128 : 256);
 const qs = new URLSearchParams(location.search);
 const TEST = qs.has('test');
 const GRASS_LAB = !TEST && qs.has('grass-lab');
 const PLOT = { x: 15, z: 42, half: 5 };
 const plotDistance = (x, z) => Math.max(Math.abs(x-PLOT.x), Math.abs(z-PLOT.z));
 const touch = matchMedia('(pointer: coarse)').matches;
+const surfacesReady = Promise.all(['boulder-surface.jpg', 'bark-color.jpg', 'bark-normal.jpg'].map(loadSurface));
+const leafSpraysReady = loadLeafSprays(touch);
 if (touch) document.body.classList.add('touch');
 
 // ---------------------------------------------------------------- noise + terrain (CPU)
@@ -618,52 +618,61 @@ vec3 brushBend(vec3 wp) {
   return vec3(bend.x, -max(0.42 * length(bend), 0.68 * press), bend.y) * reach;
 }
 `;
-const CANOPY = program(WORLD_VS + BRUSH_VS + `
+const CANOPY = program(WORLD_VS + BRUSH_VS + valleyAir + canopyShelter + `
 in vec3 aPos, aNor, aStalk, aBlade; in float aTissue; in vec4 aSite, aHabit;
-centroid out vec2 vBlade; centroid out vec3 vWP, vNormal, vAcross; out vec3 vRest;
-flat out float vTissue, vHue, vSeed; out float vCrown; out vec2 vField;
+centroid out vec2 vBlade; centroid out vec3 vWP, vNormal, vAcross;
+flat out float vTissue, vHue; out float vCrown; out vec3 vField; out vec4 vAir;
 void main(){
   mat2 rot=mat2(aHabit.x,aHabit.y,-aHabit.y,aHabit.x);
   vec3 p=aPos, stalk=aStalk;
   p.xz = rot*p.xz*aHabit.z;
   stalk.xz = rot*stalk.xz*aHabit.z;
-  vRest=p*aSite.w;
   vNormal=aNor; vNormal.xz=rot*aNor.xz/aHabit.z;
-  vAcross=vec3(0.);
+  vBlade=aBlade.xy;
+  float load=uWind>0. ? crownLoad(aSite.xz)*uWind : 0.;
   if (aTissue>=0.) {
-    vec2 root=aSite.xz+stalk.xz*aSite.w;
     vec2 across=rot*vec2(-sin(aBlade.z),cos(aBlade.z));
-    float gust=windWave(root)*uWind;
-    float a=leafBend(gust*(0.30+0.26*aTissue))+0.08*tipFlutter(root,uWindFrame.x,aTissue)*min(gust,1.);
-    vec2 swivel=vec2(cos(a),sin(a)); vec3 hinge=vec3(WIND_DIR.y,0.,-WIND_DIR.x);
-    p=stalk+rotateFoliage(p-stalk,hinge,swivel);
+    vAcross=vec3(across.x,0.,across.y);
+    if (uWind>0.) {
+      vec2 root=aSite.xz+stalk.xz*aSite.w;
+      vec2 delta=root-uCam.xz;
+      float local=1.-smoothstep(225.,1225.,dot(delta,delta));
+      float gust=load, flutter=0.;
+      if (local>0.) {
+        gust=mix(load,windWave(root)*uWind,local);
+        flutter=0.08*local*tipFlutter(root,uWindFrame.x,aTissue)*min(gust,1.);
+      }
+      float a=leafBend(gust*(0.30+0.26*aTissue))+flutter;
+      vec2 swivel=vec2(cos(a),sin(a));
+      vec3 hinge=vec3(WIND_DIR.y,0.,-WIND_DIR.x);
+      p=stalk+rotateFoliage(p-stalk,hinge,swivel);
+      vNormal=rotateFoliage(vNormal,hinge,swivel);
+      vAcross=rotateFoliage(vAcross,hinge,swivel);
+    }
     p+=brushBend(aSite.xyz+stalk*aSite.w)*(aBlade.x*aBlade.x*0.15);
-    vNormal=rotateFoliage(vNormal,hinge,swivel);
-    vAcross=rotateFoliage(vec3(across.x,0.,across.y),hinge,swivel);
+  } else {
+    // Wood shares the attribute layout. Its stalk is the longitudinal tangent,
+    // and the third blade channel carries this limb's reference circumference.
+    vAcross=stalk;
+    stalk=p;
+    float repeats=max(1.,floor(aBlade.z*aSite.w*aHabit.z/0.86+0.5));
+    vec2 offset=fract(aSite.xz*vec2(0.75488,0.56984)+aBlade.z*13.3);
+    vBlade=vec2(aBlade.x*repeats,aBlade.y*aSite.w/0.86)+offset;
   }
-  float load=crownLoad(aSite.xz)*uWind;
   p+=boughOffset(load,stalk.y,1.)*min(1.,length(stalk.xz)*3.4);
   vWP=aSite.xyz+p*aSite.w;
-  vTissue=aTissue; vHue=aHabit.w; vSeed=fract(dot(aSite.xz,vec2(0.75488,0.56984)));
-  vBlade=aBlade.xy; vCrown=clamp((aPos.y-0.35)*1.18+0.68*length(aPos.xz),0.,1.);
+  vTissue=aTissue; vHue=aHabit.w;
+  vCrown=clamp((aPos.y-0.25)*0.64+1.04*length(aPos.xz),0.,1.);
   vec2 uv=fieldUV(aSite.xz);
-  vField=vec2(textureLod(uGlow,uv,0.).r,clamp(textureLod(uGround,uv,0.).r+uSheet,0.,1.));
+  vAir=airAt(vWP);
+  vField=vec3(0.,uSheet,canopyCover(vWP));
+  if (all(lessThanEqual(abs(uv-0.5),vec2(0.5))))
+    vField.xy=vec2(textureLod(uGlow,uv,0.).r,min(1.,textureLod(uGround,uv,0.).r+uSheet));
   gl_Position=project(vWP);
 }`, sprayGLSL + `uniform float uClip; uniform bool uCoverage;
-centroid in vec2 vBlade; centroid in vec3 vWP, vNormal, vAcross; in vec3 vRest;
-flat in float vTissue, vHue, vSeed; in float vCrown; in vec2 vField; out vec4 o;
-// Long, offset scales open into soft fissures. Their size, grain and edges
-// vary independently, and the material stays on the branch as it sways.
-vec2 barkPlate(vec2 plane, float seed) {
-  vec2 p=plane*vec2(6.8,1.33)+seed;
-  float drift=vnoise(plane*vec2(1.85,0.55)+seed);
-  p += vec2(1.27*drift+0.38*vnoise(plane*2.2-seed),0.72*vnoise(plane*0.84+seed));
-  vec3 cell=cobble(p);
-  float fissure=(1.-smoothstep(0.012,0.17+0.15*drift,cell.y))*(0.32+0.68*drift);
-  float grain=vnoise(vec2(p.x*4.5+drift,p.y*1.52));
-  float fibres=vnoise(vec2(9.*p.x+1.8*grain,1.8*p.y));
-  return vec2(fissure,0.34*cell.z+0.40*grain+0.26*fibres);
-}
+centroid in vec2 vBlade; centroid in vec3 vWP, vNormal, vAcross;
+flat in float vTissue, vHue; in float vCrown; in vec3 vField; in vec4 vAir; out vec4 o;
+uniform sampler2D uBarkColor, uBarkNormal;
 void main(){
   if (vWP.y < uClip) discard;
   vec3 n=normalize(vNormal), view=normalize(uCam-vWP), colour;
@@ -677,41 +686,38 @@ void main(){
     if(dot(n,view)<0.) n=-n;
     float tone=spray.b, wood=1.-smoothstep(0.02,0.08,tone);
     vec3 pigment=crownPigment(vHue);
-    float newLeaf=clamp(0.45*vCrown+0.35*tone+0.20*vBlade.x,0.,1.);
+    float newLeaf=smoothstep(0.32,0.96,0.51*vCrown+0.32*tone+0.17*vBlade.x);
     if(vHue>=0.95) pigment=mix(pigment,mix(APRICOT,GOLD,newLeaf),0.52);
     else if(vHue>=0.91) pigment=mix(pigment,mix(PETAL_PINK,BLOSSOM_TIP,newLeaf),0.39);
-    float lightness=0.46+0.47*vCrown+0.18*vTissue;
+    else if(vHue<0.78) pigment=mix(pigment,NEW_GROWTH,0.21*newLeaf*newLeaf);
+    float lightness=0.47+0.42*vCrown+0.18*vTissue;
     vec3 leaf=mix(pigment*(0.48+0.64*tone)*lightness,vec3(0.14,0.095,0.058),wood)*(1.-0.16*vField.y);
     vec3 sun=uSunCol*directLight(vWP);
     float facing=dot(n,uSunDir);
-    vec3 sky=ambient(n)*contactLight(vWP)*(1.-0.43*canopyCover(vWP));
+    vec3 sky=ambient(n)*contactLight(vWP)*(1.-0.43*vField.z);
     colour=leaf*(sky*2.25+floraSpill(vWP)+sun*(0.10+0.81*max(0.,facing)));
-    colour+=leaf*sun*vec3(1.29,1.12,0.76)*max(-facing,0.)*(0.46+0.16*tone)*(1.-wood);
+    // The thinner outside leaves transmit warm sunlight when the viewer faces the star.
+    float transmission=max(-facing,0.)*(0.28+0.36*newLeaf)+
+      0.25*pow(max(0.,-dot(view,uSunDir)),4.)*newLeaf;
+    colour+=leaf*sun*vec3(1.42,1.14,0.72)*transmission*(1.-wood);
     colour+=sun*pow(max(0.,dot(n,normalize(view+uSunDir))),18.)*(0.045+0.09*vField.y)*(1.-wood);
     float veins=smoothstep(0.78,0.98,tone);
     colour+=pigment*uNight*(0.035*veins+glowI(vField.x)*(veins+0.22*vBlade.x));
   }else{
-    float resolve=1.-smoothstep(15.,42.,length(uCam-vWP));
-    vec2 plate=vec2(0.15,0.5);
-    if(resolve>0.){
-      vec2 w=pow(abs(n.xz),vec2(3.)); float weight=w.x/max(w.x+w.y,0.001);
-      vec2 f=barkPlate(vRest.xy,17.*vSeed);
-      vec2 g=barkPlate(vRest.zy,23.*vSeed+5.);
-      plate=mix(plate,mix(f,g,weight),resolve);
-    }
-    // Turn the bark's height into a normal in the branch's own tangent plane.
-    float relief=0.025*(0.55*plate.y-plate.x);
-    vec3 du=dFdx(vWP), dv=dFdy(vWP);
-    vec3 u=cross(dv,n), v=cross(n,du);
-    float det=dot(du,u);
-    vec3 ridge=(u*dFdx(relief)+v*dFdy(relief))*sign(det)/max(abs(det),1e-7);
-    n=normalize(n-ridge*min(1.,0.85/max(length(ridge),0.01)));
-    vec3 wood=mix(vec3(0.078,0.045,0.033),vec3(0.31,0.21,0.14),smoothstep(0.20,0.77,plate.y));
-    wood*=(1.-0.68*plate.x)*(1.-0.21*vField.y);
-    colour=wood*(contactLight(vWP)*ambient(n)*1.80+uSunCol*directLight(vWP)*(0.09+0.93*max(0.,dot(n,uSunDir))));
-    colour+=crownPigment(vHue)*plate.x*uNight*(0.033+0.07*glowI(vField.x));
+    vec3 along=normalize(vAcross-n*dot(n,vAcross));
+    vec3 across=cross(along,n);
+    vec3 grain=texture(uBarkNormal,vBlade).xyz*2.-1.;
+    vec3 bark=texture(uBarkColor,vBlade).rgb;
+    n=normalize(n*max(0.25,grain.z)+0.79*(across*grain.x+along*grain.y));
+    float damp=vField.y;
+    bark*=1.-0.29*damp;
+    vec3 sun=uSunCol*directLight(vWP), sky=ambient(n)*contactLight(vWP);
+    colour=bark*(sky*1.78+floraSpill(vWP)+sun*(0.075+0.94*max(0.,dot(n,uSunDir))));
+    colour+=sun*damp*0.055*pow(max(0.,dot(n,normalize(view+uSunDir))),23.);
+    float fissure=1.-smoothstep(0.045,0.16,dot(bark,vec3(0.3,0.6,0.1)));
+    colour+=crownPigment(vHue)*fissure*uNight*(0.009+0.06*glowI(vField.x));
   }
-  o=vec4(tonemap(fogged(colour,vWP)),uCoverage ? cover : 0.);
+  o=vec4(tonemap(colour*vAir.a+vAir.rgb),uCoverage ? cover : 0.);
 }`);
 
 // Air and overhead shelter change slowly across the terrain mesh. Keep the
@@ -2663,26 +2669,37 @@ function uploadForest(stands) {
   });
   return { groups, width:stands.width, count:stands.sites.length/4, shoots:groups.reduce((sum,group) => sum+group.shoots, 0) };
 }
+function drawTreeRun(group, firstTile, count, close) {
+  gl.bindVertexArray(firstTile.vao);
+  gl.drawElementsInstanced(gl.TRIANGLES, close ? group.near : group.far, gl.UNSIGNED_SHORT,
+    close ? 0 : group.near * Uint16Array.BYTES_PER_ELEMENT, count);
+}
 function drawForest(planes, mirror, eye, slice = 0, slices = 1) {
-  const width = forest.width, distance = mirror < 0 ? 15 : 32;
+  const width = forest.width, distance = mirror < 0 ? 8 : 16;
   for (let i=slice; i<forest.groups.length; i+=slices) {
     const group=forest.groups[i];
     if (!group.count) continue;
-    const farOffset = group.near * Uint16Array.BYTES_PER_ELEMENT;
     if (!planes) {
-      gl.bindVertexArray(group.tiles[0].vao);
-      gl.drawElementsInstanced(gl.TRIANGLES, group.far, gl.UNSIGNED_SHORT, farOffset, group.count);
+      drawTreeRun(group, group.tiles[0], group.count, false);
       continue;
     }
+    // Adjacent visible tiles share the mesh and contiguous instance attributes.
+    // Submit a run with its first VAO while keeping the original culling bounds.
+    let first = null, count = 0, detailed = false;
     for (const tile of group.tiles) {
       if (outsideView(planes,tile,width)) continue;
       const dx=Math.max(tile.x0-eye[0],0,eye[0]-tile.x0-width);
       const dz=Math.max(tile.z0-eye[2],0,eye[2]-tile.z0-width);
-      const close = dx*dx+dz*dz < distance*distance;
-      gl.bindVertexArray(tile.vao);
-      gl.drawElementsInstanced(gl.TRIANGLES,close ? group.near : group.far,gl.UNSIGNED_SHORT,
-        close ? 0 : farOffset,tile.count);
+      const detailReach = distance + 0.85*tile.pad;
+      const close = dx*dx+dz*dz < detailReach*detailReach;
+      if (first && (first.start+count !== tile.start || close !== detailed)) {
+        drawTreeRun(group,first,count,detailed);
+        first = null;
+      }
+      if (!first) { first=tile; count=0; detailed=close; }
+      count+=tile.count;
     }
+    if (first) drawTreeRun(group,first,count,detailed);
   }
 }
 function rockBatches(mesh, sites, sizes, beds) {
@@ -2840,7 +2857,7 @@ void main(){
   c += (texture(tMap, vUv + uTexel * vec2(1., 0.)).rgb + texture(tMap, vUv + uTexel * vec2(-1., 0.)).rgb + texture(tMap, vUv + uTexel * vec2(0., 1.)).rgb + texture(tMap, vUv + uTexel * vec2(0., -1.)).rgb) * 2.;
   c += texture(tMap, vUv + uTexel * vec2(1., 1.)).rgb + texture(tMap, vUv + uTexel * vec2(-1., 1.)).rgb + texture(tMap, vUv + uTexel * vec2(1., -1.)).rgb + texture(tMap, vUv + uTexel * vec2(-1., -1.)).rgb;
   o = vec4(c / 16. * 0.35, 1.); }`);
-const P_RAYS = program(FSQ, `uniform sampler2D tMap; uniform vec2 uSunUV; uniform float uVis; uniform vec3 uRayCol; in vec2 vUv; out vec4 o;
+const P_RAYS = program(FSQ, viewRay + `uniform sampler2D tMap; uniform vec2 uSunUV; uniform float uVis; uniform vec3 uRayCol; in vec2 vUv; out vec4 o;
 void main(){
   const float steps = 24.;
   vec2 toSun = uSunUV - vUv, stepUV = toSun / steps;
@@ -2857,7 +2874,8 @@ void main(){
     scattered += c.a * sunlit * weight;
     weight *= gain; q += stepUV;
   }
-  float foreground = 1. - 0.72 * texture(tMap, vUv).a;
+  float reach = viewDepth(texture(tDepth, vUv).r);
+  float foreground = smoothstep(0.45,8.,reach) * (1. - 0.72 * texture(tMap, vUv).a);
   o = vec4(uRayCol * scattered * (uVis / steps) * foreground, 1.); }`);
 const P_TEMPORAL = program(FSQ, temporalFragment), P_MIST = program(FSQ, mistFragment);
 const P_FINAL = program(FSQ, viewRay + historyColor + `uniform sampler2D tScene, tBloom, tRays, tMist; uniform float uBloom, uRays; in vec2 vUv; out vec4 o;
@@ -2986,15 +3004,16 @@ function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
   const cx = VP[0] * P[0] + VP[4] * P[1] + VP[8] * P[2] + VP[12], cy = VP[1] * P[0] + VP[5] * P[1] + VP[9] * P[2] + VP[13], cw = VP[3] * P[0] + VP[7] * P[1] + VP[11] * P[2] + VP[15];
   const facing = b.f[0] * rd[0] + b.f[1] * rd[1] + b.f[2] * rd[2];
   const vis = cw > 0 ? Math.max(0, Math.min(1, (facing - 0.05) / 0.45)) : 0;
+  gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, post.depth);
   const rayStrength = vis > 0 ? (HDR ? 0.68 : 0.48) * (1 - night) : 0;
   if (rayStrength > 0) {
     pass(P_RAYS, post.rays.f, post.rays.w, post.rays.h, post.res);
+    gl.uniform1i(P_RAYS.u('tDepth'), 15); gl.uniform2fv(P_RAYS.u('uDepthRange'), depthRange);
     gl.uniform2f(P_RAYS.u('uSunUV'), cw > 0 ? cx / cw * 0.5 + 0.5 : 0.5, cw > 0 ? cy / cw * 0.5 + 0.5 : 0.5);
     gl.uniform1f(P_RAYS.u('uVis'), vis); gl.uniform3fv(P_RAYS.u('uRayCol'), [1.0 * starTint[0] * (1 - night) + 0.25 * night, 0.62 * starTint[1] * (1 - night) + 0.38 * night, 0.36 * starTint[2] * (1 - night) + 0.8 * night]);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
   const history = post.history[post.write];
-  gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, post.depth);
   for (const p of [P_MIST, P_TEMPORAL]) {
     if (p === P_MIST) pass(p, post.mist.f, post.mist.w, post.mist.h);
     else pass(p, history.f, w, h, post.res);
@@ -3502,7 +3521,7 @@ function bakeFloraSpill(plants) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 }
-const valleyShadows = bakeShadows(gl, touch ? 1536 : 2560, WORLD_HALF, [SUN, PLANET], [
+const valleyShadows = createShadows(gl, touch ? 1536 : 2560, WORLD_HALF, 3, [
   { source: TERRAIN, draw() { gl.bindVertexArray(near.vao); gl.drawElements(gl.TRIANGLES, near.count, gl.UNSIGNED_INT, 0); } },
   { source: ROCK, draw: () => drawRocks() },
   { source: CANOPY, slices: 3, fragmentSource: `#version 300 es
@@ -3526,7 +3545,7 @@ void main(){ if (texture(uLeafSprays, sprayUV(clamp(vBlade.x, 0., 1.), clamp(vBl
     gl.bindVertexArray(first.vao);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, leaves.verts, last.start + last.count - first.start);
   } },
-], 1);
+]);
 // the night sky turns about a tilted pole, once in about fifteen minutes
 const POLE = norm([0.25, 0.8, 0.55]), skyTurn = new Float32Array(9);
 function turnSky(t) {
@@ -3649,6 +3668,7 @@ function windStrength() { return (rain && !TEST ? 1.18 : 1.0) + 0.7 * storm; }
 function common(p, eye, VP, mirror, t) {
   gl.useProgram(p);
   if (p.worldFrame === undefined) {
+    gl.uniform1i(p.u('uBarkColor'),24); gl.uniform1i(p.u('uBarkNormal'),25);
     gl.uniform1i(p.u('uOceanAtlas'),18); gl.uniform1i(p.u('uLeafSprays'), 20); gl.uniform1i(p.u('uRockSurface'), 19); gl.uniform1i(p.u('uGusts'),16); gl.uniform1i(p.u('uTrailMaterial'),17);
     gl.uniform1i(p.u('uShadows'), 9); gl.uniform1i(p.u('uFloraSpill'), 10);
     gl.uniform1i(p.u('uClouds'), 11); gl.uniform1i(p.u('uCanopy'), 12);
@@ -4279,12 +4299,14 @@ function scripted(m, frames = 900, view = 'shore') {
     document.getElementById('bCamera').hidden = true;
     return null;
   });
-  const [fieldEngine, rockSurface, sprays, avatar] = await Promise.all([loadEngine(), rockSurfaceReady, leafSpraysReady, foxReady]);
+  const [fieldEngine, [rock, bark, barkNormal], sprays, avatar] = await Promise.all([loadEngine(), surfacesReady, leafSpraysReady, foxReady]);
   fox = avatar;
   engine = fieldEngine;
-  uploadRockSurface(gl, rockSurface, 19);
+  uploadSurface(gl, rock, 19, gl.RGBA8, [128,128,128]);
+  uploadSurface(gl, bark, 24, gl.SRGB8_ALPHA8, [105,86,66]);
+  uploadSurface(gl, barkNormal, 25, gl.RGBA8, [128,128,255]);
   uploadLeafSprays(gl, sprays, 20);
-  // the boot bake drew the leaf cards whole; now that their pictures are here, cut the shadows to the leaves
+  // Both lights see the same cutouts as the camera on their first bake.
   valleyShadows.rebake(0, SUN); valleyShadows.rebake(1, PLANET); shadowKeys.stale = true;
   wind = createWind(engine.boxel, H);
   gl.activeTexture(gl.TEXTURE0+16); gl.bindTexture(gl.TEXTURE_2D,gustTexture);

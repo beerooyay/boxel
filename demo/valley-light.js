@@ -122,6 +122,9 @@ void main(){
   vec3 day = vec3(0.19, 0.29, 0.32) + forward * vec3(1., 0.68, 0.39) * uStarTint;
   // Moist soil and standing water keep some low mist even under a high star.
   vec2 densityRange = vec2(0.008, 0.064) * (1. - vec2(0.76, 0.42) * clearAfternoon());
+  // A little suspended moisture catches sunbeams inside the crowns. Only
+  // sun-facing rays need the extra canopy lookup. Reuse the mist shadow march.
+  float beam = forward * (1.-uNight) * (1.-0.85*uStorm) * smoothstep(-0.015,0.08,uStarDir.y);
   float start = 0.;
   for (int i = 1; i <= 10; ++i) {
     float end = reach * float(i*i) * 0.01, stepLength = end - start;
@@ -131,16 +134,22 @@ void main(){
     vec2 levels = textureLod(uValleyGround, uv, 0.).gb;
     float bed = groundHeight(levels.x), water = groundHeight(levels.y);
     float above = wp.y - max(water, bed);
-    if (above < -0.3 || above > 3.8) continue;
+    if (above < -0.3 || above > (beam > 0.025 ? 8. : 3.8)) continue;
+    float aerosol = 0.;
+    if (beam > 0.025)
+      aerosol = 0.026 * beam * canopyCover(wp) * smoothstep(0.12,1.1,above)
+        * (1.-smoothstep(3.5,8.,above));
     float wet = clamp(textureLod(uGround, uv, 0.).r + uSheet + 0.53 * (1. - smoothstep(-0.1, 1., bed - water)), 0., 1.);
     float drift = vnoise(wp.xz * 0.29 + vec2(-0.054, 0.017) * uTime + above * 0.16);
     float density = atlasCoverage(uv) * mix(densityRange.x, densityRange.y, wet) * (0.3 + drift) * exp(-max(0., above) * 1.35);
-    float scatter = 1. - exp(-density * stepLength);
+    float scatter = 1. - exp(-(density + aerosol) * stepLength);
     vec3 incident = vec3(0.021, 0.040, 0.068);
     if (uNight < 0.999) {
       float sun = mistSun(wp, uSunLayers.x);
       if (uSunBlend > 0.) sun = mix(sun, mistSun(wp, uSunLayers.y), uSunBlend);
       incident = mix(day * (0.28 + 0.72 * sun), incident, uNight);
+      vec3 shaft = sun * uStarTint * vec3(1.65,1.26,0.75);
+      incident = mix(incident,shaft,aerosol / max(0.0001,density+aerosol));
     }
     if (uNight > 0.001) {
       float glow = glowI(textureLod(uGlow, uv, 0.).r);
