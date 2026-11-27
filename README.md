@@ -75,7 +75,7 @@ them. Peak allocations, event records and the certificate table also contribute 
 
 ## Tarn
 
-[Play Tarn in your browser](https://beerooyay.github.io/boxel/).
+[Play Tarn in your browser](https://beerooyay.github.io/boxel/). [Performance audit and render measurements](docs/performance-audit.md)
 
 Tarn spans 256 × 256 metres, about 16 acres. Four connected upland walks add about 730 metres of trail
 around the original lake. Follow the river north to a spring, take the west walk through the coilferns,
