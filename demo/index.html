@@ -25,7 +25,7 @@
 [hidden] { display: none !important; }
 html, body { height: 100%; }
 body { background: var(--void); color: var(--ink); font-family: var(--body); overflow: hidden; -webkit-user-select: none; user-select: none; }
-#gl { position: fixed; touch-action: none; inset: 0; width: 100%; height: 100%; display: block; background: var(--void); }
+#gl { position: fixed; touch-action: none; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; background: var(--void); }
 
 #intro {
   position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
@@ -89,6 +89,9 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 #grassLab button { color: var(--ink); background: var(--glass); border: 1px solid var(--edge); border-radius: 8px; padding: 7px 9px; cursor: pointer; }
 #grassLab button[aria-pressed="true"] { color: var(--glow); border-color: var(--glow); }
 #labStats { display: block; margin-top: 7px; color: var(--dim); font: 11px var(--mono); }
+#labLegend { margin: 7px 0 0; }
+#labLegend span:first-child { color: #70efd0; }
+#labLegend span:last-child { color: #ffb660; }
 .grass-lab #hud, .grass-lab #bHud, .grass-lab #bCamera, html.intro #grassLab { display: none !important; }
 #capture-status { position: fixed; z-index: 15; top: max(12px, env(safe-area-inset-top)); left: 50%;
   translate: -50%; max-width: 86vw; padding: 9px 14px; border-radius: 12px;
@@ -101,7 +104,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 #capture-library header, .capture-actions, .capture-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 #capture-library h2 { margin: 0; font: 700 clamp(19px, 4vw, 25px) var(--display); }
 .capture-hint { color: var(--dim); margin: 12px 0 18px; }
-.capture-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: 12px; }
+.capture-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr)); gap: 12px; }
 .capture-list[hidden], .capture-detail[hidden] { display: none; }
 .capture-card { min-width: 0; padding: 8px; background: #101320; border-radius: 12px; }
 #capture-library button, #capture-library a { font: inherit; color: var(--ink); background: #252a40;
@@ -126,7 +129,7 @@ html.intro #hud, html.intro #pad, html.intro #stick, html.intro #cross { display
 #fieldMenu button[aria-pressed=true] { color:var(--glow); border-color:#5ff2e054; }
 #fieldMenu button:focus-visible { outline:2px solid var(--glow); }
 #fieldMenu p { font:13px/1.6 var(--body); color:#bcc4ce; margin:14px 0 0; }
-body:not(.touch) #bThrow, body:not(.touch) .touch-guide, body.touch .desktop-guide, body.touch:not(.using-controller) .controller-guide { display:none; }
+body:not(.touch) #bJump, body:not(.touch) #bThrow, body:not(.touch) .touch-guide, body.touch .desktop-guide, body.touch:not(.using-controller) .controller-guide { display:none; }
 </style>
 
 <script>document.documentElement.classList.add("intro")</script>
@@ -150,14 +153,17 @@ body:not(.touch) #bThrow, body:not(.touch) .touch-guide, body.touch .desktop-gui
   <h2 id="labTitle">Grass lab · 10 × 10 m</h2>
   <div>
     <button type="button" id="labContact" aria-pressed="true" title="Toggle mesh contact (X)">Mesh contact</button>
+    <button type="button" id="labShare" aria-pressed="true" title="Transfer a push between touching blades">Neighbours</button>
     <button type="button" id="labMark" aria-pressed="false" title="Highlight touching blade sections (K)">Mark contact</button>
     <button type="button" id="labWind" aria-pressed="false">Wind</button>
     <button type="button" id="labView" title="Cycle inspection cameras (B)">Chase view</button>
   </div>
+  <p id="labLegend" hidden><span>Mint · fox</span> &nbsp; <span>Amber · neighbouring blade</span></p>
   <output id="labStats"></output>
 </section>
 <div id="stick" aria-hidden="true"><i id="knob"></i></div>
 <div id="pad">
+  <button id="bJump" type="button">Jump</button>
   <button class="throw" id="bThrow" type="button">Throw</button>
   <button id="menuOpen" type="button" aria-haspopup="dialog" title="Field menu (Q)">☰ &nbsp; Field menu</button>
 </div>
@@ -177,9 +183,9 @@ body:not(.touch) #bThrow, body:not(.touch) .touch-guide, body.touch .desktop-gui
   <button id="capture-record" type="button" aria-pressed="false" title="Start or stop recording (backtick)">Record</button>
   <button id="capture-gallery" type="button" title="Open clip gallery (G)">Gallery</button>
 </fieldset>
-  <p class="desktop-guide">Walk with WASD · Shift to run · Click to throw<br>Drag or scroll with two fingers to look · Q for menu<br>Right-click for free look · Esc to release</p>
-  <p class="touch-guide">Left thumb to walk · Push farther to run<br>Drag the right side to look · Tap Throw for a glowstone</p>
-  <p class="controller-guide">Controller · Left stick to move · Right stick to look<br>Right trigger to run · A to throw · Y for camera · Menu to open<br>D-pad to browse · A to select · B to return</p>
+  <p class="desktop-guide">Walk with WASD · S to back up · Shift + S to turn around<br>Shift to run · Space to jump · Click to throw<br>Drag or scroll with two fingers to look · Q for menu<br>Right-click for free look · Esc to release</p>
+  <p class="touch-guide">Left thumb to walk · Push farther to run<br>Drag the right side to look · Tap Jump to leap or Throw for a glowstone</p>
+  <p class="controller-guide">Controller · Left stick to move · Right stick to look<br>Right trigger to run · A to jump · X to throw · Y for camera · Menu to open<br>D-pad to browse · A to select · B to return</p>
 </dialog>
 
 <div id="capture-status" role="status"></div>
@@ -207,9 +213,9 @@ body:not(.touch) #bThrow, body:not(.touch) .touch-guide, body.touch .desktop-gui
     <h1>T<span>A</span>RNISHED<br>PROMISE</h1>
     <p>Explore as a fox. Follow the river upstream to the spring, or climb the eastern rock shelf for a view across the valley. After dark, throw a glowstone and watch the moss wake where it lands.</p>
     <div class="keys" id="keys">
-      <b>keyboard</b><span>WASD to move · Shift to run</span>
+      <b>keyboard</b><span>WASD to move · Shift to run · Space to jump</span>
       <b>mouse / pad</b><span>drag or two-finger scroll to look · click to throw</span>
-      <b>controller</b><span>A to enter · sticks to move and look · RT to run</span>
+      <b>controller</b><span>A to enter · sticks to move and look · RT to run · A to jump</span>
     </div>
     <button class="go" id="go" type="button">Step onto the shore</button>
     <div class="status" id="status">loading the field engine…</div>

@@ -9,7 +9,7 @@ function axisPair(x = 0, y = 0) {
 export function foxController() {
   const input = { x: 0, forward: 0, run: false };
   let previous = [], active = -1, unavailable = false;
-  function poll(dt, { started, menu, gallery, toggleMenu, look, throwStone, toggleCamera }) {
+  function poll(dt, { started, menu, gallery, toggleMenu, look, jump, throwStone, toggleCamera }) {
     input.x = input.forward = 0;
     input.run = false;
     if (unavailable || document.hidden || !document.hasFocus()) return;
@@ -43,7 +43,8 @@ export function foxController() {
         const [rx, ry] = axisPair(...pad.axes.slice(2, 4));
         input.x = x; input.forward = -y; input.run = buttons[7];
         look(rx * Math.abs(rx) * 2.8, ry * Math.abs(ry) * 1.9, dt);
-        if (hit(0)) throwStone();
+        if (hit(0)) jump();
+        if (hit(2)) throwStone();
         if (hit(3)) toggleCamera();
       }
     } finally { previous = buttons; }

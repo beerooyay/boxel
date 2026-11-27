@@ -8,9 +8,12 @@ export function contactVolume(size = CONTACT_SIZE, origin = CONTACT_ORIGIN, cell
   const [nx, ny, nz] = size, plane = nx * ny, count = plane * nz;
   const crossings = new Int16Array(count), inside = new Uint8Array(count);
   const queue = new Uint32Array(count), source = new Int32Array(count);
+  const solid = new Uint32Array(count);
+  const firstX = new Int32Array(ny*nz), lastX = new Int32Array(ny*nz);
   const bytes = new Uint8Array(4 * count);
   const coordinate = (value, axis) => (value - origin[axis]) / cell - 0.5;
   let occupied = 0;
+  const bounds = new Int32Array(6);
   const steps = [-1, 1, -nx, nx, -plane, plane];
 
   function raster(positions, indices) {
@@ -34,7 +37,12 @@ export function contactVolume(size = CONTACT_SIZE, origin = CONTACT_ORIGIN, cell
           const u = (py*vz-pz*vy)*inverse, v = (uy*pz-uz*py)*inverse;
           if (u < 0 || v < 0 || u+v > 1) continue;
           const x = Math.max(0, Math.ceil(coordinate(x0 + u*dx1 + v*dx2, 0)));
-          if (x < nx) crossings[x + nx*y + plane*z] += sign;
+          if (x < nx) {
+            const line = y + ny*z;
+            crossings[x + nx*line] += sign;
+            firstX[line] = Math.min(firstX[line], x);
+            lastX[line] = Math.max(lastX[line], x);
+          }
         }
       }
     }
@@ -42,39 +50,46 @@ export function contactVolume(size = CONTACT_SIZE, origin = CONTACT_ORIGIN, cell
 
   function update(surfaces) {
     crossings.fill(0);
-    inside.fill(0);
-    source.fill(-1);
-    bytes.fill(0);
+    for (let k = 0; k < occupied; k++) {
+      const i = solid[k];
+      inside[i] = 0;
+      bytes.fill(0, 4*i, 4*i+4);
+    }
+    firstX.fill(nx);
+    lastX.fill(-1);
     occupied = 0;
+    bounds.set([nx, ny, nz, 0, 0, 0]);
     for (const { positions, indices } of surfaces) raster(positions, indices);
     // Leave a clear voxel border for the texture sampler and the escape search.
     for (let z = 1; z < nz-1; z++) {
       for (let y = 1; y < ny-1; y++) {
-        const lane = nx*y + plane*z;
+        const line = y + ny*z, first = firstX[line], last = lastX[line];
+        if (last <= first) continue;
+        const lane = nx*line;
         let wind = 0;
-        for (let x = 0; x < nx; x++) wind += crossings[lane+x];
+        for (let x = first; x <= last; x++) wind += crossings[lane+x];
         if (wind !== 0) continue; // an open or clipped scanline cannot enclose a solid
-        wind = crossings[lane];
-        for (let x = 1; x < nx-1; x++) {
+        if (first === 0) wind = crossings[lane];
+        for (let x = Math.max(1, first); x < last; x++) {
           wind += crossings[lane+x];
-          if (wind) inside[lane+x] = 1;
+          if (!wind) continue;
+          const i = lane+x;
+          inside[i] = 1;
+          source[i] = -1;
+          solid[occupied++] = i;
+          bounds[0] = Math.min(bounds[0],x); bounds[1] = Math.min(bounds[1],y); bounds[2] = Math.min(bounds[2],z);
+          bounds[3] = Math.max(bounds[3],x+1); bounds[4] = Math.max(bounds[4],y+1); bounds[5] = Math.max(bounds[5],z+1);
         }
       }
     }
     let head = 0, tail = 0;
-    for (let z = 1; z < nz-1; z++) {
-      for (let y = 1; y < ny-1; y++) {
-        for (let x = 1; x < nx-1; x++) {
-          const i = x + nx*y + plane*z;
-          if (!inside[i]) continue;
-          occupied++;
-          for (const step of steps) {
-            if (inside[i+step]) continue;
-            source[i] = i+step;
-            queue[tail++] = i;
-            break;
-          }
-        }
+    for (let k = 0; k < occupied; k++) {
+      const i = solid[k];
+      for (const step of steps) {
+        if (inside[i+step]) continue;
+        source[i] = i+step;
+        queue[tail++] = i;
+        break;
       }
     }
     while (head < tail) {
@@ -98,14 +113,14 @@ export function contactVolume(size = CONTACT_SIZE, origin = CONTACT_ORIGIN, cell
     return bytes;
   }
 
-  return { update, get occupied() { return occupied; } };
+  return { update, bounds, get occupied() { return occupied; } };
 }
 
 export const contactGLSL = `
 uniform highp sampler3D uFoxVolume;
 uniform mat3 uContactBasis;
 uniform vec3 uContactOrigin;
-uniform bool uContactEnabled, uMarkContact, uStillGrass;
+
 const vec3 CONTACT_MIN = vec3(${CONTACT_ORIGIN.join(',')});
 const vec3 CONTACT_EXTENT = vec3(${CONTACT_SIZE.map(n => (n*CONTACT_CELL).toFixed(4)).join(',')});
 const float CONTACT_STEP = ${CONTACT_CELL};
@@ -131,40 +146,4 @@ vec3 bladeArc(float arc, float curvature, vec2 lean, float t) {
   return arc*t*vec3(lean.x*sideways, upright, lean.y*sideways);
 }
 
-vec3 aroundSurface(vec3 root, vec3 edge, vec2 lean, float arc, float curvature,
-                   int row, int rows, out vec3 tangent, out float contact) {
-  // Every rendered row integrates the same chain from its fixed root.
-  // After contact, project the segment back onto its original-length sphere.
-  vec3 joint = root, original = vec3(0.);
-  tangent = vec3(0., 1., 0.);
-  contact = 0.;
-  for (int j = 1; j <= row; j++) {
-    float t = float(j)/float(rows);
-    vec3 rest = bladeArc(arc, curvature, lean, t);
-    vec3 delta = rest-original;
-    vec3 candidate = joint+delta;
-    float segment = max(length(delta), 0.00001);
-    float radius = (0.43 + 0.57*smoothstep(0., 0.27, t)) * pow(1.-t, 0.75);
-    vec3 width = edge*radius;
-    float hit = 0.;
-    for (int pass = 0; pass < 3; pass++) {
-      vec3 escape = longestEscape(surfaceEscape(candidate + width), surfaceEscape(candidate - width));
-      escape = longestEscape(escape, surfaceEscape(candidate));
-      // A paw can cross the segment between two rows. Sample the middle as
-      // well, then give the end enough leverage to move that crossing.
-      escape = longestEscape(escape, surfaceEscape((joint+candidate)*0.5)*1.30);
-      float amount = length(escape);
-      if (amount < 0.00035) break;
-      hit = max(hit, amount);
-      vec3 step = candidate + escape - joint;
-      float reach = max(length(step), 0.00001);
-      candidate = joint + step*(segment/reach);
-    }
-    tangent = normalize(candidate - joint + vec3(0., 0.0000001, 0.));
-    joint = candidate;
-    original = rest;
-    contact = max(hit, contact * 0.55);
-  }
-  return joint;
-}
 `;

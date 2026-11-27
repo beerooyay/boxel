@@ -1,7 +1,7 @@
 // Tarn's sound is made as it plays, with no recordings. Wind is shaped noise that swells with the gusts; the river and
 // the lake are band-passed noise that rise as you near them and sit left or right of where you face; rain hisses in a
 // storm and thunder rolls in after its flash, late by the time sound takes to cross the valley; crickets keep time at
-// night; and every footstep and splash is a short burst shaped by what it lands on.
+// night; and thrown stones sound where they land.
 
 const SPEED_OF_SOUND = 343;
 
@@ -97,19 +97,6 @@ export function createAudio() {
         nextChirp = now + 0.35 + Math.random() * (1.4 - quiet);
         const pitch = 4100 + Math.random() * 700, pan = Math.random() * 1.6 - 0.8, level = 0.012 * quiet * (0.4 + Math.random() * 0.6);
         for (let k = 0; k < 3; k++) tone({ from: pitch, to: pitch * 0.98, gain: level, decay: 0.035, pan, at: now + k * 0.055 });
-      }
-    },
-    /** A footfall on 'grass', 'stone' or 'water'. */
-    footstep(surface, run) {
-      const level = run ? 0.32 : 0.22;
-      if (surface === 'water') {
-        burst({ type: 'lowpass', frequency: 1300, q: 0.7, gain: level * 1.2, decay: 0.28 });
-        tone({ from: 260, to: 120, gain: level * 0.35, decay: 0.12 });
-      } else if (surface === 'stone') {
-        burst({ type: 'bandpass', frequency: 3200, q: 1.6, gain: level * 0.9, decay: 0.06 });
-        tone({ from: 180, to: 90, gain: level * 0.25, decay: 0.05, type: 'triangle' });
-      } else {
-        burst({ type: 'bandpass', frequency: 2100, q: 0.8, gain: level, decay: 0.11 });
       }
     },
     /** A stone landing in water or on the ground, `distance` metres off at `bearing`. */

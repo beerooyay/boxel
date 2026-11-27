@@ -31,7 +31,7 @@ export function bindCapture(canvas, { audio, pause, resume }) {
   const back = detail.querySelector('button');
   const supported = typeof MediaRecorder === 'function' && typeof canvas.captureStream === 'function';
   const memory = new Map();
-  let library, active, queued = false, saving = false, mediaURL, thumbURLs = [];
+  let library, active, outputSize, queued = false, saving = false, mediaURL, thumbURLs = [];
   let paneVersion = 0, originalFocus, noticeTimer;
 
   async function store(tables, mode, operation) {
@@ -93,18 +93,14 @@ export function bindCapture(canvas, { audio, pause, resume }) {
     saving = true;
     updateButton();
     release(session);
+    outputSize = null;
     try {
       const blob = new Blob(session.chunks, { type: (session.recorder.mimeType || session.chunks[0]?.type || 'video/webm').split(';')[0] });
       if (!blob.size) {
         notice('The recording was empty. Try a longer clip.');
         return;
       }
-      const preview = document.createElement('canvas');
-      const scale = 280 / Math.max(session.frame.width, session.frame.height);
-      preview.width = Math.max(1, Math.round(session.frame.width * scale));
-      preview.height = Math.max(1, Math.round(session.frame.height * scale));
-      preview.getContext('2d').drawImage(session.frame, 0, 0, preview.width, preview.height);
-      const thumb = await new Promise(resolve => preview.toBlob(resolve, 'image/jpeg', 0.82));
+      const thumb = await new Promise(resolve => session.preview.toBlob(resolve, 'image/jpeg', 0.82));
       const created = Date.now();
       const clip = { id: crypto.randomUUID(), created, duration: (session.ended - session.started) / 1000, blob, thumb };
       try {
@@ -126,6 +122,7 @@ export function bindCapture(canvas, { audio, pause, resume }) {
 
   function stop() {
     queued = false;
+    if (!active) outputSize = null;
     if (active && !saving) {
       saving = true;
       active.ended = performance.now();
@@ -139,36 +136,34 @@ export function bindCapture(canvas, { audio, pause, resume }) {
     if (dialog.open || saving) return;
     if (!supported) return notice('Gameplay recording is unavailable in this browser.');
     if (queued || active) return stop();
+    const scale = Math.min(1, 1920 / canvas.width, 1080 / canvas.height);
+    outputSize = {
+      width: Math.max(2, 2*Math.round(canvas.width*scale/2)),
+      height: Math.max(2, 2*Math.round(canvas.height*scale/2)),
+    };
     queued = true;
     updateButton();
   }
 
-  function copyFrame(session) {
-    const { frame, context } = session;
-    const scale = Math.min(frame.width / canvas.width, frame.height / canvas.height);
-    const width = canvas.width * scale, height = canvas.height * scale;
-    if (width < frame.width || height < frame.height) context.fillRect(0, 0, frame.width, frame.height);
-    context.drawImage(canvas, (frame.width - width) / 2, (frame.height - height) / 2, width, height);
-  }
-
   function start(now) {
     queued = false;
-    const frame = document.createElement('canvas');
-    const scale = Math.min(1, 1920 / canvas.width, 1080 / canvas.height);
-    frame.width = Math.max(2, Math.round(canvas.width * scale / 2) * 2);
-    frame.height = Math.max(2, Math.round(canvas.height * scale / 2) * 2);
-    const context = frame.getContext('2d', { alpha: false });
     let stream, sound;
     try {
-      copyFrame({ frame, context });
-      stream = frame.captureStream(FPS);
+      // The renderer presents directly into the fixed-size recording surface.
+      // Only the small Gallery thumbnail needs a 2D copy, once per clip.
+      const preview = document.createElement('canvas');
+      const scale = 280 / Math.max(canvas.width,canvas.height);
+      preview.width = Math.max(1, Math.round(canvas.width*scale));
+      preview.height = Math.max(1, Math.round(canvas.height*scale));
+      preview.getContext('2d', {alpha:false}).drawImage(canvas,0,0,preview.width,preview.height);
+      stream = canvas.captureStream(FPS);
       try { sound = audio()?.capture(); } catch { /* Video recording can still proceed. */ }
       if (sound) stream.addTrack(sound.track);
       const codecs = sound ? ['video/mp4;codecs=avc1.42001f,mp4a.40.2', 'video/webm;codecs=vp8,opus', 'video/mp4']
         : ['video/mp4;codecs=avc1.42001f', 'video/webm;codecs=vp8', 'video/mp4'];
       const mimeType = codecs.find(type => MediaRecorder.isTypeSupported(type));
       const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
-      const session = { recorder, stream, sound, frame, context, chunks: [], started: now, next: now + 1000 / FPS };
+      const session = { recorder, stream, sound, preview, chunks: [], started: now, next: now + 1000 };
       recorder.ondataavailable = ({ data }) => { if (data.size) session.chunks.push(data); };
       recorder.onstop = () => { session.ended ??= performance.now(); void finish(session); };
       recorder.onerror = () => { notice('Recording interrupted. Saving captured footage.'); };
@@ -176,6 +171,7 @@ export function bindCapture(canvas, { audio, pause, resume }) {
       active = session;
       session.timer = setTimeout(stop, LIMIT_MS);
     } catch {
+      outputSize = null;
       sound?.disconnect();
       stream?.getTracks().forEach(track => track.stop());
       notice('Could not start gameplay recording in this browser.');
@@ -186,8 +182,7 @@ export function bindCapture(canvas, { audio, pause, resume }) {
   function frame(now) {
     if (queued) start(now);
     else if (active && !saving && now >= active.next) {
-      copyFrame(active);
-      active.next += (Math.floor((now - active.next) * FPS / 1000) + 1) * 1000 / FPS;
+      active.next = now + 1000;
       record.textContent = 'Stop ' + elapsedLabel((now - active.started) / 1000);
     }
   }
@@ -304,5 +299,5 @@ export function bindCapture(canvas, { audio, pause, resume }) {
   record.onclick = toggle;
   gallery.onclick = open;
   document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
-  return { frame, toggle, open, get viewing() { return dialog.open; } };
+  return { frame, toggle, open, get outputSize() { return outputSize; }, get viewing() { return dialog.open; } };
 }

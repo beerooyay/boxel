@@ -40,3 +40,24 @@ test('overlapping closed parts stay solid and open triangles do not fill a scanl
   grid.update([{ positions: a.positions, indices: [0,4,7,0,7,3] }]);
   assert.equal(grid.occupied, 0);
 });
+
+test('the upload bounds enclose all occupied texels across moving and empty poses', () => {
+  const grid = contactVolume([24,24,24], [0,0,0], 1);
+  for (const x of [3, 13, null, 6]) {
+    const field = grid.update(x === null ? [] : [box(x,x+4,4,12,4,8)]);
+    const lo = [24,24,24], hi = [0,0,0];
+    let count = 0;
+    for (let i=0; i<field.length/4; i++) {
+      if (!field[4*i+3]) {
+        assert.equal(field[4*i] | field[4*i+1] | field[4*i+2], 0);
+        continue;
+      }
+      count++;
+      const xyz = [i%24, Math.floor(i/24)%24, Math.floor(i/576)];
+      xyz.forEach((n,axis) => { lo[axis] = Math.min(lo[axis],n); hi[axis] = Math.max(hi[axis],n+1); });
+    }
+    assert.equal(count, x === null ? 0 : 4*8*4);
+    assert.equal(grid.occupied, count);
+    assert.deepEqual([...grid.bounds], [...lo,...hi]);
+  }
+});

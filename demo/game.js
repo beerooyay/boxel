@@ -1,5 +1,7 @@
+import { advanceFlight, jumpDuration, requestJump, steerFox } from './fox-motion.js';
 import { foxController } from './gamepad.js';
-import { contactVolume, contactGLSL, CONTACT_SIZE } from './fox-contact.js';
+import { bladeStateGLSL, solveGLSL, stampGLSL, knotsFragment, stampFragment, createBladeContact } from './blade-contact.js';
+import { contactVolume, contactGLSL } from './fox-contact.js';
 import { loadFox } from './fox.js';
 import { DAY_RATE, TIMELAPSE_SECONDS, timelapseTravel } from './sky-clock.js';
 import { bindCapture } from './capture.js';
@@ -303,16 +305,18 @@ vec3 impactWave(vec2 p){
   return vec3(wave.x * scale, wave.yz * scale * scale);
 }
 `;
-const COMMON = WAVES + valleyAir + `
+const valueNoiseGLSL = `
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3. - 2. * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1, 0)), u.x), mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), u.x), u.y); }
+`;
+const COMMON = WAVES + valleyAir + valueNoiseGLSL + `
 uniform vec3 uSunDir, uSunCol, uCloudTint;
 uniform mat3 uSky;
 uniform samplerCube uMilky;
 uniform float uTime, uExposure, uExtent, uSheet, uWind, uHDR;
 uniform sampler2D uGlow, uGround, uWear;
 #define PI 3.14159265
-float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
-float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3. - 2. * f);
-  return mix(mix(hash12(i), hash12(i + vec2(1, 0)), u.x), mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), u.x), u.y); }
 // The value and both partial derivatives come from the same four corners.
 vec3 noiseSlope(vec2 p){
   vec2 cell = floor(p), f = fract(p), u = f * f * (3. - 2. * f);
@@ -967,7 +971,7 @@ void main(){
     vec2 along = vec2(sin(uFoxShadow.z), -cos(uFoxShadow.z));
     vec2 spread = vec2(dot(foxDelta, along), dot(foxDelta, vec2(-along.y, along.x)));
     vec2 ellipse = spread / vec2(0.86, 0.44);
-    col *= 1. - 0.39 * (1. - smoothstep(0.08, 1., dot(ellipse, ellipse)));
+    col *= 1. - 0.39 * uFoxShadow.w * (1. - smoothstep(0.08, 1., dot(ellipse, ellipse)));
   }
   o = vec4(tonemap(col * vAir.a + vAir.rgb), 0.);
 }`);
@@ -1205,36 +1209,54 @@ void main(){
 // rounded normals, rolling gust waves, a root-mid-tip ramp with patch noise and root AO, sun backlight through
 // the tips. Wired to the certified fields: wear tramples it flat, moisture droops and darkens it, glow lights
 // the tips you stirred. Instances are shuffled, so drawing a prefix is an even thinning (adaptive density).
-const GRASS = program(WORLD_VS + BRUSH_VS + clumpGLSL + (GRASS_LAB ? '#define GRASS_LAB\n' + contactGLSL : '') + `
+const grassDefines = (GRASS_LAB ? '#define GRASS_LAB\n' : '') + (!TEST ? '#define BLADE_CONTACT\n' : '');
+const bladeVertex = `
 #ifdef GRASS_LAB
 out float vContact;
-#else
-uniform vec4 uFoxGrass;
 #endif
-in vec4 aRoot, aDetail; uniform vec3 uCam; uniform vec2 uGrassHeight; uniform int uBladeRows;
+layout(location=0) in vec4 aRoot;
+layout(location=1) in vec4 aDetail;
+#if defined(GRASS_LAB) && !defined(SOLVE_BLADE) && !defined(STAMP_BLADE)
+layout(location=2) in float aBladeIndex;
+#endif
+#if defined(SOLVE_BLADE) || defined(STAMP_BLADE)
+uniform vec3 uCam;
+#endif
+uniform vec2 uGrassHeight; uniform int uBladeRows;
 centroid out vec3 vWP; centroid out vec4 vGA; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
-flat out vec4 vGrassSite; centroid out float vDry;
+flat out vec4 vGrassColour; centroid out vec4 vAir; centroid out float vDry;
 void main(){
   vec4 aG = vec4((aRoot.xy - 0.5) * uExtent, uGrassHeight.x + aRoot.z * uGrassHeight.y, aDetail.w);
   int packed = int(aRoot.w*65535. + 0.5), cell = packed & 15;
   float edge = float((packed >> 4) & 7)/7.;
   vec4 aR = vec4(aDetail.xyz, float(packed >> 7)/511. * ${BLADE_HEIGHT_RANGE.toFixed(1)});
+  // Selected roots carry a bundle of three leaves. The extra strips share
+  // exactly the same origin and taper out before their close detail ends.
+#if defined(SOLVE_BLADE) || defined(STAMP_BLADE)
+  int sibling=gl_InstanceID%3;
+  ivec2 site=bladeSite(aG.xy), page=site-uSiteBase;
+  gl_Position=vec4(3,3,0,1); gl_PointSize=1.;
+  if (!onPage(page)) return;
+  if ((sibling==1 && aG.w<=0.28) || (sibling==2 && aG.w<=0.52)) return;
+#ifdef STAMP_BLADE
+  int sampleIndex=gl_InstanceID/3;
+  if(texelFetch(uBladeNow,ivec3(address(page,sibling),sampleIndex/2),0).a<0.5) return;
+#endif
+  int vid=0, rows=4;
+#else
+  int vid = gl_VertexID, rows = uBladeRows;
+#ifdef GRASS_LAB
+  int sibling=int(aBladeIndex);
+#else
+  int sibling = vid >= 19 ? 2 : vid >= 10 ? 1 : 0;
+  if (sibling != 0) { vid = max(0, vid - (sibling == 2 ? 20 : 11)); rows = 3; }
+#endif
+#endif
   vec2 cq = aG.xy / ${CLUMP};
   ivec2 ci = ivec2(floor(cq)) + ivec2(cell % 3 - 1, cell / 3 - 1);
   uint th = clumpHash(ci);
   vec2 toTuft = vec2(ci) + clumpOffset(th) - cq;
   float tuftDist = length(toTuft), tuft = float((th * 747796405u) >> 8)/16777216.;
-  // Selected roots carry a bundle of three leaves. The extra strips share
-  // exactly the same origin and taper out before their close detail ends.
-  int vid = gl_VertexID, rows = uBladeRows;
-#ifdef GRASS_LAB
-  int strip = 2*rows + 3;
-  int sibling = min(vid/strip, 2);
-  vid = max(0, vid - sibling*strip - (sibling > 0 ? 1 : 0));
-#else
-  int sibling = vid >= 19 ? 2 : vid >= 10 ? 1 : 0;
-  if (sibling != 0) { vid = max(0, vid - (sibling == 2 ? 20 : 11)); rows = 3; }
-#endif
   bool sister = sibling != 0;
   vid = min(vid, 2*rows);
   float by = float(vid/2)/float(rows);
@@ -1274,22 +1296,21 @@ void main(){
   float flexibility = mix(0.63, 1.27, shape) * (sister ? 0.79 : 1.);
   float shelter = mix(0.68, 1., smoothstep(0.08, 0.66, H));
   float wake = 0.11 + 0.35 * shape + 0.15 * float(sister);
-  float load = windWave(aG.xy + WIND_DIR * wake) * uWind * (1. - 0.74 * trample);
-  float force = load * flexibility;
-  float sweep = 1.27 * force * shelter / sqrt(0.84 + force * force);
-  float flutter = tipFlutter(aG.xy, uWindFrame.x, (shape + tuft) * 1.6);
-  vec2 lateral = vec2(-WIND_DIR.y,WIND_DIR.x);
+  float sweep=0., flutter=0.;
 #ifdef GRASS_LAB
-  if (uStillGrass) { sweep = 0.; flutter = 0.; }
+  if (!uStillGrass)
+#endif
+  {
+    float load = windWave(aG.xy + WIND_DIR * wake) * uWind * (1. - 0.74 * trample);
+    float force = load * flexibility;
+    sweep = 1.27 * force * shelter / sqrt(0.84 + force * force);
+    flutter = tipFlutter(aG.xy, uWindFrame.x, (shape + tuft) * 1.6);
+  }
+  vec2 lateral = vec2(-WIND_DIR.y,WIND_DIR.x);
+#ifdef BLADE_CONTACT
   vec3 brush = vec3(0.);
 #else
   vec3 brush = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
-
-  vec2 foxDelta = aG.xy-uFoxGrass.xy;
-  float foxTouch = uFoxGrass.w * (1. - smoothstep(0.04, 0.61, dot(foxDelta, foxDelta)))
-                 * (1. - smoothstep(0.23, 0.66, abs(aG.z-uFoxGrass.z)));
-  brush.xz += foxDelta * foxTouch * 3.5;
-  H *= 1. - foxTouch * 0.59;
 #endif
   vec2 rest = mix(fd, away, 0.66 * smoothstep(0.09, 0.45, tuftDist));
   vec2 steer = WIND_DIR * sweep + rest * (0.24 + 0.46 * aR.z + 0.68 * soak + 0.31 * trample + 0.17 * edge)
@@ -1306,6 +1327,13 @@ void main(){
   // Integrate the circular arc along the blade so its centreline has the
   // same length in still air, in a gust, and while springing back.
   float arc = H * (1. - 0.18 * soak) * (1. - 0.42 * trample) * (1. + 0.36 * min(0., brush.y));
+  vec3 root=vec3(aG.x,aG.z,aG.y);
+#ifdef SOLVE_BLADE
+  if (arc<0.01) return;
+  solveBlade(root,vec3(ax.x,0.,ax.y)*0.5*W0*(sister ? 0.79*sisters : 1.),lean,arc,curvature,site,sibling);
+#elif defined(STAMP_BLADE)
+  stamp(root,lean,arc,curvature,0.5*W0*(sister ? 0.79*sisters : 1.),site,sibling,sampleIndex);
+#else
   float horizontal = angle < 0.04 ? 0.5 * angle : (1. - upright) / angle;
   float vertical = angle < 0.04 ? 1. - angle * angle / 6. : bow / angle;
   vec3 tangent = vec3(lean.x * bow, upright, lean.y * bow);
@@ -1314,55 +1342,67 @@ void main(){
   vec3 centre = vec3(aG.x, aG.z, aG.y) + arc * by * vec3(lean.x * horizontal, vertical, lean.y * horizontal);
   vec3 p = centre + across * (side * wd);
 #ifdef GRASS_LAB
-  float hit = 0.;
-  vec3 root = vec3(aG.x, aG.z, aG.y);
-  vec3 local = transpose(uContactBasis) * (root - uContactOrigin);
-  vec2 reach = vec2(0.76 * arc + 0.07);
-  // Expanded bounds only select candidate blades. Every response below comes
-  // from a segment touching the animated body's sampled surface.
-  if (uContactEnabled && by > 0. && all(greaterThan(local.xz, CONTACT_MIN.xz-reach))
-      && all(lessThan(local.xz, CONTACT_MIN.xz+CONTACT_EXTENT.xz+reach))) {
-    vec3 bentTangent;
-    float halfWidth = 0.5 * W0 * (sister ? 0.79*sisters : 1.);
-    vec3 moved = aroundSurface(root, vec3(ax.x, 0., ax.y) * halfWidth, lean, arc,
-                               curvature, vid/2, rows, bentTangent, hit);
-    if (length(moved-centre) > 0.0001) {
-      across = normalize(across-bentTangent*dot(across,bentTangent));
-      tangent = bentTangent;
-      p = moved + across * (side * wd);
+  vContact=0.;
+#endif
+#ifdef BLADE_CONTACT
+  ivec2 site=bladeSite(aG.xy), slot=site-uSiteBase;
+  if(uContactEnabled && by>0. && onPage(slot)) {
+    float f=by*4.;
+    int k=min(3,int(ceil(f))-1);
+    ivec2 dest=address(slot,sibling);
+    vec4 lo=knot(uBladeNow,dest,k-1), hi=knot(uBladeNow,dest,k);
+    ivec2 old=site-uLastBase;
+    if(onPage(old)) {
+      ivec2 lastDest=address(old,sibling);
+      lo.xyz=mix(knot(uBladeLast,lastDest,k-1).xyz,lo.xyz,uBladeMix);
+      hi.xyz=mix(knot(uBladeLast,lastDest,k).xyz,hi.xyz,uBladeMix);
     }
+    vec3 offset=mix(lo.xyz,hi.xyz,f-float(k));
+    if(dot(offset,offset)>0.000001) {
+      tangent=normalize(tangent+(hi.xyz-lo.xyz)*(4./max(arc,0.01)));
+      across=normalize(across-tangent*dot(across,tangent)+vec3(0.000001,0.,0.));
+      p=centre+offset+across*(side*wd);
+    }
+#ifdef GRASS_LAB
+    if(uMarkContact) vContact=hi.w>0.9 ? 1. : hi.w>0.4 ? -1. : 0.;
+#endif
   }
-  vContact = uMarkContact ? clamp(hit*23., 0., 1.) : 0.;
 #endif
   vec3 face = cross(tangent, across);
   vN = normalize(-face + tangent * (0.48 + 0.41 * by) + across * (side * 0.88));
   vGA = vec4(by, aR.z, 2. * side, bow); vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
   // last season's blades still standing: a few everywhere, more in some tufts, many along the tread
-  vDry = step(deadRoll, 0.05 + 0.3 * tuft * tuft * tuft + 0.24 * edge); vGrassSite = vec4(aG.xy, tuft, aG.z);
+  vDry = step(deadRoll, 0.05 + 0.3 * tuft * tuft * tuft + 0.24 * edge);
+  // Pigment belongs to the whole blade. The folded normal and glints still resolve per pixel.
+  vec3 tip = meadowTip(aG.xy, aG.z, (aR.y-0.5)*0.06 + (tuft-0.5)*0.05) * mix(0.9,1.12,tuft);
+  float young = smoothstep(0.83,0.98,tuft)*smoothstep(0.05,0.50,tip.r-tip.g);
+  tip = mix(tip,mix(LEAF,NEW_GROWTH,0.63),young);
+  tip = mix(tip, mix(NEW_GROWTH * vec3(0.98,0.78,0.67), tip*0.5+vec3(0.2,0.16,0.11),0.38), vDry);
+  float patchTone = 0.6*vnoise(aG.xy*0.28) + 0.4*vnoise(aG.xy*1.1);
+  vGrassColour = vec4(tip,patchTone);
+  vAir = airAt(p);
   gl_Position = project(p);
-}`,
+#endif
+}`;
+const grassHeader = WORLD_VS + BRUSH_VS + clumpGLSL + grassDefines + (!TEST ? bladeStateGLSL : '');
+const GRASS = program(grassHeader + valleyAir + valueNoiseGLSL + floraPalette + bladeVertex,
 (GRASS_LAB ? '#define GRASS_LAB\n' : '') + `
 #ifdef GRASS_LAB
 in float vContact;
 #endif
-uniform float uClip; centroid in vec3 vWP; centroid in vec4 vGA; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch;
-centroid in float vDry; flat in vec4 vGrassSite; out vec4 o;
+centroid in vec3 vWP; centroid in vec4 vGA; centroid in float vGlow; centroid in float vWet; centroid in vec3 vN; centroid in float vPatch;
+centroid in float vDry; flat in vec4 vGrassColour; centroid in vec4 vAir; out vec4 o;
 void main(){
-  if (vWP.y < uClip) discard;
+  // Grass is drawn only in the main opaque pass. Keeping this shader opaque
+  // lets tiled GPUs reject overlapping blades before evaluating their light.
   float y = clamp(vGA.x, 0., 1.);
-  vec3 tip = meadowTip(vGrassSite.xy, vGrassSite.w, (vPatch - 0.5)*0.06 + (vGrassSite.z - 0.5)*0.05) * mix(0.9,1.12,vGrassSite.z);
-  // Even the densest rose stand has fresh green volunteers. They cluster at
-  // tuft scale, with the same variation from either side of the blade.
-  float young = smoothstep(0.83,0.98,vGrassSite.z)*smoothstep(0.05,0.50,tip.r-tip.g);
-  tip = mix(tip,mix(LEAF,NEW_GROWTH,0.63),young);
-  // A dead blade keeps a trace of its original colour in the straw.
-  tip = mix(tip, mix(NEW_GROWTH * vec3(0.98,0.78,0.67), tip * 0.5 + vec3(0.2, 0.16, 0.11), 0.38), vDry);
+  vec3 tip = vGrassColour.rgb;
   float rose = smoothstep(0.04,0.40,tip.r-tip.g);
   vec3 sheath = mix(vec3(0.061,0.057,0.031),tip*0.33,0.55);
   sheath = mix(sheath,vec3(0.060,0.020,0.049),rose);
   tip += vec3(0.060,0.042,0.030)*rose*y*y;
   vec3 gc = mix(sheath, tip * (0.63 + 0.31*y), smoothstep(0.,0.76,y));
-  float pn = vnoise(vGrassSite.xy * 0.28) * 0.6 + vnoise(vGrassSite.xy * 1.1) * 0.4;
+  float pn = vGrassColour.a;
   gc *= mix(0.8, 1.2, pn);
   gc = mix(gc, tip, smoothstep(0.55, 0.95, pn) * 0.2 * y);
   float rootShade = mix(0.72, 1., smoothstep(0.,0.48,y));
@@ -1388,10 +1428,14 @@ void main(){
   // Sky reflection on the exposed blade faces follows the crest across the stand.
   lit += tip * ambient(normalize(vN)) * (0.72 * max(vGA.w, 0.) * y * (1. - uNight));
 #ifdef GRASS_LAB
-  lit = mix(lit, vec3(0.14, 0.92, 0.72), vContact);
+  lit = mix(lit, vec3(0.14, 0.92, 0.72), max(0.,vContact));
+  lit = mix(lit, vec3(1., 0.55, 0.10), max(0.,-vContact));
 #endif
-  o = vec4(tonemap(fogged(lit, vWP)), 0.);
+  o = vec4(tonemap(lit*vAir.a + vAir.rgb), 0.);
 }`);
+
+const solveBlades = TEST ? null : program(grassHeader + '#define SOLVE_BLADE\n' + contactGLSL + solveGLSL + bladeVertex, knotsFragment);
+const stampBlades = TEST ? null : program(grassHeader + '#define STAMP_BLADE\n' + contactGLSL + stampGLSL + bladeVertex, stampFragment);
 
 // understory: one parametric strip shared by the meadow species. Rosettes (broad crimson leaves with a living midrib), ferns (fronds cut into
 // leaflets in the fragment shader), glow tubes (capsules whose tips are lamps), coilferns (stalks that roll their tips
@@ -2792,7 +2836,7 @@ function buildValley() {
   const rocks = stoneMeshes.map((mesh, k) => rockBatches(mesh, sc.rv[k], sc.rs[k], sc.beds[k]));
   Object.assign(near, terrainPatches(near.pos, NEAR.S, NEAR.S, false, fixed));
   const grass = bakeMeadow({ gl, shader: GRASS, half: WORLD_HALF, density: GRASS_LAB ? (touch ? 85 : 150) : GRASS_DENSITY, heightRange: near.heightRange,
-    heightAt: (x, z) => nearH(near, x, z), outsideView, rng, touch, plot: GRASS_LAB ? PLOT : null,
+    heightAt: (x, z) => nearH(near, x, z), outsideView, rng, touch, contact: !TEST, plot: GRASS_LAB ? PLOT : null,
     habitatAt(x, z, data, i) {
       if (GRASS_LAB) {
         data[i] = 1;
@@ -3213,7 +3257,17 @@ function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
   post.write = 1 - post.write;
-  pass(P_FINAL, null, w, h, null);
+  pass(P_FINAL, null, canvas.width, canvas.height, null);
+  if (canvas.width !== w || canvas.height !== h) {
+    // The recording keeps its initial dimensions even if the player rotates
+    // the phone or adaptive quality changes. CSS crops these bars in live play.
+    const fit = Math.min(canvas.width/w, canvas.height/h);
+    const pw = Math.max(1,Math.round(w*fit)), ph = Math.max(1,Math.round(h*fit));
+    if (pw < canvas.width || ph < canvas.height) {
+      gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    gl.viewport((canvas.width-pw)>>1,(canvas.height-ph)>>1,pw,ph);
+  }
   gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, post.mist.t); gl.uniform1i(P_FINAL.u('tMist'), 3);
   gl.uniform1i(P_FINAL.u('tDepth'), 15); gl.uniform2fv(P_FINAL.u('uDepthRange'), depthRange);
   gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, history.t); gl.uniform1i(P_FINAL.u('tScene'), 4);
@@ -3373,23 +3427,14 @@ function strike(r = stormRng, at = null) {
 }
 
 // ---------------------------------------------------------------- camera + player
-const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vx: 0, vz: 0, stride: 0, bob: 0, foot: 1, wet: 0 };
+const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vx: 0, vz: 0, vy: 0, grounded: true, onStone: false, flight: 0, stride: 0, bob: 0, foot: 1, wet: 0 };
 player.y = H(player.x, player.z);
 let fox, thirdPerson = true;
 const chase = { height: player.y, arm: 3.55 };
-const contactGrid = GRASS_LAB ? contactVolume() : null;
-const contactTexture = GRASS_LAB ? gl.createTexture() : null;
-let contactOn = true, markContacts = false, stillGrass = true, contactMs = 0, labView = 0;
-if (contactTexture) {
-  gl.activeTexture(gl.TEXTURE21);
-  gl.bindTexture(gl.TEXTURE_3D, contactTexture);
-  gl.texStorage3D(gl.TEXTURE_3D, 1, gl.RGBA8, ...CONTACT_SIZE);
-  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  for (const axis of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R])
-    gl.texParameteri(gl.TEXTURE_3D, axis, gl.CLAMP_TO_EDGE);
-}
-const foxPose = { yaw: player.yaw, pitch: 0, roll: 0, height: player.y };
+const contactGrid = TEST ? null : contactVolume();
+const bladeContact = TEST ? null : createBladeContact(gl,solveBlades,stampBlades,contactGrid);
+let contactOn = true, coupled = true, markContacts = false, stillGrass = true, labView = 0;
+const foxPose = { yaw: player.yaw, turn: 0, bend: 0, backing: false, pitch: 0, roll: 0, height: player.y };
 const boulderCells = new Map();
 for (let group = 0; group < 3; group++) {
   for (let i = 0; i < sc.rv[group].length; i += 4) {
@@ -3420,23 +3465,37 @@ function rockAt(x, y, z, padding) {
   return null;
 }
 
-function updateFox(dt, oldX, oldZ, ground, speed, running) {
-  const ease = -Math.expm1(-15*dt);
-  if (speed > 0.14) {
-    const target = Math.atan2(player.x-oldX, oldZ-player.z);
-    const delta = target - foxPose.yaw;
-    foxPose.yaw += Math.atan2(Math.sin(delta), Math.cos(delta)) * ease;
+function stoneTop(x, z, ceiling, floor) {
+  const stones = boulderCells.get(Math.floor(x/4) + 4096*Math.floor(z/4));
+  if (!stones) return floor;
+  for (const stone of stones) {
+    const dx = x-stone.x, dz = z-stone.z;
+    const a = (dx*stone.c + dz*stone.s) / (stone.sx*0.85);
+    const b = (dz*stone.c - dx*stone.s) / (stone.sz*0.85);
+    const disk = 1-a*a-b*b;
+    if (disk <= 0) continue;
+    const top = stone.y + stone.sy*Math.sqrt(disk);
+    if (top <= ceiling) floor = Math.max(floor, top);
   }
+  return floor;
+}
+
+function updateFox(dt, ground, distance, alongBody, running) {
+  const ease = -Math.expm1(-15*dt);
   const x = player.x, z = player.z;
   const f = Math.sin(foxPose.yaw), g = -Math.cos(foxPose.yaw);
-  const front = H(x + 0.44*f, z + 0.44*g), rear = H(x - 0.44*f, z - 0.44*g);
-  const left = H(x + 0.20*g, z - 0.20*f), right = H(x - 0.20*g, z + 0.20*f);
+  const support = (sx, sz) => player.onStone ? stoneTop(sx, sz, player.y+0.32, H(sx,sz)) : H(sx,sz);
+  const front = support(x + 0.44*f, z + 0.44*g), rear = support(x - 0.44*f, z - 0.44*g);
+  const left = support(x + 0.20*g, z - 0.20*f), right = support(x - 0.20*g, z + 0.20*f);
   foxPose.pitch += (Math.atan(Math.max(-0.85, Math.min(0.85, (front-rear)/0.88))) - foxPose.pitch) * ease;
   foxPose.roll += (Math.atan(Math.max(-0.65, Math.min(0.65, (right-left)/0.40))) - foxPose.roll) * ease;
   const sole = 0.55*ground + 0.225*(front+rear) + 0.02;
-  foxPose.height = Math.max(ground - 0.06, foxPose.height + (sole-foxPose.height)*ease);
-  chase.height += (ground-chase.height) * -Math.expm1(-9*dt);
-  fox?.advance(dt, speed*dt, running && speed > 2.0);
+  foxPose.height = player.grounded ? Math.max(ground - 0.05, foxPose.height + (sole-foxPose.height)*ease) : player.y + 0.02;
+  chase.height += (ground + 0.65*Math.max(0, player.y-ground) - chase.height) * -Math.expm1(-10*dt);
+  const reverse = Math.abs(alongBody) > 0.0001 ? alongBody < 0 : foxPose.backing;
+  const stride = Math.max(distance, Math.abs(foxPose.turn)*0.33) * (reverse ? -1 : 1);
+  const phase = player.grounded ? -1 : Math.min(0.94, 0.24 + 0.70*player.flight/jumpDuration);
+  fox?.advance(dt, stride, running && distance/dt > 2, foxPose.bend, phase);
 }
 
 function foxCamera(dt = 0) {
@@ -3550,19 +3609,52 @@ function stepPlayer(dt) {
   if (stick.id !== null) { mx += stick.x; mz += -stick.y; }
   const len = Math.hypot(mx, mz);
   const ground = H(player.x, player.z), level = waterLevel(player.x, player.z), inWater = ground < level - 0.05, depth = Math.max(0, level - ground);
-  const run = controller.input.run || keys.ShiftLeft || keys.ShiftRight || (stick.id !== null && len > 0.92);
-  const pace = len > 0.05 ? (run ? 4.2 : 1.9) * (1 - Math.min(0.62, depth * (fox ? 1.22 : 0.45))) / Math.max(1, len) : 0;
+  const run = controller.input.run || keys.ShiftLeft || keys.ShiftRight || (stick.id !== null && len > 0.92 && mz >= -0.24);
   const moveYaw = GRASS_LAB && labView ? (labView === 2 ? 0 : -1.30) : player.yaw;
-  const sy = Math.sin(moveYaw), cy = Math.cos(moveYaw);
-  const vx = (sy * mz + cy * mx) * pace, vz = (-cy * mz + sy * mx) * pace;
-  // Integrate the eased velocity over the frame, including the last fraction of a step on release.
-  const rate = pace ? 10 : 17, blend = -Math.expm1(-rate * dt);
+  const speedLimit = steerFox(foxPose, mx, mz, moveYaw, run, dt, !player.grounded);
+  const waterDrag = 1 - Math.min(0.62, depth * (fox ? 1.22 : 0.45));
+  const pace = speedLimit * waterDrag;
+  let vx = Math.sin(foxPose.yaw)*pace, vz = -Math.cos(foxPose.yaw)*pace;
+  if (!thirdPerson || !fox) {
+    const scale = (run ? 4.2 : 1.9)*waterDrag / Math.max(1, len);
+    const sy = Math.sin(moveYaw), cy = Math.cos(moveYaw);
+    vx = (sy*mz+cy*mx)*scale; vz = (-cy*mz+sy*mx)*scale;
+  }
+  const rate = !player.grounded ? 2.4 : len > 0.05 ? 10 : 17, blend = -Math.expm1(-rate * dt);
   const dx = vx * dt + (player.vx - vx) * blend / rate, dz = vz * dt + (player.vz - vz) * blend / rate;
   player.vx += (vx - player.vx) * blend; player.vz += (vz - player.vz) * blend;
-  const oldX = player.x, oldZ = player.z, target = crossSlope(dx, dz, ground);
-  const distance = Math.hypot(player.x - oldX, player.z - oldZ, target - ground);
+  const oldX = player.x, oldZ = player.z, wasGrounded = player.grounded;
+  let target = ground;
+  if (player.grounded && !player.onStone) {
+    target = crossSlope(dx, dz, ground);
+    player.y = target;
+  } else {
+    // Test the actual height of the jump against obstacles. A fox above a
+    // rounded stone can cross its crown and land there from either side.
+    const x = oldX+dx, z = oldZ+dz, terrain = H(x,z);
+    const ceiling = player.y + (player.grounded ? 0.09 : Math.max(0, player.vy*dt)+0.035);
+    const support = stoneTop(x, z, ceiling, terrain);
+    const side = rockAt(x, Math.max(player.y, support)+0.20, z, 0.09);
+    if (terrain <= ceiling && (!side || support > terrain+0.02)
+        && walkable(x,z,terrain,level-ground)) {
+      player.x = x; player.z = z; target = support;
+    } else target = stoneTop(oldX, oldZ, ceiling, ground);
+    if (player.grounded && player.y-target > 0.10) {
+      player.grounded = false; player.flight = jumpDuration*0.5; player.vy = 0;
+    }
+    if (player.grounded) player.y = target;
+    else if (advanceFlight(player,target,dt)) {
+      const d = waterLevel(player.x,player.z) - target;
+      footstep(player.x, player.z, d > 0.015, player.wet, true, d);
+      player.stride = 0;
+    }
+    player.onStone = player.grounded && target > H(player.x,player.z)+0.015;
+  }
+  const travel = Math.hypot(player.x-oldX, player.z-oldZ);
+  const distance = wasGrounded && player.grounded ? Math.hypot(travel, target-(player.onStone ? target : ground)) : 0;
   const speed = distance / dt, strideLen = 0.48 + 0.49 * sm(1.9, 4.2, speed);
-  updateFox(dt, oldX, oldZ, target, speed, run);
+  const alongBody = (player.x-oldX)*Math.sin(foxPose.yaw) - (player.z-oldZ)*Math.cos(foxPose.yaw);
+  updateFox(dt, target, distance, alongBody, run);
   const phase = player.stride + distance / strideLen;
   if (phase >= 1) {
     player.foot = -player.foot;
@@ -3571,15 +3663,15 @@ function stepPlayer(dt) {
     const z = oldZ + (player.z - oldZ) * u + Math.sin(foxPose.yaw) * 0.11 * player.foot;
     const footDepth = waterLevel(x, z) - H(x, z);
     footstep(x, z, footDepth > 0.015, player.wet, speed > 2.6, footDepth, simT - (1 - u) * dt);
-    audio?.footstep(footDepth > 0.015 ? 'water' : trailCover(x, z) > 0.3 || H(x, z) > 14 ? 'stone' : 'grass', speed > 2.6);
   }
   player.stride = phase % 1;
   const bob = (0.014 + 0.014 * sm(2, 4.2, speed)) * Math.min(1, speed) * Math.sin(player.stride * Math.PI) ** 2;
   player.bob += (bob - player.bob) * -Math.expm1(-24 * dt);
-  player.wet = inWater ? 1 : Math.max(0, player.wet - dt / 9);
-  player.y += (target - player.y) * -Math.expm1(-15 * dt);
-  brush.advance(player.x, target, player.z, dt);
+  player.wet = inWater && player.grounded ? 1 : Math.max(0, player.wet - dt / 9);
+  if (!GRASS_LAB) brush.advance(player.x, player.y, player.z, dt);
 }
+
+function jump() { if (started && !menu.open && !capture?.viewing) requestJump(player); }
 
 function throwStone() {
   const cam = playerCamera(0);
@@ -3824,7 +3916,6 @@ function common(p, eye, VP, mirror, t) {
     gl.uniform1f(p.u('uStorm'), storm); gl.uniform1f(p.u('uFlash'), flash * storm * (0.3 + 0.7 * night));
     gl.uniform1f(p.u('uSheet'), sheet); gl.uniformMatrix3fv(p.u('uSky'), false, skyTurn);
     gl.uniform1f(p.u('uWind'), windStrength());
-    if (p === GRASS && GRASS_LAB) gl.uniform1i(p.u('uFoxVolume'), 21);
     if (p === GRASS || p === JLEAF || p === PLANT) {
       gl.uniform3f(p.u('uBrush'), player.x, player.z, brush.cells.size ? 1 : 0);
     }
@@ -3869,7 +3960,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
   gl.enable(gl.CULL_FACE); gl.frontFace(mirror < 0 ? gl.CW : gl.CCW);
   common(TERRAIN, eye, VP, mirror, t);
-  gl.uniform4f(TERRAIN.u('uFoxShadow'), player.x, player.z, foxPose.yaw, opts.avatar ? 1 : 0);
+  gl.uniform4f(TERRAIN.u('uFoxShadow'), player.x, player.z, foxPose.yaw, opts.avatar ? 1/(1+1.8*Math.max(0,player.y-H(player.x,player.z))) : 0);
   drawIndexedPatches(near, planes, eye, opts.px * 400 / opts.tanY);
   drawIndexedPatches(far, planes);
   common(ROCK, eye, VP, mirror, t); drawRocks(VP, mirror, opts.px * 400 / opts.tanY, planes);
@@ -3889,13 +3980,12 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   if (!GRASS_LAB) { common(PLANT, eye, VP, mirror, t); plants.draw(planes, eye, mirror < 0 ? 0.72 : 1); }
   if (opts.grass) {
     common(GRASS, eye, VP, mirror, t);
-    if (GRASS_LAB) {
+    if (bladeContact) {
       gl.uniform1i(GRASS.u('uContactEnabled'), Number(contactOn && Boolean(fox) && started));
       gl.uniform1i(GRASS.u('uMarkContact'), Number(markContacts));
       gl.uniform1i(GRASS.u('uStillGrass'), Number(stillGrass));
-      gl.uniformMatrix3fv(GRASS.u('uContactBasis'), false, foxBasis());
-      gl.uniform3f(GRASS.u('uContactOrigin'), player.x, foxPose.height, player.z);
-    } else gl.uniform4f(GRASS.u('uFoxGrass'), player.x, player.z, foxPose.height, opts.avatar ? 1 : 0);
+      bladeContact.bind(GRASS);
+    }
     grassDrawn = grass.draw(planes, eye, grassDensity);
   }
   // Shade the sky only through gaps left in the opaque scene.
@@ -3943,18 +4033,13 @@ function drawFox(eye, VP, mirror, t) {
 function render(t, camOverride, glowTexture = texGlow, dt = 0) {
   const dpr = Math.min(devicePixelRatio || 1, touch ? 1.5 : 2) * renderScale;
   const w = Math.max(1, Math.floor(canvas.clientWidth * dpr)), h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
-  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const output = capture?.outputSize;
+  const outWidth = output?.width ?? w, outHeight = output?.height ?? h;
+  if (canvas.width !== outWidth) canvas.width = outWidth;
+  if (canvas.height !== outHeight) canvas.height = outHeight;
   const fov = 1.15, aspect = w / h, tanY = Math.tan(fov / 2), tanX = tanY * aspect;
   const cam = camOverride || playerCamera(dt);
   const avatar = Boolean(fox && (thirdPerson || labView) && !camOverride && started && chase.arm > 0.7);
-  if (contactOn && contactGrid && fox && started) {
-    const began = performance.now();
-    const volume = contactGrid.update(fox.contactSurfaces());
-    gl.activeTexture(gl.TEXTURE21);
-    gl.bindTexture(gl.TEXTURE_3D, contactTexture);
-    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, ...CONTACT_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, volume);
-    contactMs = 0.9*contactMs + 0.1*(performance.now()-began);
-  }
   const b = camBasis(cam.yaw, cam.pitch);
   ensurePost(w, h);
   const jitter = cameraJitter(post.previous, cam.eye, b.f, t, w, h);
@@ -3987,6 +4072,14 @@ function render(t, camOverride, glowTexture = texGlow, dt = 0) {
   frameNumber++;
   lightDirection = norm(starDirection.map((v, i) => v * (1 - night) + PLANET[i] * night));
   lightColor = starColor.map((v, i) => v * (1 - night) + MOONCOL[i] * night);
+  if (bladeContact && contactOn && fox && started) {
+    bladeContact.advance(dt,player.x,foxPose.height,player.z,H(player.x,player.z),fox,foxBasis(),grass,p => {
+      common(p,cam.eye,VP,1,t);
+      gl.uniform2fv(p.u('uGrassHeight'),grass.heightRange);
+      gl.uniform1f(p.u('uLodW'),1.);
+      gl.uniform1i(p.u('uStillGrass'),Number(stillGrass));
+    },coupled);
+  }
   clouds.update(t, cam.eye, starDirection, sm(0, 0.41, starDirection[1]), storm, Boolean(camOverride), t + weatherLead, cloudMotion);
   const waterPlanes = prepareViewPlanes(VP, 1);
   const waterInView = waterBounds(wm.patches, VP, waterPlanes, outsideView, depthRange[0], w, h);
@@ -4072,22 +4165,29 @@ function advanceWorld(dt) {
   acc.ms += performance.now() - t0;
 }
 
-// frame-time governor: ignore the first seconds (shader compiles), thin grass a little, then pixels, and climb back
-// when there is headroom; a cool-down after each cut stops it see-sawing at the vsync edge
-let perfT = [], renderScale = 1, warm = 0, coolUntil = 0;
+// Use a wall-clock window so a struggling phone gets relief within seconds.
+// A single long frame (returning to the tab or starting a clip) cannot trigger a cut.
+let perfT = [], renderScale = 1, warm = 0, windowTime = 0, coolUntil = 0;
 function adaptDensity(rawDt) {
-  if (TEST || !started) return;
-  if ((warm += rawDt) < 4) return;
+  if (TEST || !started || document.hidden || rawDt <= 0 || rawDt > 1) return;
+  warm += rawDt;
+  if (warm < 1.5) return;
   perfT.push(rawDt);
-  if (perfT.length < 60) return;
-  const ts = perfT.sort((a, b) => a - b), med = ts[30], p90 = ts[54]; perfT = [];
+  windowTime += rawDt;
+  if (windowTime < 1 || perfT.length < 5) return;
+  const ts = perfT.sort((a, b) => a - b);
+  const med = ts[Math.floor(ts.length*0.5)], p90 = ts[Math.min(ts.length-2, Math.floor(ts.length*0.9))];
+  perfT = []; windowTime = 0;
   const slow = med > 1 / 50 || p90 > 1 / 33;
   if (slow) {
-    if (grassDensity > 0.6) grassDensity *= 0.85;
+    if (med > 1 / 32) {
+      renderScale = Math.max(0.72, renderScale * 0.86);
+      grassDensity = Math.max(0.30, grassDensity * 0.85);
+    } else if (grassDensity > 0.6) grassDensity *= 0.85;
     else if (renderScale > 0.72) renderScale = Math.max(0.72, renderScale * 0.9);
-    else if (grassDensity > 0.3) grassDensity *= 0.85;
+    else grassDensity = Math.max(0.30, grassDensity * 0.85);
     coolUntil = warm + 6;
-  } else if (med < 1 / 57 && warm > coolUntil) {
+  } else if (med < 1 / 57 && p90 < 1 / 52 && warm > coolUntil) {
     if (renderScale < 1) renderScale = Math.min(1, renderScale * 1.06);
     else if (grassDensity < 1) grassDensity = Math.min(1, grassDensity * 1.08);
   }
@@ -4097,9 +4197,9 @@ function frame(now) {
   requestAnimationFrame(frame);
   const elapsed = Math.max(0, (now - last) / 1000);
   last = now;
-  controller.poll(Math.min(0.1, elapsed), { started, menu, gallery, toggleMenu, look, throwStone, toggleCamera });
+  controller.poll(Math.min(0.1, elapsed), { started, menu, gallery, toggleMenu, look, jump, throwStone, toggleCamera });
   if (capture?.viewing) return;
-  if (elapsed < 0.25) adaptDensity(elapsed);
+  adaptDensity(elapsed);
   const dt = Math.min(0.1, elapsed);
   const skyDt = started ? advanceDay(dt) : dt;
   // Cloud drift, condensate and the sun advance on the same eased lapse clock.
@@ -4145,7 +4245,7 @@ function frame(now) {
     const measuredFps = Math.round(f / Math.max(1e-3, (now - wall) / 1000));
     hud.fps.textContent = measuredFps + ' fps'; wall = now;
     if (GRASS_LAB) document.getElementById('labStats').textContent =
-      `${measuredFps} fps · ${fmt(grassDrawn)} roots · contact ${contactOn ? time(contactMs) : 'off'}`;
+      `${measuredFps} fps · ${fmt(grassDrawn)} roots · ${contactOn ? 'contact CPU ' + time(bladeContact.stats.cpuMs) + '/tick' : 'contact off'}`;
     hud.step.textContent = fmt(stepped / f);
     hud.dense.textContent = fmt(denseCells / f);
     hud.bar.style.width = Math.max(0.6, Math.min(100, stepped / Math.max(1, denseCells) * 100)) + '%';
@@ -4198,6 +4298,7 @@ function bindInput() {
     }
     keys[e.code] = true;
     if (!started || e.repeat) return;
+    if (e.code === 'Space') { e.preventDefault(); jump(); }
     if (e.code === 'KeyF') throwStone();
     if (e.code === 'KeyR') toggleRain();
     if (e.code === 'KeyT') toggleStorm();
@@ -4225,6 +4326,7 @@ function bindInput() {
     if (document.hidden) return;
     last = performance.now();
     perfT.length = 0;
+    windowTime = 0;
     wall = 0;
   });
   let dragStart = null, dragged = false;
@@ -4289,6 +4391,7 @@ function bindInput() {
     let dx = (t.clientX - stick.cx) / 50, dy = (t.clientY - stick.cy) / 50; const l = Math.hypot(dx, dy); if (l > 1) { dx /= l; dy /= l; }
     stick.x = dx; stick.y = dy; knob.style.transform = `translate(${dx * 38}px, ${dy * 38}px)`;
   }
+  document.getElementById('bJump').onclick = jump;
   document.getElementById('bThrow').onclick = () => started && throwStone();
   document.getElementById('bRain').onclick = () => started && toggleRain();
   document.getElementById('bStorm').onclick = () => started && toggleStorm();
@@ -4304,12 +4407,17 @@ function bindGrassLab() {
   document.body.classList.add('grass-lab');
   document.getElementById('grassLab').hidden = false;
   document.getElementById('labContact').onclick = (event) => {
-    contactOn = !contactOn;
+    contactOn = !contactOn; bladeContact.reset();
     event.currentTarget.setAttribute('aria-pressed', String(contactOn));
+  };
+  document.getElementById('labShare').onclick = (event) => {
+    coupled = !coupled; bladeContact.reset();
+    event.currentTarget.setAttribute('aria-pressed', String(coupled));
   };
   document.getElementById('labMark').onclick = (event) => {
     markContacts = !markContacts;
     event.currentTarget.setAttribute('aria-pressed', String(markContacts));
+    document.getElementById('labLegend').hidden = !markContacts;
   };
   document.getElementById('labWind').onclick = (event) => {
     stillGrass = !stillGrass;
@@ -4320,7 +4428,7 @@ function bindGrassLab() {
     event.currentTarget.textContent = ['Chase view', 'Side view', 'Overhead view'][labView];
     post.previous = null;
   };
-  document.querySelector('#intro p').textContent = 'Walk the fox through a 10 × 10 m patch. Compare mesh contact on and off, or mark the blade sections that touch.';
+  document.querySelector('#intro p').textContent = 'Walk the fox through a 10 × 10 m patch. Mark contact to see the fox touch a blade in mint and that blade push a neighbour in amber.';
   document.getElementById('go').textContent = 'Enter grass lab';
 }
 
@@ -4406,7 +4514,7 @@ function scripted(m, frames = 900, view = 'shore') {
 
 // ---------------------------------------------------------------- boot
 (async () => {
-  const foxReady = TEST ? null : loadFox(gl, program, WORLD_VS, GRASS_LAB).catch(error => {
+  const foxReady = TEST ? null : loadFox(gl, program, WORLD_VS, true).catch(error => {
     console.warn(error);
     document.getElementById('bCamera').hidden = true;
     return null;
@@ -4435,13 +4543,14 @@ function scripted(m, frames = 900, view = 'shore') {
   setMode(BOXEL);
   refreshModeUI();
   document.getElementById('status').textContent = `boxel ready: three surface fields on an unbounded plane, cones computed in ${Math.round(performance.now() - t0)} ms`;
-  if (touch) { document.getElementById('go').textContent = 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk (push far to run)</span><b>right thumb</b><span>look</span><b>buttons</b><span>throw or open the field menu</span>'; }
+  if (touch) { document.getElementById('go').textContent = GRASS_LAB ? 'Enter grass lab' : 'Tap to step onto the shore'; document.getElementById('keys').innerHTML = '<b>left thumb</b><span>walk, pull back, or push forward to run</span><b>right thumb</b><span>look</span><b>buttons</b><span>jump, throw, or open the field menu</span>'; }
   window.__game = { setNight: (v) => { night = nightTarget = v; }, setDay: (a) => { day = a === null ? 'still' : 'paused'; dayAngle = a ?? 0; shadowKeys.stale = true; },
     runDay: (seconds) => { day = 'running'; for (let s = 0; s < seconds; s += 1 / 30) { advanceDay(1 / 30); placeStar(); } day = 'paused'; }, setStorm: (v) => { storm = stormTarget = v; }, look: (view, pitch, yaw) => { const c = typeof view === 'string' ? VIEWS[view] : view; Object.assign(player, { x: c.eye[0], y: c.eye[1] - 1.65, z: c.eye[2], yaw: c.yaw + (yaw ?? 0), pitch: pitch ?? c.pitch, bob: 0, vx: 0, vz: 0 });
+      player.grounded = true; player.onStone = false; player.vy = player.flight = 0;
       foxPose.yaw = player.yaw; foxPose.pitch = foxPose.roll = 0; foxPose.height = chase.height = H(player.x, player.z);
       chase.arm = 3.55; post.previous = null;
-    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started,
-    ...(contactGrid && { grassLab: { occupied: contactOn ? contactGrid.occupied : 0, contactMs, markContacts, stillGrass, contactOn, view: labView } }),
+    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started,
+    ...(GRASS_LAB && { grassLab: { occupied: contactOn ? contactGrid.occupied : 0, contactMs: bladeContact.stats.cpuMs, activeRoots: bladeContact.stats.roots, uploadBytes: bladeContact.stats.uploadBytes, coupled, markContacts, stillGrass, contactOn, view: labView } }),
     blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
     const darkField = gl.createTexture();

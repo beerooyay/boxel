@@ -57,7 +57,7 @@ function readFox(bytes) {
   const clips = {};
   for (const animation of model.animations) {
     const name = animation.name.split('|').pop();
-    if (!['Idle', 'Walk', 'Gallop'].includes(name)) continue;
+    if (!['Idle', 'Walk', 'Gallop', 'Gallop_Jump'].includes(name)) continue;
     const tracks = animation.channels.map(({ sampler, target }) => {
       const sample = animation.samplers[sampler];
       return { index: target.node, offset: target.path === 'rotation' ? 3 : 0,
@@ -132,19 +132,42 @@ void main() {
   const world = rest.map(() => new Float32Array(16)), local = new Float32Array(16);
   const matrices = new Float32Array(bones.length * 16);
   const skinMatrices = bones.map((_, i) => matrices.subarray(i*16, (i+1)*16));
+  const nodeIndex = name => model.nodes.findIndex(n => n.name === name);
+  const chest = nodeIndex('Torso'), neck = nodeIndex('Neck1'), tail = nodeIndex('Tail2');
+  const frontFeet = [nodeIndex('IKFrontLeg.L'), nodeIndex('IKFrontLeg.R')];
+  const body = nodeIndex('Body');
+  const jumpBase = clips.Gallop_Jump.tracks.find(t => t.index === body && !t.offset).values[2];
   let gait = 'Idle', time = 0, fade = 1, dirty = true;
-  function advance(dt, distance, running) {
-    const next = distance / dt < 0.14 ? 'Idle' : running ? 'Gallop' : 'Walk';
+  let steering = 0, tailLag = 0, bakedLift = 0, fromLift = 0;
+  function advance(dt, distance, running, turning, jumpPhase) {
+    const next = jumpPhase >= 0 ? 'Gallop_Jump' : Math.abs(distance) / dt < 0.10 ? 'Idle' : running ? 'Gallop' : 'Walk';
     if (next !== gait) {
+      if (dirty) palette();
       for (let i = 0; i < from.length; i++) from[i].set(blended[i]);
+      fromLift = bakedLift;
       time = 0; fade = 0; gait = next;
     }
     const clip = clips[gait];
-    // Distance-driven cycles slow with shallows and switchbacks and stop against obstacles.
     const stride = gait === 'Gallop' ? 1.95 : 0.94;
-    time = (time + (gait === 'Idle' ? dt : distance * clip.duration / stride)) % clip.duration;
-    fade = Math.min(1, fade + dt / 0.17);
+    if (jumpPhase >= 0) time = jumpPhase * clip.duration;
+    else time = (time + (gait === 'Idle' ? dt : distance * clip.duration / stride) + clip.duration) % clip.duration;
+    steering += (turning-steering) * -Math.expm1(-18*dt);
+    tailLag += (steering-tailLag) * -Math.expm1(-6*dt);
+    fade = Math.min(1, fade + dt / (jumpPhase >= 0 ? 0.09 : 0.14));
     dirty = true;
+  }
+  // Rotate in the asset's upright frame. Its joints have different bind axes,
+  // and the independently skinned front paw targets must follow the chest pivot.
+  function steerBone(m, angle, pivot = m) {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const ox = pivot[12], oz = pivot[14];
+    for (let k = 0; k < 16; k += 4) {
+      const x = m[k], z = m[k+2];
+      m[k] = c*x + s*z;
+      m[k+2] = -s*x + c*z;
+    }
+    m[12] += ox*(1-c) - oz*s;
+    m[14] += oz*(1-c) + ox*s;
   }
   function palette() {
     for (let i = 0; i < rest.length; i++) pose[i].set(rest[i]);
@@ -165,8 +188,17 @@ void main() {
       localMatrix(local, dest, scale);
       if (parent < 0) world[index].set(local);
       else multiply(world[index], world[parent], local);
+      if (index === chest || frontFeet.includes(index)) steerBone(world[index], -steering, world[chest]);
+      else if (index === neck) steerBone(world[index], -steering*0.48);
+      else if (index === tail) steerBone(world[index], tailLag*0.82);
     }
-    for (let i = 0; i < bones.length; i++) multiply(skinMatrices[i], world[bones[i].index], bones[i].inverse);
+    // The authored leap includes vertical root motion on top of the leg poses.
+    // Remove that translation from the entire skin; world physics supplies the arc.
+    bakedLift = fromLift*(1-fade) + (gait === 'Gallop_Jump' ? (pose[body][2]-jumpBase)*100 : 0)*fade;
+    for (let i = 0; i < bones.length; i++) {
+      multiply(skinMatrices[i], world[bones[i].index], bones[i].inverse);
+      skinMatrices[i][13] -= bakedLift;
+    }
     dirty = false;
   }
   function draw(ground, basis, wet) {
