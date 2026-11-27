@@ -1,58 +1,114 @@
 // Roots use one eight-byte record. Wind, pigment and bend parameters reuse one
 // shuffled detail buffer across all tiles. Only visible tile prefixes are drawn.
 export const MEADOW_TILE = 8;
-export const GRASS_PULSES = 6;
+const WAKE_SECONDS = 1.12;
+export const GRASS_WAKE_SEGMENTS = 10;
 
-// A planted step excites its neighbouring tufts for less than a second.
-// Each tile carries six bits so distant grass skips the wave calculation.
-export class GrassPulses {
+// Store short stretches of actual travel. Every point along a stretch has its
+// own contact time. The shoulders open farther behind an animal as it moves.
+export class GrassWake {
   constructor(half) {
     this.half = half;
     this.side = Math.ceil(2 * half / MEADOW_TILE);
-    this.tiles = new Uint8Array(this.side * this.side);
-    this.waves = new Float32Array(4 * GRASS_PULSES);
-    this.birth = new Float64Array(GRASS_PULSES);
+    this.tiles = new Uint16Array(this.side * this.side);
+    this.segments = new Float32Array(8 * GRASS_WAKE_SEGMENTS);
+    this.began = new Float64Array(GRASS_WAKE_SEGMENTS);
+    this.ended = new Float64Array(GRASS_WAKE_SEGMENTS);
     this.reset();
   }
   reset() {
-    this.birth.fill(-Infinity);
+    this.ended.fill(-Infinity);
     this.tiles.fill(0);
-    this.next = 0;
+    this.head = -1;
     this.active = false;
   }
-  touch(x, z, now) {
-    const i = this.next;
-    this.waves[4*i] = x;
-    this.waves[4*i+1] = z;
-    this.birth[i] = now;
-    this.next = (i+1) % GRASS_PULSES;
+  land(x, z, now) {
+    // A straight-down landing has no heading. Keep its compact spring-back
+    // on the same clock as a track, in a separate zero-length slot.
+    const i = this.head = (this.head+1)%GRASS_WAKE_SEGMENTS, k = i*8;
+    this.segments[k] = this.lastX = x;
+    this.segments[k+1] = this.lastZ = z;
+    this.segments.fill(0,k+2,k+7);
+    this.segments[k+7] = 0.72;
+    this.began[i] = this.ended[i] = now;
+    this.active = true;
+  }
+  sweep(x0, z0, x1, z1, now, dt) {
+    const dx = x1-x0, dz = z1-z0, distance = Math.hypot(dx,dz);
+    if (dt <= 0 || distance < Math.max(0.0001,0.12*dt)) return;
+    const s = this.segments;
+    let i = this.head, k = i*8;
+    // End the old strip on a turn, a break in contact, or a long step. Angular
+    // and time limits preserve the curve and the animal's changing speed.
+    if (i < 0 || Math.abs(now-dt-this.ended[i])>0.00001 ||
+        Math.abs(x0-this.lastX)+Math.abs(z0-this.lastZ)>0.001 ||
+        now-this.began[i]>0.22 || s[k+4]+distance>0.62 ||
+        dx*s[k+2]+dz*s[k+3]<0.96*distance) {
+      i = this.head = (i+1)%GRASS_WAKE_SEGMENTS;
+      k = i*8;
+      s[k] = x0; s[k+1] = z0;
+      this.began[i] = now-dt;
+    }
+    const sx = x1-s[k], sz = z1-s[k+1], length = Math.hypot(sx,sz);
+    // Root and heading, followed by length, endpoint ages and contact strength.
+    s[k+2] = sx/length; s[k+3] = sz/length; s[k+4] = length;
+    s[k+7] = Math.min(1, length / (now-this.began[i]));
+    this.ended[i] = now;
+    this.lastX = x1; this.lastZ = z1;
     this.active = true;
   }
   update(now) {
     if (!this.active) return false;
     this.tiles.fill(0);
     this.active = false;
-    for (let i=0; i<GRASS_PULSES; i++) {
-      const age = now - this.birth[i];
-      if (age < 0 || age >= 0.88) continue;
+    const s = this.segments;
+    for (let i=0; i<GRASS_WAKE_SEGMENTS; i++) {
+      const age = now-this.ended[i];
+      if (age<0 || age>=WAKE_SECONDS) continue;
       this.active = true;
-      const k = 4*i, radius = 0.10 + 0.86*age;
-      const fade = Math.max(0, (age-0.18)/0.70);
-      this.waves[k+2] = radius;
-      this.waves[k+3] = Math.min(1, age/0.055) * (1-fade*fade*(3-2*fade));
-      // Includes the widest edge of the band and its variation between tufts.
-      const reach = (radius*1.12 + 0.26)/0.86;
-      const x = this.waves[k]+this.half, z = this.waves[k+1]+this.half;
-      const x0 = Math.max(0,Math.floor((x-reach)/MEADOW_TILE));
-      const z0 = Math.max(0,Math.floor((z-reach)/MEADOW_TILE));
-      const x1 = Math.min(this.side-1,Math.floor((x+reach)/MEADOW_TILE));
-      const z1 = Math.min(this.side-1,Math.floor((z+reach)/MEADOW_TILE));
+      const k = 8*i;
+      s[k+5] = now-this.began[i]; s[k+6] = age;
+      // Bound the widest feather and end caps at either end of this segment.
+      const reach = 0.65+1.21*Math.min(WAKE_SECONDS,s[k+5]);
+      const x = s[k]+this.half, z = s[k+1]+this.half;
+      const dx = s[k+2]*s[k+4], dz = s[k+3]*s[k+4];
+      const x0 = Math.max(0,Math.floor((x+Math.min(0,dx)-reach)/MEADOW_TILE));
+      const z0 = Math.max(0,Math.floor((z+Math.min(0,dz)-reach)/MEADOW_TILE));
+      const x1 = Math.min(this.side-1,Math.floor((x+Math.max(0,dx)+reach)/MEADOW_TILE));
+      const z1 = Math.min(this.side-1,Math.floor((z+Math.max(0,dz)+reach)/MEADOW_TILE));
       for (let row=z0; row<=z1; row++)
         for (let col=x0; col<=x1; col++) this.tiles[row*this.side+col] |= 1<<i;
     }
     return this.active;
   }
 }
+
+// Project a blade root onto a stretch of the track and find when the animal
+// passed it. Two widening shoulders follow the original turn as the light fades.
+export const grassWakeGLSL = `
+uniform vec4 uGrassWake[${2*GRASS_WAKE_SEGMENTS}];
+float grassWakeLight(int mask, vec2 root, float tuft) {
+  float light = 0.;
+  for (int i=0; mask!=0; i++, mask>>=1) {
+    if ((mask & 1)==0) continue;
+    vec4 path = uGrassWake[2*i], timing = uGrassWake[2*i+1];
+    vec2 delta = root-path.xy;
+    float range = timing.x+2.01;
+    if (dot(delta,delta)>range*range) continue;
+    float along = dot(delta,path.zw);
+    float excess = max(-along,along-timing.x);
+    if (excess>0.46) continue;
+    float age = mix(timing.y,timing.z,clamp(along/max(timing.x,0.0001),0.,1.));
+    float life = 1.-smoothstep(0.04,${WAKE_SECONDS},age);
+    float side = timing.x==0. ? 1.65*length(delta) : abs(dot(delta,vec2(-path.w,path.z)));
+    float shoulder = 0.11+age*(0.83+0.16*tuft);
+    float band = 1.-smoothstep(0.,0.40+0.20*age,abs(side-shoulder));
+    float cap = 1.-smoothstep(0.,0.28+0.14*age,max(0.,excess));
+    light = max(light, timing.w*life*band*cap*(0.10+0.12*tuft));
+  }
+  return light;
+}
+`;
 export const SISTER_ONE = 0.16, SISTER_TWO = 0.40;
 const FULL_COVER = 14, DETAIL_END = 18;
 const ADAPT_START = 10, ADAPT_END = 30, FAR_FADE = 22;

@@ -270,7 +270,7 @@ test('foreleg contact sustains a bow and a turn leaves the narrow wake on its pr
   assert.equal(wake.prepare(1),null);
 });
 
-test('a moving paw charges its previous footprint once more on lift and a resting paw stays dark', () => {
+test('a moving paw stirs its swept path, charges on first touch and leaves the last wet print on lift', () => {
   const water=tank(), events=[];
   const wake=createSwimWake(water,()=>0,(x,z,amount)=>events.push({x,z,amount}));
   let planted=true;
@@ -283,13 +283,29 @@ test('a moving paw charges its previous footprint once more on lift and a restin
   assert.equal(events.length,0);
   wake.update(animal,[4,-0.2,4.04],upright,0,1.2,dt,15*dt,false,1);
   assert.equal(events.length,1);
-  assert.ok(Math.abs(events[0].z-4)<1e-6);
+  assert.ok(Math.abs(events[0].z-4.02)<1e-6);
   planted=false;
   wake.update(animal,[4,-0.2,4.08],upright,0,1.2,dt,16*dt,false,1);
   assert.equal(events.length,2);
   assert.ok(Math.abs(events[1].z-4.04)<1e-6 && events[1].amount>0);
   wake.update(animal,[4,-0.2,4.12],upright,0,1.2,dt,17*dt,false,1);
   assert.equal(events.length,2);
+  planted=true;
+  wake.update(animal,[4,-0.2,4.16],upright,0,1.2,dt,18*dt,false,1);
+  assert.equal(events.length,3);
+  assert.ok(Math.abs(events[2].z-4.16)<1e-6 && events[2].amount>0);
+});
+
+test('a swimmer backing into water excites the leading stern on its first frame', () => {
+  const events=[];
+  const wake=createSwimWake(tank(),()=>0,(x,z)=>events.push([x,z]));
+  const animal={waterline:fox,waterContacts(_o,_b,_h,_sx,_sz,bounds) {
+    bounds.fill(-Infinity);
+    bounds.set([0.12,0.12,0.46,0.32],0);
+  }};
+  wake.update(animal,[4,-0.2,4],upright,0,-1,1/60,1/60,true,1);
+  assert.equal(events.length,1);
+  assert.ok(events[0][1]<3.68 && events[0][1]>3.54);
 });
 
 test('both chutes have bedrock immediately below the lip and room for the falling sheet to reach the pool', () => {
