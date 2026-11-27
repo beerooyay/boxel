@@ -51,6 +51,7 @@ async function main() {
     assert(coupled.direct > 0 && coupled.neighbourOnly > 0);
     await page.locator('#labShare').click();
     const solo = await measure();
+    assert(coupled.neighbourOnly < 12*coupled.direct, "pressure must stay local to touching blades");
     assert(solo.direct > 0 && solo.neighbourOnly === 0);
     await page.locator('#labShare').click();
     const recoupled = await measure();
@@ -59,6 +60,7 @@ async function main() {
     await page.keyboard.press('Space');
     await page.waitForFunction(y => __game.state().player.y > y+1.0, ground);
     const airborne = await page.evaluate(readContacts);
+    assert.equal(airborne.neighbourOnly, 0, 'no donor pressure while airborne');
     assert.equal(airborne.direct, 0, 'raised paws must clear short grass');
     await page.waitForFunction(() => __game.state().player.grounded);
     const landed = await measure();

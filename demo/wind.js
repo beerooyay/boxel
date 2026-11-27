@@ -17,7 +17,7 @@ export function createWind(boxel, heightAt) {
   let seed = 86037,
     travel = 0,
     elapsed = 0,
-    tick = 0,
+    untilFront = 0,
     version = 0;
   // A lee in the terrain shelters the meadow. Store the exposure in blue
   // alongside the two gust snapshots, in fixed world coordinates.
@@ -48,7 +48,8 @@ export function createWind(boxel, heightAt) {
   function advance(storm) {
     // Neighbouring parcels reinforce one bowed front. The sparse field
     // spreads and dissipates their impulse between successive fronts.
-    if (tick++ % 2 === 0) {
+    if (--untilFront <= 0) {
+      untilFront = 3 + Math.floor(draw()*(5-3*storm));
       const x = Math.floor(draw() * SIZE),
         z = Math.floor(draw() * SIZE),
         r = 3 + Math.floor(4 * draw());
@@ -108,7 +109,7 @@ export function createWind(boxel, heightAt) {
     const local =
       (1 - fzg) * ((1 - fxg) * exposure(ax, az) + fxg * exposure(bx, az)) +
       fzg * ((1 - fxg) * exposure(ax, bz) + fxg * exposure(bx, bz));
-    return local * (0.43 + 0.98 * crest + (2 * air(3) - 1) * (0.48 + 0.38 * crest));
+    return local * (0.10 + 0.98 * crest + (2 * air(3) - 1) * (0.06 + 0.38 * crest));
   }
   return {
     size: SIZE,
@@ -125,7 +126,7 @@ export function createWind(boxel, heightAt) {
       return f*f*(3-2*f);
     },
     update(dt, storm) {
-      travel = (travel + dt * speed * (2.04 + 0.72 * storm)) % (SIZE * metres[0]);
+      travel = (travel + dt * speed * (1.18 + 1.58 * storm)) % (SIZE * metres[0]);
       elapsed += dt;
       while (elapsed >= STEP) {
         elapsed -= STEP;
@@ -151,7 +152,7 @@ float windAir(vec2 p, float lod){
   vec4 air = textureLod(uGusts, (cell + 0.5) / ${SIZE}., lod);
   vec2 uv=clamp(p/${2 * WORLD_HALF}.+0.5,vec2(0.5/${SIZE}.),vec2(1.-0.5/${SIZE}.));
   float crest = smoothstep(0.035, 0.665, mix(air.r, air.g, uWindFrame.y));
-  float gust = 0.43 + 0.98 * crest + (2. * air.a - 1.) * (0.48 + 0.38 * crest);
+  float gust = 0.10 + 0.98 * crest + (2. * air.a - 1.) * (0.06 + 0.38 * crest);
   return textureLod(uGusts, uv, lod).b * gust;
 }
 float windWave(vec2 p){ return windAir(p, 0.); }

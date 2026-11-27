@@ -207,3 +207,5 @@ The bark colour and normal textures use Rob Tuytel's CC0 scan,
 The tree and understory leaf atlases ship with coverage-preserving mip levels in KTX2.
 To rebuild both sizes, install the [Khronos KTX tools](https://github.com/KhronosGroup/KTX-Software)
 and run `node tools/bake-leaf-sprays.mjs`.
+
+The hillside trial at `?oak` uses a summer medium oak from [Oak trees pack by LOLIPOP](https://sketchfab.com/3d-models/oak-trees-pack-17var-lods-seasons-gameready-a5e4e64f9f1d4089bdcc6170a9333393), licensed under [CC Attribution](https://creativecommons.org/licenses/by/4.0/). The demo extracts one mesh pair, resizes the material maps and fits the root flare to the terrain.

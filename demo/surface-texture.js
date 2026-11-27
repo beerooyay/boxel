@@ -15,7 +15,8 @@ export async function loadSurface(file) {
 
 export function uploadSurface(gl, image, unit, format, fallback) {
   gl.activeTexture(gl.TEXTURE0 + unit);
-  gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
   if (image) {
     gl.texImage2D(gl.TEXTURE_2D, 0, format, gl.RGBA, gl.UNSIGNED_BYTE, image);
     image.close();
@@ -28,4 +29,5 @@ export function uploadSurface(gl, image, unit, format, fallback) {
   if (anisotropy) gl.texParameterf(gl.TEXTURE_2D, anisotropy.TEXTURE_MAX_ANISOTROPY_EXT,
     Math.min(4, gl.getParameter(anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  return texture;
 }
