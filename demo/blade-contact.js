@@ -231,9 +231,9 @@ export function createBladeContact(gl, solve, stamp, grid) {
     }
     lastBounds=Array.from(bounds);
   }
-  function reset() {
+  function clearPatch() {
     current.base=previous.base=[-100000,-100000];
-    fieldOrigin=[-100000,0,-100000]; carry=STEP; stats.roots=stats.uploadBytes=0;
+    fieldOrigin=[-100000,0,-100000]; stats.roots=stats.uploadBytes=0;
   }
   function bind(p) {
     gl.uniform2iv(p.u('uSiteBase'),current.base);
@@ -248,7 +248,10 @@ export function createBladeContact(gl, solve, stamp, grid) {
     const elapsed=Math.min(0.10,carry);
     carry=Math.max(0,carry-Math.floor((carry+1e-8)/STEP)*STEP);
     const groups=grass.nearRoots(x,z,CONTACT_REACH);
-    if(!groups.length) { reset(); return; }
+    if(!groups.length) {
+      if(stats.roots) clearPatch();
+      return;
+    }
     const start=performance.now();
     uploadFox(fox);
     [current,previous]=[previous,current];
@@ -279,5 +282,5 @@ export function createBladeContact(gl, solve, stamp, grid) {
     gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.bindVertexArray(null); gl.enable(gl.DITHER);
     stats.cpuMs+=0.15*(performance.now()-start-stats.cpuMs);
   }
-  return {advance,bind,reset,stats};
+  return {advance,bind,reset() { clearPatch(); carry=STEP; },stats};
 }

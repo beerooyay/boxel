@@ -25,15 +25,19 @@ export class FieldTexture {
       const key = y / BLOCK * strips + strip;
       let page = pages.get(key);
       const blockBit = 1 << (offset / BLOCK);
-      if (!page) {
+      // Certified support extends beyond what an R8 sample can show. Skip
+      // black-to-black blocks even when another block already owns the strip.
+      if (!(page && (page.visibleBlocks & blockBit))) {
         if (!values) return;
         let k = 0;
-        while (k < BLOCK * BLOCK && values[k] * 255 < 0.5) k++;
+        while (k < BLOCK * BLOCK && values[k] < 0.5 / 255) k++;
         if (k === BLOCK * BLOCK) return;
+      }
+      if (!page) {
         page = { bytes: new Uint8Array(STRIP * BLOCK), x: x - offset, y, visibleBlocks: 0,
           left: STRIP, right: 0, top: BLOCK, bottom: 0 };
         pages.set(key, page);
-      } else if (!values && !(page.visibleBlocks & blockBit)) return;
+      }
       const bytes = page.bytes;
       let visible = 0;
       for (let row = 0; row < BLOCK; row++) {

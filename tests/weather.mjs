@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { load } from '../ffi/boxel.js';
 import { createWeather, liftingLevel, WEATHER_SIZE, WEATHER_TILE } from '../demo/weather.js';
+import { createClouds } from '../demo/clouds.js';
 
 test('warmer unsaturated air has a higher lifting level, and moist air condenses sooner', () => {
   assert.equal(liftingLevel(24, 1), 0);
@@ -59,4 +60,40 @@ test('lake evaporation supplies a rising parcel downwind of the shore', async ()
     }
     assert.ok(added > 0 && east / added > 2);
   } finally { lake.field.free(); control.field.free(); }
+});
+
+test('cloud rebakes upload weather again when either the field or its interpolation changes', async () => {
+  const boxel = await load(await readFile(new URL('../demo/boxel.wasm', import.meta.url)));
+  const sources = [[-6, 8, 1]], reference = createWeather(boxel, { sources });
+  const uploads = [];
+  const noop = () => {};
+  const gl = new Proxy({
+    createTexture() { return {}; },
+    texSubImage2D(_target, _level, _x, _y, width, _height, _format, _type, bytes) {
+      if (width === WEATHER_SIZE) uploads.push(bytes.slice());
+    },
+  }, { get: (target, key) => target[key] ?? (key === key.toUpperCase() ? 0 : noop) });
+  const clouds = createClouds(gl, () => ({ u() {} }), '', boxel, { sources, test: true });
+  const bake = t => clouds.update(t, [0,0,0], [0,1,0], 1, 0, true);
+  try {
+    bake(0);
+    clouds.advance(2, 1, 0, 2, 0);
+    bake(2);
+    assert.equal(uploads.length, 1);
+    assert.deepEqual(uploads[0], reference.water);
+
+    const previous = reference.water.slice();
+    reference.advance(1, 0, 4, 0);
+    clouds.advance(2, 1, 0, 4, 0);
+    bake(4);
+    assert.equal(uploads.length, 2);
+    assert.deepEqual(uploads[1], previous);
+    clouds.advance(2, 1, 0, 6, 0);
+    bake(6);
+    assert.deepEqual(uploads[2], previous.map((v, i) => Math.round((v + reference.water[i]) / 2)));
+    bake(8);
+    assert.equal(uploads.length, 3);
+  } finally {
+    reference.field.free();
+  }
 });

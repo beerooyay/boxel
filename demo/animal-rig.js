@@ -108,6 +108,35 @@ void main() {
 }`);
 }
 
+// Flat-shaded faces split vertices for their render normals. Grass and water
+// only need the posed surface, so skin each identical position/influence once.
+function contactMesh(positions, joints, weights, triangles) {
+  const ids = new Map(), source = [];
+  const remap = new Uint16Array(positions.length/3);
+  for (let vertex = 0; vertex < remap.length; vertex++) {
+    const p = 3*vertex, b = 4*vertex;
+    let key = positions[p] + ',' + positions[p+1] + ',' + positions[p+2];
+    for (let j = b; j < b+4; j++) key += ';' + joints[j] + ',' + weights[j];
+    let id = ids.get(key);
+    if (id === undefined) {
+      id = source.length;
+      ids.set(key, id);
+      source.push(vertex);
+    }
+    remap[vertex] = id;
+  }
+  const indices = Uint16Array.from(triangles, vertex => remap[vertex]);
+  const bind = new Float32Array(source.length*3);
+  const skinJoints = new Uint8Array(source.length*4), skinWeights = new Float32Array(source.length*4);
+  for (let i = 0; i < source.length; i++) {
+    const p = source[i]*3, b = source[i]*4;
+    bind.set(positions.subarray(p,p+3), 3*i);
+    skinJoints.set(joints.subarray(b,b+4), 4*i);
+    skinWeights.set(weights.subarray(b,b+4), 4*i);
+  }
+  return { bind, joints: skinJoints, weights: skinWeights, indices, positions: new Float32Array(bind.length) };
+}
+
 // Merge the material groups once. Their colours travel with the vertices, so a
 // visible animal needs one indexed submission, including its eyes and antlers.
 function uploadAnimal(gl, model, parts, read, contact) {
@@ -130,8 +159,7 @@ function uploadAnimal(gl, model, parts, read, contact) {
     } else {
       const j = read(a.JOINTS_0), w = read(a.WEIGHTS_0);
       joints.set(j, 4 * base); weights.set(w, 4 * base);
-      if (contact) surfaces.push({ bind: pos, joints: j, weights: w, indices: triangles,
-        positions: new Float32Array(pos.length) });
+      if (contact) surfaces.push(contactMesh(pos, j, w, triangles));
     }
     for (const i of triangles) indices.push(i + base);
     base += n;

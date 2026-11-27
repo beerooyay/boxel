@@ -63,6 +63,7 @@ export function createShadows(gl, size, half, layers, casters) {
     }
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw Error(gl.getProgramInfoLog(p));
+    gl.detachShader(p, vs); gl.detachShader(p, fs);
     const vp = gl.getUniformLocation(p, 'uVP');
     gl.useProgram(p);
     gl.uniform1f(gl.getUniformLocation(p, 'uMirror'), 1);

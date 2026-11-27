@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createWaterSurface } from '../demo/water-surface.js';
+import { createWaterSurface, waterTexture } from '../demo/water-surface.js';
 import { createSwimWake, sampleWaterline, waterlineEdges, waterPart } from '../demo/swim-wake.js';
 import { falls, riverLevel, riverX, waterLevel, terrainHeight } from '../demo/landmarks.js';
 import { lipZ, landingAt } from '../demo/waterfall.js';
@@ -79,6 +79,63 @@ test('fixed steps give the same wake at 24 and 120 Hz, and reset clears it', () 
   const q = slow.sample(3.84, 4.68);
   assert.equal(q.light, 0);
   assert.equal(q.height, 0);
+});
+
+test('texture updates preserve both fixed ticks across batched uploads and clear a reset', () => {
+  const grid = { x0: 0, z0: 0, width: 37, height: 35, step: 0.24 };
+  const water = createWaterSurface(grid, (_x,_z,bed) => Object.assign(bed,{depth:1,level:0,vx:0,vz:0}));
+  const layerBytes = grid.width * grid.height * 4;
+  const gpu = new Uint8Array(2 * layerBytes);
+  let stride = 0, writes = 0;
+  const gl = {
+    TEXTURE0: 0, UNPACK_ROW_LENGTH: 1,
+    createTexture() {}, activeTexture() {}, bindTexture() {}, texStorage3D() {}, texParameteri() {},
+    pixelStorei(name, value) { if (name === this.UNPACK_ROW_LENGTH) stride = value; },
+    texSubImage3D(_target, _level, x, y, layer, width, height, depth, _format, _type, bytes, offset = 0) {
+      for (let z = 0; z < depth; z++) for (let row = 0; row < height; row++) {
+        const src = offset + (z * height + row) * (stride || width) * 4;
+        gpu.set(bytes.subarray(src, src + width*4), (layer+z)*layerBytes + ((y+row)*grid.width+x)*4);
+      }
+      writes++;
+    }
+  };
+  const upload = waterTexture(gl,water,0);
+  function snapshot() {
+    const bytes = new Uint8Array(layerBytes), contact = {};
+    const signed = value => 128 + Math.round(Math.max(-127,Math.min(127,value)));
+    for (let j = 0; j < grid.height; j++) for (let i = 0; i < grid.width; i++) {
+      const x = (i+0.5)*grid.step, z = (j+0.5)*grid.step, p = 4*(j*grid.width+i);
+      water.contactAt(x,z,contact);
+      bytes[p] = signed(contact.height*720);
+      bytes[p+1] = signed(contact.slopeX*340);
+      bytes[p+2] = signed(contact.slopeZ*340);
+      bytes[p+3] = Math.round(water.sample(x,z).light*255);
+    }
+    return bytes;
+  }
+  let current = snapshot(), previous = current;
+  water.advance(1/120);
+  for (let tick = 0; tick < 70; tick++) {
+    if (tick < 15) water.touch(7.68+0.02*tick,7.68,0.5,0.05);
+    water.advance(1/30);
+    previous = current;
+    current = snapshot();
+    if (tick % 7 > 2) continue; // four skipped uploads followed by consecutive renders
+    upload();
+    for (let p = 0; p < layerBytes; p++) {
+      const visible = gpu[p] + (gpu[layerBytes+p]-gpu[p])*water.textureMix;
+      const expected = previous[p] + (current[p]-previous[p])*water.fraction;
+      assert.ok(Math.abs(visible-expected) < 1e-8);
+    }
+  }
+  water.reset();
+  upload();
+  assert.deepEqual(gpu.subarray(0,layerBytes),snapshot());
+  assert.deepEqual(gpu.subarray(layerBytes),snapshot());
+  const empty = writes;
+  water.advance(1/30);
+  upload();
+  assert.equal(writes,empty);
 });
 
 const fox = { halfWidth: 0.21, halfLength: 0.48, draft: 0.416 };
@@ -160,19 +217,20 @@ test('foreleg contact sustains a bow and a turn leaves the narrow wake on its pr
     uniform4fv:(key,values)=>uniforms[key]=values.slice()
   };
   for (let i=1; i<=22; i++) wake.update(animal,[4,-0.4,4+i/30],upright,0,1,1/30,i/30,true,0);
-  wake.bind(gl,{u:key=>key},22/30);
+  assert.ok(wake.prepare(22/30));
+  wake.bind(gl,{u:key=>key});
   assert.ok(uniforms.uBow[1]>4+22/30 && uniforms.uBow[3]>0.7);
   const firstLeg=32;
   const trail=uniforms['uWakePath[0]'];
   assert.ok(trail[firstLeg+2]>0 && trail[firstLeg+1]>trail[firstLeg+4*5+1]);
   const east=[0,0,-1,0,1,0,1,0,0];
   wake.update(animal,[4.033,-0.4,4+22/30],east,1,0,1/30,23/30,true,0);
-  wake.bind(gl,{u:key=>key},23/30);
+  assert.ok(wake.prepare(23/30));
+  wake.bind(gl,{u:key=>key});
   assert.deepEqual(uniforms.uBowDirection,[1,0]);
   assert.ok(Math.abs(uniforms['uWakePath[0]'][firstLeg+4*5]-4.15)<1e-5);
   wake.reset();
-  wake.bind(gl,{u:key=>key},1);
-  assert.deepEqual(uniforms.uWakeBounds,[1,1,-1,-1]);
+  assert.equal(wake.prepare(1),null);
 });
 
 test('both chutes have bedrock immediately below the lip and room for the falling sheet to reach the pool', () => {

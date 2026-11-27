@@ -243,13 +243,20 @@ function program(vs, fs) {
 function checkPrograms() {
   for (const [p, stages] of queuedPrograms.splice(0)) {
     // a one-shot bake may already have used and deleted its program
-    if (!gl.isProgram(p) || gl.getProgramParameter(p, gl.LINK_STATUS)) continue;
-    for (const s of stages) {
-      if (gl.getShaderParameter(s, gl.COMPILE_STATUS)) continue;
-      console.error(gl.getShaderSource(s).split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n'));
-      fail('shader: ' + gl.getShaderInfoLog(s));
+    const live = gl.isProgram(p);
+    if (live && !gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      for (const s of stages) {
+        if (gl.getShaderParameter(s, gl.COMPILE_STATUS)) continue;
+        console.error(gl.getShaderSource(s).split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n'));
+        fail('shader: ' + gl.getShaderInfoLog(s));
+      }
+      fail('link: ' + gl.getProgramInfoLog(p));
     }
-    fail('link: ' + gl.getProgramInfoLog(p));
+    // The linked executable survives releasing its compiler inputs.
+    for (const s of stages) {
+      if (live) gl.detachShader(p, s);
+      gl.deleteShader(s);
+    }
   }
 }
 function uploadBuffer(target, data, usage = gl.STATIC_DRAW) {
@@ -1621,14 +1628,16 @@ void main(){
 }`);
 
 const cascade = createWaterfall(gl,program,WORLD_VS,vao);
-const WATERP = program(WORLD_VS + `
-in vec2 aXZ, aBedSlope; in vec3 aWater; out vec3 vWP; out float vDepth, vWave, vFlow, vGust; out vec2 vBedSlope;
+const waterVertex = WORLD_VS + `
+layout(location=0) in vec2 aXZ;
+layout(location=1) in vec3 aWater;
+layout(location=2) in vec2 aBedSlope; out vec3 vWP; out float vDepth, vWave, vFlow, vGust; out vec2 vBedSlope;
 void main(){
   vGust=max(0.,windWave(aXZ)*uWind); vBedSlope=aBedSlope;
   vWave = waterWave(aXZ, uTime).x + waterCrests(aXZ, aWater.y, aBedSlope, uTime, vGust).x + surfaceAt(aXZ).x;
   vWP = vec3(aXZ.x, aWater.x + vWave, aXZ.y); vDepth = aWater.y; vFlow = aWater.z; gl_Position = project(vWP);
-}`,
-plungeGLSL + swimmerWakeGLSL + `uniform sampler2D uRefl, uUnder; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel;
+}`;
+const waterFragment = plungeGLSL + `uniform sampler2D uRefl, uUnder; uniform vec2 uRes, uRightXZ; uniform float uMirrorLevel;
 in vec3 vWP; in float vDepth, vWave, vFlow, vGust; in vec2 vBedSlope; out vec4 o;
 // A cell schedules impacts. A new event can land anywhere in it, and its wave
 // crosses the boundary. The largest wave travels less than half a cell, so only
@@ -1704,15 +1713,22 @@ void main(){
   vec4 front=waterCrests(p,vDepth,vBedSlope,uTime,vGust);
   vec2 g = waveGrad(p, pixelMetres) + rain + disturbance.yz + front.yz;
   // This cross-stream coordinate follows the same bends as the wet grid.
-  float bendX = -5.+3.4*sin(p.y*0.13)+1.4*sin(p.y*0.29+0.8);
-  float lane = p.x-mix(bendX,-18.,smoothstep(66.,100.,-p.y));
-  float flow = p.y*3.3-uTime*2.2+vnoise(vec2(lane*1.3,p.y*1.3-uTime*0.78))*3.8;
   vec2 downstream = normalize(vec2(0.442*cos(p.y*0.13)+0.406*cos(p.y*0.29+0.8),1.));
-  vec2 fineWake=swimmerSlope(p,
+  float currentCap=0.;
+  if (stream>0.) {
+    float bendX=-5.+3.4*sin(p.y*0.13)+1.4*sin(p.y*0.29+0.8);
+    float lane=p.x-mix(bendX,-18.,smoothstep(66.,100.,-p.y));
+    float flow=p.y*3.3-uTime*2.2+vnoise(vec2(lane*1.3,p.y*1.3-uTime*0.78))*3.8;
+    g+=stream*(downstream*0.028*cos(flow)+vec2(downstream.y,-downstream.x)*0.012*sin(flow*0.71));
+    currentCap=0.065*stream*smoothstep(0.84,1.,sin(flow));
+  }
+  vec2 fineWake=vec2(0.);
+#ifdef SWIM_WAKE
+  fineWake=swimmerSlope(p,
     downstream*stream*(.24+.64*smoothstep(.02,.57,depth))+WIND_DIR*.085*clamp(vGust,0.,1.7),level,pixelMetres);
   fineWake*=smoothstep(.012,.075,depth);
+#endif
   g+=fineWake;
-  g += stream*(downstream*0.028*cos(flow)+vec2(downstream.y,-downstream.x)*0.012*sin(flow*0.71));
   vec3 N = normalize(vec3(-g.x, 1., -g.y));
   vec3 V = normalize(uCam - vWP); float NdV = clamp(dot(N, V), 0., 1.);
   float F = 0.022 + 0.978 * pow(1. - NdV, 5.);
@@ -1750,8 +1766,6 @@ void main(){
     float tilt = dot(rain, skyDirection);
     col += tilt * (0.70 + 0.45*NdV) * (0.39*refl + 0.71*ambient(vec3(0.,1.,0.)));
   }
-  float wash = vnoise(p*vec2(3.9,2.6)-downstream*uTime*(0.21+0.53*stream));
-  float bubbles=smoothstep(0.19,0.80,wash+0.23*(vnoise(15.*p-0.45*uTime)-0.5));
   float steepness=length(disturbance.yz);
   // The two faces of a short ripple catch different parts of the sky. This
   // still reads at a steep chase-camera angle looking into dark water.
@@ -1761,18 +1775,26 @@ void main(){
   col*=1.-0.29*skylight*smoothstep(0.,0.20,-tilt);
   col+=(0.19*refl+0.23*col+vec3(0.037,0.054,0.057))*(face/(face+0.15))*skylight;
   float splashCap=smoothstep(0.015,0.073,disturbance.x)*smoothstep(0.067,0.30,steepness);
-  float breaker=min(1.,front.w+0.58*splashCap)*bubbles;
+  float cap=min(1.,front.w+0.58*splashCap);
   float swash=(1.-smoothstep(0.024,0.16,abs(depth-0.041)))*(0.045+0.61*front.w);
-  float foam = breaker+(swash+0.065*stream*smoothstep(0.84,1.,sin(flow))*smoothstep(0.44,0.74,wash))*shoreFroth(p);
   float whitewater=plungeFoam(p,uTime)*smoothstep(0.,0.23,depth);
   // Residual bubbles follow the same advected contact field as the plankton.
   // They break up along wave faces and lose their white tips as the water settles.
   float churn=smoothstep(0.05,0.57,disturbance.a)*(0.24+0.76*smoothstep(0.010,0.107,steepness));
-  if (churn>0.001) {
-    float flecks=smoothstep(0.51,0.77,vnoise(p*21.+wash*1.6-downstream*uTime*(0.22+stream)));
-    foam+=churn*(0.10+0.50*flecks);
+  // Deep, undisturbed water has no foam. Only evaluate the noise bands
+  // whose amplitude can contribute to this fragment.
+  float breaker=0., foam=0., wash=0.;
+  if (cap>0. || currentCap>0. || churn>0.001) {
+    wash=vnoise(p*vec2(3.9,2.6)-downstream*uTime*(0.21+0.53*stream));
+    if (cap>0.) breaker=cap*smoothstep(0.19,0.80,wash+0.23*(vnoise(15.*p-0.45*uTime)-0.5));
+    if (churn>0.001) {
+      float flecks=smoothstep(0.51,0.77,vnoise(p*21.+wash*1.6-downstream*uTime*(0.22+stream)));
+      foam=churn*(0.10+0.50*flecks);
+    }
   }
-  foam=min(1.,foam+whitewater);
+  float bankFoam=swash+currentCap*smoothstep(0.44,0.74,wash);
+  if (bankFoam>0.) foam+=bankFoam*shoreFroth(p);
+  foam=min(1.,foam+breaker+whitewater);
   float light = uNight * uNight * glowI(glow);
   col = mix(col, tonemap(vec3(0.75, 0.82, 0.82) * (ambient(N) * 2.4 + uSunCol * sun * 0.16)), min(1.,foam*0.58+whitewater*0.38+breaker*0.20));
   if (light > 0.) col += tonemap(glowCol(p) * light * (0.5 + 1.3 * uNight));
@@ -1782,7 +1804,9 @@ void main(){
   vec2 bend = suv - distortion * clamp(depth * 0.25, 0., 0.09) * frame;
   vec3 under = texture(uUnder, clamp(bend, 0.002, 0.998)).rgb * mix(vec3(1.), vec3(0.78, 0.95, 0.92), absorb);
   o = vec4(mix(under, col, alpha), smoothstep(-0.02, 0.035, depth));
-}`);
+}`;
+const WATERP = program(waterVertex, waterFragment);
+const WAKE_WATER = program(waterVertex, '#define SWIM_WAKE\n' + swimmerWakeGLSL + waterFragment);
 
 const POINTS = program(WORLD_VS + `
 in vec4 aP; uniform float uScale, uNight; uniform vec3 uCam; uniform int uRain; out float vA; out vec3 vC;
@@ -1913,7 +1937,7 @@ function terrainNear() {
     const l = Math.hypot(hx, 1, hz);
     nor[vertex] = -hx / l; nor[vertex + 1] = 1 / l; nor[vertex + 2] = -hz / l;
   }
-  return { ground, pos, nor, heightRange: [low - 0.05, high - low + 0.1] };
+  return { ground, pos, nor, heights: hs, heightRange: [low - 0.05, high - low + 0.1] };
 }
 function terrainFar() {
   const rings = touch ? 150 : 190, sectors = touch ? 320 : 512, stride = sectors + 1, edge = NEAR.half - 0.5;
@@ -2091,10 +2115,10 @@ function rockSet(topology, shapes) {
 function nearH(near, x, z) {
   const { S } = NEAR, fx = Math.min(S - 1e-6, Math.max(0, terrainCoord(x))), fz = Math.min(S - 1e-6, Math.max(0, terrainCoord(z)));
   const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, w = fz - j;
-  const stride = 3 * (S + 1), k = j * stride + 3 * i + 1, P = near.pos;
-  const right = P[k + 3], up = P[k + stride];
+  const stride = S + 1, k = j * stride + i, P = near.heights;
+  const right = P[k + 1], up = P[k + stride];
   if (u + w <= 1) return P[k] * (1 - u - w) + right * u + up * w;
-  return P[k + stride + 3] * (u + w - 1) + right * (1 - w) + up * (1 - u);
+  return P[k + stride + 1] * (u + w - 1) + right * (1 - w) + up * (1 - u);
 }
 function nearNy(near, x, z) {
   const { S } = NEAR, i = Math.min(S, Math.max(0, Math.round(terrainCoord(x)))), j = Math.min(S, Math.max(0, Math.round(terrainCoord(z))));
@@ -2744,8 +2768,8 @@ function uploadTerrain(mesh) {
   return { vao: vao(attrs, mesh.idx), count: mesh.fullCount, patches: mesh.patches, drawCounts: mesh.drawCounts, byteOffsets: mesh.byteOffsets };
 }
 function uploadWater(mesh) {
-  const attrs = [{ loc: loc(WATERP, 'aXZ'), size: 2, data: mesh.xz }, { loc: loc(WATERP, 'aWater'), size: 3, data: mesh.water },
-    { loc: loc(WATERP, 'aBedSlope'), size: 2, data: mesh.bedSlope }];
+  const attrs = [{ loc: 0, size: 2, data: mesh.xz }, { loc: 1, size: 3, data: mesh.water },
+    { loc: 2, size: 2, data: mesh.bedSlope }];
   return { vao: vao(attrs, mesh.idx), patches: mesh.patches,
     drawCounts: new Int32Array(mesh.patches.length), byteOffsets: new Int32Array(mesh.patches.length) };
 }
@@ -2846,7 +2870,11 @@ function buildValley() {
   bakeFloraSpill(pl);
   const wildlife = TEST || GRASS_LAB ? null : createWildlife(gl, ANIMAL, (x,z) => nearH(near,x,z), outsideView, touch);
   const sailwings = createSailwings({ gl, program, vao, worldVertex: WORLD_VS, groundAt: (x, z) => nearH(near, x, z), waterLevel, riverX, sc, stands, random: rng(971), windAt: (x,z) => wind.sample(x,z)*windStrength(), outsideView });
-  return { surface, boulderCells, near: uploadTerrain(near), wm: uploadWater(waterMesh(near)), heightRange, sailwings, wildlife, sc, rocks,
+  const terrain = uploadTerrain(near), wm = uploadWater(waterMesh(near));
+  // Resident animals keep sampling these heights after the mesh is uploaded.
+  // Release the staging arrays from the object their sampler holds.
+  near.pos = near.nor = near.ground = near.idx = null;
+  return { surface, boulderCells, near: terrain, wm, heightRange, sailwings, wildlife, sc, rocks,
     forest, leaves, grass, plants, coilView: plantView(pl, 3), lanternView: plantView(pl, 4) };
 }
 function uploadForest(stands) {
@@ -4020,17 +4048,28 @@ function common(p, eye, VP, mirror, t) {
     if (p === GRASS || p === CANOPY || p === JLEAF || p === PLANT) {
       gl.uniform3f(p.u('uBrush'), player.x, player.z, brush.cells.size ? 1 : 0);
     }
-    gl.uniform1f(p.u('uSurfaceMix'),surface.fraction);
+    gl.uniform1f(p.u('uSurfaceMix'),surface.textureMix);
   }
   gl.uniformMatrix4fv(p.u('uVP'), false, VP); gl.uniform3fv(p.u('uCam'), eye);
   gl.uniform1f(p.u('uMirror'), mirror); gl.uniform1f(p.u('uClip'), mirror < 0 ? reflectionLevel - 0.02 : -1e9);
 }
 const indexedMultiDraw = gl.getExtension('WEBGL_multi_draw');
-function drawIndexedPatches(mesh, planes, eye, focalPixels) {
+function drawIndexedPatches(mesh, planes, eye, focalPixels, waterRegion, useWater) {
   const { drawCounts, byteOffsets } = mesh;
-  let runs = 0, end = -1;
+  let runs = 0, end = -1, activeShader;
   for (const patch of mesh.patches) {
     if (outsideView(planes, patch, patch.width, patch.depth)) continue;
+    if (waterRegion) {
+      const touchesWake = patch.x0 <= waterRegion[2] && patch.x0 + patch.width >= waterRegion[0]
+        && patch.z0 <= waterRegion[3] && patch.z0 + patch.depth >= waterRegion[1];
+      const shader = touchesWake ? WAKE_WATER : WATERP;
+      if (shader !== activeShader) {
+        // Preserve the transparent surface's original patch order.
+        submitIndexedRuns(mesh,runs);
+        runs = 0; end = -1; activeShader = shader;
+        useWater(shader);
+      }
+    }
     let first = patch.first, last = patch.end;
     if (eye) {
       const dx = Math.max(patch.x0 - eye[0], 0, eye[0] - patch.x0 - patch.width);
@@ -4045,6 +4084,10 @@ function drawIndexedPatches(mesh, planes, eye, focalPixels) {
     drawCounts[runs - 1] += last - first;
     end = last;
   }
+  submitIndexedRuns(mesh,runs);
+}
+function submitIndexedRuns(mesh,runs) {
+  const { drawCounts, byteOffsets } = mesh;
   if (!runs) return;
   gl.bindVertexArray(mesh.vao);
   if (indexedMultiDraw && runs > 1) {
@@ -4087,7 +4130,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   if (opts.grass) {
     common(GRASS, eye, VP, mirror, t);
     if (bladeContact) {
-      gl.uniform1i(GRASS.u('uContactEnabled'), Number(contactOn && Boolean(fox) && started));
+      gl.uniform1i(GRASS.u('uContactEnabled'), Number(contactOn && Boolean(fox) && started && bladeContact.stats.roots > 0));
       gl.uniform1i(GRASS.u('uMarkContact'), Number(markContacts));
       gl.uniform1i(GRASS.u('uStillGrass'), Number(stillGrass));
       bladeContact.bind(GRASS);
@@ -4215,13 +4258,20 @@ function render(t, camOverride, glowTexture = texGlow, dt = 0) {
   if (waterInView) {
     copyUnderwater(w, h, waterInView);
     gl.colorMask(true, true, true, false);
-    common(WATERP, cam.eye, VP, 1, t);
-    swimmerWake.bind(gl,WATERP,t);
+    const wakeRegion = swimmerWake.prepare(t);
+    function useWater(shader) {
+      const first = shader.worldFrame !== frameNumber;
+      common(shader, cam.eye, VP, 1, t);
+      if (!first) return;
+      if (shader === WAKE_WATER) swimmerWake.bind(gl,shader);
+      gl.uniform2f(shader.u('uRes'), w, h);
+      gl.uniform2f(shader.u('uRightXZ'), b.r[0], b.r[2]);
+      gl.uniform1f(shader.u('uMirrorLevel'), reflectionLevel);
+    }
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, reflTex);
-    gl.uniform2f(WATERP.u('uRes'), w, h);
-    gl.uniform2f(WATERP.u('uRightXZ'), b.r[0], b.r[2]); gl.uniform1f(WATERP.u('uMirrorLevel'), reflectionLevel);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    drawIndexedPatches(wm, waterPlanes);
+    if (!wakeRegion) useWater(WATERP);
+    drawIndexedPatches(wm, waterPlanes, null, 0, wakeRegion, useWater);
   }
   gl.depthMask(false);
   gl.colorMask(true, true, true, true);

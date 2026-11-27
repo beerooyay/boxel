@@ -28,8 +28,8 @@ jobs:
           node bench/replay.mjs "$RUNNER_TEMP/tarn-replay.json" target/wasm32-unknown-unknown/release/boxel_ffi.wasm
       - name: Stage the browser demo and its WASM binding
         run: |
-          mkdir -p site/ffi
-          cp -R demo site/demo
+          mkdir -p site/ffi site/demo
+          rsync -a --exclude=/oak/ --exclude=/oak.js --exclude=/boxel.wasm demo/ site/demo/
           cp target/wasm32-unknown-unknown/release/boxel_ffi.wasm site/demo/boxel.wasm
           cp ffi/boxel.js site/ffi/
           sed 's|src="game.js"|src="./demo/game.js"|' demo/index.html > site/index.html

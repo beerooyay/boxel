@@ -30,12 +30,14 @@ vec4 cloudSample(vec3 origin, vec3 ray, vec4 anchor, float layer) {
   return col;
 }
 vec4 cloudColumn(vec3 origin, vec3 ray) {
+  if (uCloudLayerMix.y == 0.) return cloudSample(origin,ray,uLastCloudEye,uCloudLayerMix.z);
   vec4 col = cloudSample(origin,ray,uCloudEye,uCloudLayerMix.x);
   if (uCloudLayerMix.y < 1.)
     col = mix(cloudSample(origin,ray,uLastCloudEye,uCloudLayerMix.z),col,uCloudLayerMix.y);
   return col;
 }
 vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
+  if (all(equal(col, vec4(0.)))) return behind;
   float dusk = 1. - smoothstep(0.025, 0.39, uStarDir.y);
   vec3 ambientLight = mix(vec3(0.049, 0.084, 0.161), vec3(0.044, 0.061, 0.120), dusk);
   vec3 topLight = mix(vec3(0.13, 0.15, 0.215), vec3(0.21, 0.14, 0.15), dusk);
@@ -60,7 +62,7 @@ vec3 cloudLight(vec3 behind, vec3 ray, vec4 col) {
 // Three periodic nearest-feature distance fields. Splat each feature only into
 // the voxels it can reach, then let the GPU interpolate the packed octaves.
 function billowNoise(size) {
-  const bytes = new Uint8Array(size ** 3 * 4), mask = size - 1;
+  const bytes = new Uint8Array(size ** 3 * 3), mask = size - 1;
   let seed = 72512;
   const rand = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
   for (const [channel, cells] of [5, 11, 23].entries()) {
@@ -73,10 +75,12 @@ function billowNoise(size) {
         const dz = (k - cz) ** 2;
         for (let j = Math.ceil(cy - radius); j <= cy + radius; j++) {
           const yz = ((j - cy) ** 2 + dz) * inv;
+          if (yz >= 1.) continue;
+          const span = radius * Math.sqrt(1. - yz);
           const row = ((k & mask) * size + (j & mask)) * size;
-          for (let i = Math.ceil(cx - radius); i <= cx + radius; i++) {
+          for (let i = Math.ceil(cx - span); i <= cx + span; i++) {
             const v = Math.round(255 * (1 - yz - (i - cx) ** 2 * inv));
-            const dest = (row + (i & mask)) * 4 + channel;
+            const dest = (row + (i & mask)) * 3 + channel;
             if (v > bytes[dest]) bytes[dest] = v;
           }
         }
@@ -158,23 +162,26 @@ void main() {
   // phase so the lookup texture has neither random flecks nor a texel lattice.
   float phase = 0.5 + 0.31 * sin(19. * d.x + 11. * d.y) * sin(17. * d.z - 12. * d.y);
   float bias = 0.36 * smoothstep(1400., 7000., range);
-  float tileExit = -1., maxWater = 0.;
+  float tileExit = -1., tileTop = 0.;
   for (int i = 0; i < ${steps}; i++) {
     float a = float(i) / float(${steps}), b = float(i + 1) / float(${steps});
     float begin = start + range * mix(a, a * a, bias);
     float finish = start + range * mix(b, b * b, bias);
     float dist = mix(begin, finish, phase);
     vec3 p = uOrigin + d * dist;
-    if (uSkip) {
+    // A complete rain deck gives every cell a moisture floor of 0.33.
+    // Direct density sampling is cheaper there than walking tile boundaries.
+    if (uSkip && uRainDeck < 1.) {
       if (dist >= tileExit) {
         vec2 cell = (p.xz + WORLD * 0.5) / TILE;
-        maxWater = texelFetch(uTileMax, ivec2(mod(floor(cell), ${WEATHER_SIZE / WEATHER_TILE}.)), 0).r;
+        float maxWater = texelFetch(uTileMax, ivec2(mod(floor(cell), ${WEATHER_SIZE / WEATHER_TILE}.)), 0).r;
         maxWater = mix(maxWater, 0.33 + 0.64 * maxWater, uRainDeck);
+        tileTop = maxWater <= MIN_WATER ? -1e20 : uBase + 1.03 * ceiling(maxWater);
         vec2 remain = mix(fract(cell), 1. - fract(cell), step(vec2(0.), d.xz));
         vec2 crossing = remain * TILE / max(abs(d.xz), vec2(0.00001));
         tileExit = dist + min(crossing.x, crossing.y) - 0.01;
       }
-      if (maxWater <= MIN_WATER || p.y > uBase + 1.03 * ceiling(maxWater)) continue;
+      if (p.y > tileTop) continue;
     }
     float height, rho = density(p, height);
     if (rho <= 0.) continue;
@@ -209,11 +216,13 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  const map = texture(4, gl.R8, WEATHER_SIZE, WEATHER_SIZE, gl.LINEAR_MIPMAP_LINEAR, 1 + Math.log2(WEATHER_SIZE));
+  // Density samples levels 0 and 3.8. Level 4 completes the latter filter.
+  const map = texture(4, gl.R8, WEATHER_SIZE, WEATHER_SIZE, gl.LINEAR_MIPMAP_LINEAR, 5);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 4);
   const tiles = texture(5, gl.R8, WEATHER_SIZE / WEATHER_TILE, WEATHER_SIZE / WEATHER_TILE, gl.NEAREST);
   const noise = gl.createTexture();
   gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_3D, noise);
-  gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, 64, 64, 64, 0, gl.RGBA, gl.UNSIGNED_BYTE, billowNoise(64));
+  gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB8, 64, 64, 64, 0, gl.RGB, gl.UNSIGNED_BYTE, billowNoise(64));
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
@@ -221,6 +230,7 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
   const priorWater = weather.water.slice(), priorMaxima = weather.maxima.slice();
   const waterMix = weather.water.slice(), maxMix = weather.maxima.slice();
   const WEATHER_PERIOD = 4;
+  let weatherTick = 0, uploadedTick = -1, uploadedFraction = -1;
   let front = 0, shown, previous, pending, row = 0, swappedAt = 0, blend = 1, weatherAge = 0;
   let blendDuration = 1;
   let lastLayer = 0;
@@ -248,6 +258,12 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
     gl.disable(gl.SCISSOR_TEST); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
   function upload(fraction) {
+    // The initial two snapshots coincide. Every subsequent pair is stable
+    // until the engine advances, even as the camera starts another bake.
+    if (weatherTick === 0) fraction = 0;
+    if (uploadedTick === weatherTick && uploadedFraction === fraction) return;
+    uploadedTick = weatherTick;
+    uploadedFraction = fraction;
     for (let i = 0; i < waterMix.length; i++) waterMix[i] = Math.round(priorWater[i] + fraction * (weather.water[i] - priorWater[i]));
     // An upward-rounded crossfade of maxima bounds every interpolated texel
     // in the tile, including the bilinear apron.
@@ -313,6 +329,7 @@ export function createClouds(gl, program, triangle, boxel, { mobile, test, sourc
       priorWater.set(weather.water);
       priorMaxima.set(weather.maxima);
       weather.advance(sun, rain, time - weatherAge, wet);
+      weatherTick++;
     }
   }
   // Read the spare layer only when the browser fixture compares marches.

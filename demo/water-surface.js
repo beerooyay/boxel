@@ -41,7 +41,7 @@ export function createWaterSurface(grid, bedAt) {
     damping = c2.slice(),
     flowX = Float32Array.from(vx),
     flowZ = Float32Array.from(vz);
-  const shore = c2.slice();
+  const shore = c2.slice(), localCell = new Uint8Array(count);
   function neighbour(id, pixel) {
     const other = lookup[pixel];
     return other && Math.abs(levels[id] - levels[other]) < 0.35 ? other : id;
@@ -49,6 +49,7 @@ export function createWaterSurface(grid, bedAt) {
   for (let k = 1; k < count; k++) {
     const p = texel[k],
       i = p % width;
+    localCell[k] = (Math.floor(p / width) & 15) * TILE + (i & 15);
     west[k] = i === 0 ? k : neighbour(k, p - 1);
     east[k] = i === width - 1 ? k : neighbour(k, p + 1);
     north[k] = neighbour(k, p - width);
@@ -67,7 +68,7 @@ export function createWaterSurface(grid, bedAt) {
     next = active.slice();
   const dirty = active.slice(),
     excitation = new Float32Array(count);
-  let remainder = 0;
+  let remainder = 0, currentLayer = 1;
   function locate(x, z) {
     const i = Math.floor((x - x0) / step),
       j = Math.floor((z - z0) / step);
@@ -157,6 +158,7 @@ export function createWaterSurface(grid, bedAt) {
     active[(row>>4)*tileCols+((p%width)>>4)]=1;
   }
   function tick(windX, windZ, windAt) {
+    currentLayer = 1 - currentLayer;
     next.fill(0);
     for (let t = 0; t < tiles.length; t++) {
       if (!active[t]) continue;
@@ -168,17 +170,14 @@ export function createWaterSurface(grid, bedAt) {
       const sw = windAt ? windAt(left, top + side) : 1,
         se = windAt ? windAt(left + side, top + side) : 1;
       let awake = false;
-      dirty[t] = 1;
+      dirty[t] |= 1 << currentLayer;
       for (const k of tiles[t]) {
         const l = west[k],
           r = east[k],
           n = north[k],
           s = south[k];
-        const p = texel[k],
-          i = p % width,
-          j = Math.floor(p / width);
-        const u = ((i & 15) + 0.5) / TILE,
-          w = ((j & 15) + 0.5) / TILE;
+        const i = localCell[k] & 15, j = localCell[k] >> 4;
+        const u = (i + 0.5) / TILE, w = (j + 0.5) / TILE;
         const gust = ((nw + (ne - nw) * u) * (1 - w) + (sw + (se - sw) * u) * w) * shore[k];
         const ax = ((flowX[k] + windX * gust) * DT) / step,
           az = ((flowZ[k] + windZ * gust) * DT) / step;
@@ -199,13 +198,16 @@ export function createWaterSurface(grid, bedAt) {
         oldLight[k] = dye;
         if (Math.abs(vel) + Math.abs(heightNext) * 6 + dye < 0.0005) continue;
         awake = true;
-        if ((i & 15) === 0 && l !== k) next[t - 1] = 1;
-        if ((i & 15) === 15 && r !== k) next[t + 1] = 1;
-        if ((j & 15) === 0 && n !== k) next[t - tileCols] = 1;
-        if ((j & 15) === 15 && s !== k) next[t + tileCols] = 1;
+        if (i === 0 && l !== k) next[t - 1] = 1;
+        if (i === 15 && r !== k) next[t + 1] = 1;
+        if (j === 0 && n !== k) next[t - tileCols] = 1;
+        if (j === 15 && s !== k) next[t + tileCols] = 1;
       }
       if (awake) next[t] = 1;
-      else for (const k of tiles[t]) h[k] = previous[k] = v[k] = vNext[k] = light[k] = oldLight[k] = 0;
+      else {
+        dirty[t] = 3;
+        for (const k of tiles[t]) h[k] = previous[k] = v[k] = vNext[k] = light[k] = oldLight[k] = 0;
+      }
     }
     [h, previous] = [previous, h];
     [v, vNext] = [vNext, v];
@@ -219,23 +221,25 @@ export function createWaterSurface(grid, bedAt) {
       remainder = Math.max(0, remainder - DT);
     }
   }
-  function pack(tile, bytes) {
+  function pack(tile, layer, bytes) {
+    const f = layer === currentLayer ? h : previous;
+    const d = layer === currentLayer ? light : oldLight;
+    const base = layer * width * height;
+    let changed = false;
     for (const k of tiles[tile]) {
-      const p = texel[k] * 4,
-        l = west[k],
-        r = east[k],
-        n = north[k],
-        s = south[k];
-      for (let frame = 0; frame < 2; frame++) {
-        const f = frame ? h : previous,
-          d = frame ? light : oldLight,
-          i = p + frame * width * height * 4;
-        bytes[i] = 128 + Math.round(clamp(720 * f[k], -127, 127));
-        bytes[i + 1] = 128 + Math.round(clamp(((f[r] - f[l]) * 170) / step, -127, 127));
-        bytes[i + 2] = 128 + Math.round(clamp(((f[s] - f[n]) * 170) / step, -127, 127));
-        bytes[i + 3] = Math.round(clamp(d[k], 0, 1) * 255);
-      }
+      const i = (base + texel[k]) * 4;
+      const red = 128 + Math.round(clamp(720 * f[k], -127, 127));
+      const green = 128 + Math.round(clamp(((f[east[k]] - f[west[k]]) * 170) / step, -127, 127));
+      const blue = 128 + Math.round(clamp(((f[south[k]] - f[north[k]]) * 170) / step, -127, 127));
+      const alpha = Math.round(clamp(d[k], 0, 1) * 255);
+      if (red === bytes[i] && green === bytes[i+1] && blue === bytes[i+2] && alpha === bytes[i+3]) continue;
+      bytes[i] = red;
+      bytes[i+1] = green;
+      bytes[i+2] = blue;
+      bytes[i+3] = alpha;
+      changed = true;
     }
+    return changed;
   }
   function reset() {
     h.fill(0);
@@ -244,11 +248,12 @@ export function createWaterSurface(grid, bedAt) {
     vNext.fill(0);
     light.fill(0);
     oldLight.fill(0);
-    for (let t = 0; t < tiles.length; t++) if (active[t]) dirty[t] = 1;
+    for (let t = 0; t < tiles.length; t++) if (active[t] || dirty[t]) dirty[t] = 3;
     active.fill(0);
     next.fill(0);
     excitation.fill(0);
     remainder = 0;
+    currentLayer = 1;
   }
   return {
     touch,
@@ -263,6 +268,9 @@ export function createWaterSurface(grid, bedAt) {
     tileCols,
     tileRows,
     dirty,
+    get textureMix() {
+      return currentLayer === 1 ? remainder / DT : 1 - remainder / DT;
+    },
     get fraction() {
       return remainder / DT;
     },
@@ -292,41 +300,37 @@ export function waterTexture(gl, surface, unit) {
   gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   return function upload() {
     const { dirty, tileCols, tileRows } = surface;
-    if (!dirty.includes(1)) return;
+    let layers = 0;
+    for (let tile = 0; tile < dirty.length; tile++) {
+      const mask = dirty[tile];
+      if (!mask) continue;
+      let changed = 0;
+      if ((mask & 1) && surface.pack(tile, 0, data)) changed |= 1;
+      if ((mask & 2) && surface.pack(tile, 1, data)) changed |= 2;
+      dirty[tile] = changed;
+      layers |= changed;
+    }
+    if (!layers) return;
     gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(target, tex);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, width);
-    gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, height);
-    for (let row = 0; row < tileRows; row++)
-      for (let col = 0; col < tileCols; ) {
-        if (!dirty[row * tileCols + col]) {
-          col++;
-          continue;
+    for (let layer = 0; layer < 2; layer++) {
+      const bit = 1 << layer;
+      if (!(layers & bit)) continue;
+      for (let row = 0; row < tileRows; row++) {
+        const rowStart = row * tileCols;
+        for (let col = 0; col < tileCols;) {
+          if (!(dirty[rowStart + col] & bit)) { col++; continue; }
+          const x = col * TILE, y = row * TILE;
+          do { col++; } while (col < tileCols && (dirty[rowStart + col] & bit));
+          gl.texSubImage3D(target, 0, x, y, layer, Math.min(width, col * TILE) - x,
+            Math.min(TILE, height - y), 1, gl.RGBA, gl.UNSIGNED_BYTE, data,
+            ((layer * height + y) * width + x) * 4);
         }
-        const x = col * TILE,
-          y = row * TILE;
-        do {
-          const tile = row * tileCols + col++;
-          surface.pack(tile, data);
-          dirty[tile] = 0;
-        } while (col < tileCols && dirty[row * tileCols + col]);
-        gl.texSubImage3D(
-          target,
-          0,
-          x,
-          y,
-          0,
-          Math.min(width, col * TILE) - x,
-          Math.min(TILE, height - y),
-          2,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          data,
-          (y * width + x) * 4
-        );
       }
+    }
+    dirty.fill(0);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
-    gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, 0);
   };
 }
 

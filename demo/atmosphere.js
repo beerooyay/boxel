@@ -67,20 +67,13 @@ float canopyCover(vec3 wp) {
 
 // Approximate how much overhead sky remains visible below each crown. Use the
 // actual area and height of the leaves, then blur over a few metres of sky.
-export function bakeCanopy(gl, groundLeaves, forest, extent, oaks = []) {
+export function bakeCanopy(gl, groundLeaves, forest, extent) {
   const size = extent, area = new Float32Array(size * size), moment = new Float32Array(area.length);
   function deposit(x, y, z, cover) {
     const ix = Math.floor(x + size / 2), iz = Math.floor(z + size / 2);
     if (ix < 0 || ix >= size || iz < 0 || iz >= size) return;
     const k = iz * size + ix;
     area[k] += cover; moment[k] += cover * y;
-  }
-  for (const {x,y,z,height} of oaks) {
-    const r=height*0.36;
-    for(let dz=-Math.ceil(r);dz<=r;dz++) for(let dx=-Math.ceil(r);dx<=r;dx++) {
-      const core=1-(dx*dx+dz*dz)/(r*r);
-      if(core>0) deposit(x+dx,y+height*(0.65+0.23*core),z+dz,1.7*core);
-    }
   }
   const { R, D, M } = groundLeaves;
   for (let i = 0; i < R.length; i += 4) {
@@ -100,18 +93,29 @@ export function bakeCanopy(gl, groundLeaves, forest, extent, oaks = []) {
     }
   }
   const data = new Uint8Array(area.length * 2);
-  for (let z = 0; z < size; z++) for (let x = 0; x < size; x++) {
-    let mass = 0, y = 0;
-    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
-      if (x + dx < 0 || x + dx >= size || z + dz < 0 || z + dz >= size) continue;
-      const k = (z + dz) * size + x + dx, w = (3 - Math.abs(dx)) * (3 - Math.abs(dz)) / 81;
-      mass += area[k] * w; y += moment[k] * w;
+  // The 5 × 5 crown footprint is the product of two triangular filters.
+  // Keep one row of vertical sums with a zero border for the horizontal pass.
+  const massRow = new Float64Array(size + 4), momentRow = new Float64Array(size + 4);
+  function horizontal(row, x) {
+    return row[x] + row[x+4] + 2*(row[x+1]+row[x+3]) + 3*row[x+2];
+  }
+  for (let z = 0; z < size; z++) {
+    massRow.fill(0); momentRow.fill(0);
+    for (let rz = Math.max(0, z-2); rz <= Math.min(size-1, z+2); rz++) {
+      const weight = 3 - Math.abs(rz-z), offset = rz * size;
+      for (let x = 0; x < size; x++) {
+        massRow[x+2] += weight * area[offset+x];
+        momentRow[x+2] += weight * moment[offset+x];
+      }
     }
-    const i = 2 * (z * size + x);
-    const density = 1 - Math.exp(-0.55 * mass);
-    data[i] = Math.round(255 * density);
-    // Premultiply the height so bilinear filtering preserves it at a crown edge.
-    data[i + 1] = Math.round(255 * density * Math.min(1, Math.max(0, (y / (mass || 1) + 4) / 40)));
+    for (let x = 0; x < size; x++) {
+      const mass = horizontal(massRow, x), y = horizontal(momentRow, x);
+      const i = 2 * (z * size + x);
+      const density = 1 - Math.exp(-0.55 * mass / 81);
+      data[i] = Math.round(255 * density);
+      // Premultiply the height so bilinear filtering preserves it at a crown edge.
+      data[i + 1] = Math.round(255 * density * Math.min(1, Math.max(0, (y / (mass || 1) + 4) / 40)));
+    }
   }
   gl.activeTexture(gl.TEXTURE12);
   gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());

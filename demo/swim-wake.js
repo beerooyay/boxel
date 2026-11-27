@@ -69,18 +69,22 @@ export function createSwimWake(surface, levelAt, emitLight) {
   const history=new Float32Array(PARTS*SAMPLES*4);
   const output=history.slice();
   const ages=new Float32Array(SAMPLES);
+  const region=new Float32Array(4);
   const timestamps=new Float64Array(SAMPLES-1);
   const water={};
   let head=0, count=0, next=0, bowX=0, bowZ=0;
   let forwardX=0, forwardZ=1, bowWidth=0, bowForce=0, wakeLevel=0;
   const contact={};
+  let lastForced=-Infinity;
 
   function update(fox, origin, basis, xSpeed, zSpeed, dt, t, swimming, night) {
     const [x,y,z]=origin, level=levelAt(x,z);
     const nearby=y<level+0.22;
     const centreWet=nearby && surface.contactAt(x,z,water);
     const slopeX=centreWet ? water.slopeX : 0, slopeZ=centreWet ? water.slopeZ : 0;
-    const fx=basis[6]/Math.hypot(basis[6],basis[8]), fz=basis[8]/Math.hypot(basis[6],basis[8]);
+    const forwardLength=Math.hypot(basis[6],basis[8]);
+    const fx=basis[6]/forwardLength, fz=basis[8]/forwardLength;
+    const velocityBlend=-Math.expm1(-18*dt), forceBlend=-Math.expm1(-14*dt);
     forwardX=fx; forwardZ=fz;
     const flowX=centreWet ? water.vx : 0, flowZ=centreWet ? water.vz : 0;
     const speed=Math.hypot(xSpeed-flowX,zSpeed-flowZ);
@@ -110,14 +114,15 @@ export function createSwimWake(surface, levelAt, emitLight) {
       const width=i===0 ? Math.max(0.065,side) : Math.max(0.028,Math.min(0.18,Math.max(side,length*0.6)));
       let vx=xSpeed, vz=zSpeed;
       if (wet && part.wet) {
-        vx=part.vx+(Math.max(-5,Math.min(5,(px-part.x)/dt))-part.vx)*-Math.expm1(-18*dt);
-        vz=part.vz+(Math.max(-5,Math.min(5,(pz-part.z)/dt))-part.vz)*-Math.expm1(-18*dt);
+        vx=part.vx+(Math.max(-5,Math.min(5,(px-part.x)/dt))-part.vx)*velocityBlend;
+        vz=part.vz+(Math.max(-5,Math.min(5,(pz-part.z)/dt))-part.vz)*velocityBlend;
       }
       const movement=wet ? Math.hypot(vx-contact.vx,vz-contact.vz) : 0;
       const force=i===0 ? Math.min(1.35,Math.max(0,(speed-0.07)*0.84))
         : Math.min(0.67,Math.max(0,movement-0.11)*(i===5 ? 0.24 : 0.27)*Math.sqrt(width/0.075));
-      part.force += ((wet ? force : 0)-part.force)*-Math.expm1(-14*dt);
+      part.force += ((wet ? force : 0)-part.force)*forceBlend;
       if (wet) {
+        if (part.force>=0.004) lastForced=t;
         wakeLevel=level;
         if (i===0) {
           bowX=px; bowZ=pz; bowWidth=width;
@@ -164,7 +169,9 @@ export function createSwimWake(surface, levelAt, emitLight) {
     buffer[k+3]=part.width;
   }
 
-  function bind(gl, shader, t) {
+  function prepare(t) {
+    if (t-lastForced>0.58) return null;
+    for (let j=1; j<SAMPLES; j++) ages[j]=t-timestamps[(head-j+timestamps.length)%timestamps.length];
     let minX=Infinity, minZ=Infinity, maxX=-Infinity, maxZ=-Infinity;
     function include(x,z,r) {
       minX=Math.min(minX,x-r); minZ=Math.min(minZ,z-r);
@@ -191,14 +198,18 @@ export function createSwimWake(surface, levelAt, emitLight) {
         output[k+2]=output[k+3]=0;
         if (j>count || age<0 || age>0.58) continue;
         const at=(slot*PARTS+i)*4;
-        output.set(history.subarray(at,at+4),k);
+        output[k]=history[at]; output[k+1]=history[at+1];
+        output[k+2]=history[at+2]; output[k+3]=history[at+3];
         if (output[k+2]>0.004) include(output[k],output[k+1],0.60+1.35*age+output[k+3]);
       }
     }
-    gl.uniform4f(shader.u('uWakeBounds'),minX===Infinity ? 1 : minX,minX===Infinity ? 1 : minZ,
-      minX===Infinity ? -1 : maxX,minX===Infinity ? -1 : maxZ);
-    if (minX===Infinity) return;
-    for (let j=1; j<SAMPLES; j++) ages[j]=t-timestamps[(head-j+timestamps.length)%timestamps.length];
+    if (minX===Infinity) return null;
+    region[0]=minX; region[1]=minZ; region[2]=maxX; region[3]=maxZ;
+    return region;
+  }
+
+  function bind(gl,shader) {
+    gl.uniform4fv(shader.u('uWakeBounds'),region);
     gl.uniform1fv(shader.u('uWakeAges[0]'),ages);
     gl.uniform4fv(shader.u('uWakePath[0]'),output);
     gl.uniform1f(shader.u('uWakeLevel'),wakeLevel);
@@ -208,9 +219,10 @@ export function createSwimWake(surface, levelAt, emitLight) {
 
   function reset() {
     head=count=next=bowForce=0;
+    lastForced=-Infinity;
     for (const part of parts) { part.wet=false; part.force=0; }
   }
-  return { update, bind, reset };
+  return { update, prepare, bind, reset };
 }
 
 export const swimmerWakeGLSL = `

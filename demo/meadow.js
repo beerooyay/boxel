@@ -242,6 +242,7 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
   }
   gl.bindVertexArray(null); gl.useProgram(shader); gl.uniform2fv(shader.u('uGrassHeight'), heightRange);
   const visible = [];
+  let nearby = null;
   for(const tile of tiles)
     tile.fieldTile=Math.floor((tile.z0+half)/tileSize)*(extent/tileSize)+Math.floor((tile.x0+half)/tileSize);
   const signals = shader.u('uGrassFields');
@@ -249,9 +250,13 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
   return {
     count, heightRange, siteRate:maxSide/tileSize,
     nearRoots(x,z,reach) {
+      const x0=Math.floor((x-reach)/binSize), x1=Math.floor((x+reach)/binSize);
+      const z0=Math.floor((z-reach)/binSize), z1=Math.floor((z+reach)/binSize);
+      if (nearby && nearby.x0===x0 && nearby.x1===x1 && nearby.z0===z0 && nearby.z1===z1) return nearby.groups;
       const groups=[];
-      for(let iz=Math.floor((z-reach)/binSize);iz<=Math.floor((z+reach)/binSize);iz++)
-        for(let ix=Math.floor((x-reach)/binSize);ix<=Math.floor((x+reach)/binSize);ix++) {
+      nearby={x0,x1,z0,z1,groups};
+      for(let iz=z0;iz<=z1;iz++)
+        for(let ix=x0;ix<=x1;ix++) {
           const group=contactBins.get(ix+4096*iz);
           if(!group) continue;
           const prior=groups[groups.length-1];
