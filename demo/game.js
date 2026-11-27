@@ -268,7 +268,10 @@ const CFMT = HDR ? gl.RGBA16F : gl.RGBA8, CTYPE = HDR ? gl.HALF_FLOAT : gl.UNSIG
 // The HDR colour and depth formats must both support the chosen sample count.
 const colorSamples = gl.getInternalformatParameter(gl.RENDERBUFFER, CFMT, gl.SAMPLES);
 const depthSamples = gl.getInternalformatParameter(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, gl.SAMPLES);
-const SAMPLES = Math.max(0, ...colorSamples.filter(n => n <= 4 && depthSamples.includes(n)));
+const commonSamples = colorSamples.filter(n => n > 1 && n <= 4 && depthSamples.includes(n));
+const lightSamples = Math.max(0, ...commonSamples.filter(n => n <= 2));
+const preferredSamples = GRASS_LAB && lightSamples ? lightSamples : Math.max(0, ...commonSamples);
+let sceneSamples = preferredSamples;
 
 // ---------------------------------------------------------------- shaders
 const HEAD = `#version 300 es
@@ -3154,17 +3157,17 @@ function fboFor(t, depth) {
 }
 const post = { w: 0, h: 0, ms: null, previous: null, write: 0 };
 function ensurePost(w, h) {
-  if (post.w === w && post.h === h) return;
+  if (post.w === w && post.h === h && post.samples === sceneSamples) return;
   if (post.res) {
     for (const f of [post.ms, post.resF, ...post.mips.map((m) => m.f), post.rays.f, post.mist.f, post.under?.f, ...post.history.map(m => m.f)]) if (f) gl.deleteFramebuffer(f);
     for (const t of [post.res, ...post.mips.map((m) => m.t), post.rays.t, post.depth, post.mist.t, post.under?.t, ...post.history.map(m => m.t)]) if (t) gl.deleteTexture(t);
     for (const rb of [post.msC, post.msD]) if (rb) gl.deleteRenderbuffer(rb);
   }
-  post.w = w; post.h = h; post.ms = null;
+  post.w = w; post.h = h; post.samples = sceneSamples; post.ms = post.msC = post.msD = null;
   post.res = colorTex(w, h);
-  if (SAMPLES > 1) {
-    post.msC = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, post.msC); gl.renderbufferStorageMultisample(gl.RENDERBUFFER, SAMPLES, CFMT, w, h);
-    post.msD = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, post.msD); gl.renderbufferStorageMultisample(gl.RENDERBUFFER, SAMPLES, gl.DEPTH_COMPONENT24, w, h);
+  if (sceneSamples > 1) {
+    post.msC = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, post.msC); gl.renderbufferStorageMultisample(gl.RENDERBUFFER, sceneSamples, CFMT, w, h);
+    post.msD = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, post.msD); gl.renderbufferStorageMultisample(gl.RENDERBUFFER, sceneSamples, gl.DEPTH_COMPONENT24, w, h);
     post.ms = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, post.ms);
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, post.msC); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, post.msD);
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
@@ -3972,7 +3975,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   // The half-resolution water image uses fewer, wider leaf strips to preserve canopy cover.
   common(JLEAF, eye, VP, mirror, t);
   // Cards resolve their leaf edges by coverage where the view is multisampled; the alpha channel is left alone.
-  const coverage = mirror > 0 && SAMPLES > 1 && !opts.crop;
+  const coverage = mirror > 0 && Boolean(post.ms) && !opts.crop;
   gl.uniform1i(JLEAF.u('uCoverage'), coverage);
   if (coverage) { gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true, true, true, false); }
   leaves.draw(planes, eye, mirror < 0 ? 0.62 : 1);
@@ -4181,6 +4184,7 @@ function adaptDensity(rawDt) {
   const slow = med > 1 / 50 || p90 > 1 / 33;
   if (slow) {
     if (med > 1 / 32) {
+      sceneSamples = lightSamples;
       renderScale = Math.max(0.72, renderScale * 0.86);
       grassDensity = Math.max(0.30, grassDensity * 0.85);
     } else if (grassDensity > 0.6) grassDensity *= 0.85;
@@ -4190,6 +4194,7 @@ function adaptDensity(rawDt) {
   } else if (med < 1 / 57 && p90 < 1 / 52 && warm > coolUntil) {
     if (renderScale < 1) renderScale = Math.min(1, renderScale * 1.06);
     else if (grassDensity < 1) grassDensity = Math.min(1, grassDensity * 1.08);
+    else sceneSamples = preferredSamples;
   }
 }
 let capture;
@@ -4549,7 +4554,7 @@ function scripted(m, frames = 900, view = 'shore') {
       player.grounded = true; player.onStone = false; player.vy = player.flight = 0;
       foxPose.yaw = player.yaw; foxPose.pitch = foxPose.roll = 0; foxPose.height = chase.height = H(player.x, player.z);
       chase.arm = 3.55; post.previous = null;
-    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, samples: SAMPLES, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started,
+    }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), gait: fox?.gait, started,
     ...(GRASS_LAB && { grassLab: { occupied: contactOn ? contactGrid.occupied : 0, contactMs: bladeContact.stats.cpuMs, activeRoots: bladeContact.stats.roots, uploadBytes: bladeContact.stats.uploadBytes, coupled, markContacts, stillGrass, contactOn, view: labView } }),
     blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, leaves: leaves.count, plants: plants.count, grassDrawn } }) };
   if (TEST) {
