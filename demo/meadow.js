@@ -1,6 +1,58 @@
 // Roots use one eight-byte record. Wind, pigment and bend parameters reuse one
 // shuffled detail buffer across all tiles. Only visible tile prefixes are drawn.
 export const MEADOW_TILE = 8;
+export const GRASS_PULSES = 6;
+
+// A planted step excites its neighbouring tufts for less than a second.
+// Each tile carries six bits so distant grass skips the wave calculation.
+export class GrassPulses {
+  constructor(half) {
+    this.half = half;
+    this.side = Math.ceil(2 * half / MEADOW_TILE);
+    this.tiles = new Uint8Array(this.side * this.side);
+    this.waves = new Float32Array(4 * GRASS_PULSES);
+    this.birth = new Float64Array(GRASS_PULSES);
+    this.reset();
+  }
+  reset() {
+    this.birth.fill(-Infinity);
+    this.tiles.fill(0);
+    this.next = 0;
+    this.active = false;
+  }
+  touch(x, z, now) {
+    const i = this.next;
+    this.waves[4*i] = x;
+    this.waves[4*i+1] = z;
+    this.birth[i] = now;
+    this.next = (i+1) % GRASS_PULSES;
+    this.active = true;
+  }
+  update(now) {
+    if (!this.active) return false;
+    this.tiles.fill(0);
+    this.active = false;
+    for (let i=0; i<GRASS_PULSES; i++) {
+      const age = now - this.birth[i];
+      if (age < 0 || age >= 0.88) continue;
+      this.active = true;
+      const k = 4*i, radius = 0.10 + 0.86*age;
+      const fade = Math.max(0, (age-0.18)/0.70);
+      this.waves[k+2] = radius;
+      this.waves[k+3] = Math.min(1, age/0.055) * (1-fade*fade*(3-2*fade));
+      // Includes the widest edge of the band and its variation between tufts.
+      const reach = (radius*1.12 + 0.26)/0.86;
+      const x = this.waves[k]+this.half, z = this.waves[k+1]+this.half;
+      const x0 = Math.max(0,Math.floor((x-reach)/MEADOW_TILE));
+      const z0 = Math.max(0,Math.floor((z-reach)/MEADOW_TILE));
+      const x1 = Math.min(this.side-1,Math.floor((x+reach)/MEADOW_TILE));
+      const z1 = Math.min(this.side-1,Math.floor((z+reach)/MEADOW_TILE));
+      for (let row=z0; row<=z1; row++)
+        for (let col=x0; col<=x1; col++) this.tiles[row*this.side+col] |= 1<<i;
+    }
+    return this.active;
+  }
+}
 export const SISTER_ONE = 0.16, SISTER_TWO = 0.40;
 const FULL_COVER = 14, DETAIL_END = 18;
 const ADAPT_START = 10, ADAPT_END = 30, FAR_FADE = 22;

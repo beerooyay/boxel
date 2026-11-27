@@ -1,4 +1,4 @@
-import { createWaterfall, crestGLSL, fallsBounds, landingAt, lipZ, plungeGLSL } from './waterfall.js';
+import { createWaterfall, crestGLSL, fallsBounds, landingAt, lipZ, plungeGLSL, swimmerWaterlineGLSL } from './waterfall.js';
 import { basinGrid, createWaterSurface, waterTexture, waterSurfaceGLSL } from './water-surface.js';
 import { createSwimWake, swimmerWakeGLSL } from './swim-wake.js';
 import { advanceFlight, jumpDuration, requestJump, steerFox } from './fox-motion.js';
@@ -18,7 +18,7 @@ import { loadLeafSprays, uploadLeafSprays, sprayGLSL, STRAP_ASPECT } from './lea
 import { barkTile, loadSurface, uploadSurface } from './surface-texture.js';
 import { galaxyFragment } from './galaxy.js';
 import { FieldTexture } from './field-texture.js';
-import { bakeMeadow, MEADOW_TILE, BLADE_HEIGHT_RANGE, CLUMP, clumpGLSL, meadowLodGLSL, SISTER_ONE, SISTER_TWO } from './meadow.js';
+import { bakeMeadow, MEADOW_TILE, BLADE_HEIGHT_RANGE, CLUMP, clumpGLSL, meadowLodGLSL, SISTER_ONE, SISTER_TWO, GrassPulses, GRASS_PULSES } from './meadow.js';
 import { BrushField } from './brush.js';
 import { waterBounds } from './water-view.js';
 import { stoneBed, stoneDrop, stoneSpacing } from './stone-bed.js';
@@ -304,6 +304,9 @@ precision highp int;
 const FSQ = `out vec2 vUv; void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); vUv = p; gl_Position = vec4(p * 2. - 1., 0., 1.); }`;
 // the lake's surface: a slow swell under two wind-driven wavetrains, a few centimetres high. x is the height, yz its gradient
 const WAVES = waterSurfaceGLSL + crestGLSL + `
+float planktonLight(float charge){
+  return (charge/(0.045+charge)) * (charge/(0.65+charge));
+}
 vec3 waterWave(vec2 p, float t){
   vec2 k1 = vec2(0.21, 0.13), k2 = vec2(-0.27, 0.46), k3 = vec2(1.38, -0.8);
   vec2 curlK=vec2(-0.23,0.29);
@@ -744,7 +747,7 @@ void main(){
 
 // Air and overhead shelter change slowly across the terrain mesh. Keep the
 // fine shadow comparisons, material normals and field filaments at each pixel.
-const ANIMAL = TEST ? null : animalProgram(program, WORLD_VS);
+const ANIMAL = TEST ? null : animalProgram(program, WORLD_VS + swimmerWaterlineGLSL);
 const TERRAIN = program(WORLD_VS + valleyAir + canopyShelter + `
 in vec3 aPos; in vec4 aNor; in vec2 aGround; out vec4 vAir; out float vCover; out vec3 vGround; out vec3 vWP; out vec3 vN;
 void main(){
@@ -1294,6 +1297,7 @@ uniform vec2 uGrassHeight; uniform int uBladeRows;
 const int uGrassFields=7;
 #else
 uniform int uGrassFields;
+uniform vec4 uGrassPulses[${GRASS_PULSES}];
 #endif
 centroid out vec3 vWP; centroid out vec4 vGA; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
 flat out vec4 vGrassColour; centroid out vec4 vAir; centroid out float vDry;
@@ -1426,10 +1430,13 @@ void main(){
   vec3 across = rotateFoliage(vec3(ax.x, 0., ax.y), hinge, vec2(upright, bow));
   vec3 centre = vec3(aG.x, aG.z, aG.y) + arc * by * vec3(lean.x * horizontal, vertical, lean.y * horizontal);
   vec3 p = centre + across * (side * wd);
+  float contactLight = 0.;
 #ifdef GRASS_LAB
   vContact=0.;
 #endif
 #ifdef BLADE_CONTACT
+  // The contact solve already relays bends to touching stems on the next
+  // tick. Their light follows the interpolated bend as those stems spring back.
   ivec2 site=bladeSite(aG.xy), slot=site-uSiteBase;
   if(uContactEnabled && by>0. && onPage(slot)) {
     float f=by*4.;
@@ -1443,19 +1450,35 @@ void main(){
       hi.xyz=mix(knot(uBladeLast,lastDest,k).xyz,hi.xyz,uBladeMix);
     }
     vec3 offset=mix(lo.xyz,hi.xyz,f-float(k));
-    if(dot(offset,offset)>0.000001) {
+    float flex2=dot(offset,offset);
+    if(flex2>0.000001) {
       tangent=normalize(tangent+(hi.xyz-lo.xyz)*(4./max(arc,0.01)));
       across=normalize(across-tangent*dot(across,tangent)+vec3(0.000001,0.,0.));
       p=centre+offset+across*(side*wd);
+      if (uNight>0.) contactLight=0.085*flex2/(0.0036+flex2);
     }
 #ifdef GRASS_LAB
     if(uMarkContact) vContact=hi.w>0.9 ? 1. : hi.w>0.4 ? -1. : 0.;
 #endif
   }
 #endif
+  // Only rooted blades in reached tiles take part. Offset the front per tuft
+  // so the light catches small groups in succession, with gaps between them.
+  int waves = uGrassFields >> 3;
+  for (int i=0; waves!=0; i++, waves>>=1) {
+    if ((waves & 1)==0) continue;
+    vec4 pulse = uGrassPulses[i];
+    vec2 delta = aG.xy-pulse.xy;
+    float d2 = dot(delta,delta);
+    if (d2>1.52) continue;
+    float distanceInStand = sqrt(d2 + 0.24*delta.x*delta.y) * (0.96+0.08*tuft);
+    float front = abs(distanceInStand-pulse.z*(0.88+0.24*tuft));
+    float band = 1.-smoothstep(0.035,0.26,front);
+    contactLight = max(contactLight, pulse.w*band*(0.11+0.15*tuft));
+  }
   vec3 face = cross(tangent, across);
   vN = normalize(-face + tangent * (0.48 + 0.41 * by) + across * (side * 0.88));
-  vGA = vec4(by, aR.z, 2. * side, bow); vWP = p; vGlow = glow; vWet = wet; vPatch = aR.y;
+  vGA = vec4(by, aR.z, 2. * side, bow); vWP = p; vGlow = glow + contactLight; vWet = wet; vPatch = aR.y;
   // last season's blades still standing: a few everywhere, more in some tufts, many along the tread
   vDry = step(deadRoll, 0.05 + 0.3 * tuft * tuft * tuft + 0.24 * edge);
   // Pigment belongs to the whole blade. The folded normal and glints still resolve per pixel.
@@ -1798,6 +1821,15 @@ void main(){
   vec3 body = mix(vec3(0.046, 0.255, 0.184), vec3(0.008, 0.077, 0.117), absorb) * (1. + loss * through);
   float sun = directLight(vWP);
   body *= ambient(N) * 2.8 + uSunCol * sun * (0.12 + 0.14 * max(uSunDir.y, 0.));
+  if (uNight > 0. && disturbance.a > 0.) {
+    // Light within the stirred water shifts underneath the surface as the eye
+    // moves. Sample halfway through the upper 32 cm, or the shallows above the bed.
+    vec2 rayXZ = -0.75*V.xz - (cosWater - 0.75*NdV)*N.xz;
+    float column = min(depth,0.32);
+    float charge = surfaceAt(p + rayXZ*(0.5*column / max(0.25,rayDown))).a;
+    float scatterLight = planktonLight(charge) * (disturbance.a/(0.025+disturbance.a));
+    body += vec3(0.067,0.39,0.29)*scatterLight*uNight*uNight;
+  }
   float alpha = F + scatter;
   vec3 col = (F * refl + scatter * tonemap(fogged(body, vWP))) / max(alpha, 0.022);
   vec3 Hh = normalize(uSunDir + V);
@@ -1855,7 +1887,7 @@ void main(){
     // Lit plankton remain visible in a trough. Their wave's signed height
     // (metres) and moon-facing slope change the colour and intensity smoothly.
     float charge = disturbance.a;
-    float light = (charge/(0.045+charge)) * (charge/(0.65+charge));
+    float light = planktonLight(charge);
     float lift = 9.*disturbance.x + 0.65*tilt;
     float ridge = 0.5 + 0.5*lift/(0.38+abs(lift));
     vec3 plankton = mix(vec3(0.065,0.30,0.21),vec3(0.20,0.59,0.35),ridge);
@@ -3417,12 +3449,13 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 const uploadSurfaceWaves = waterTexture(gl,surface,28);
 let simT = 0, denseUpload = null;
+const grassPulses = new GrassPulses(WORLD_HALF);
 const swimmerWake=createSwimWake(surface,waterLevel,(x,z,energy) => glowF.contact(x,z,energy));
 
 function setMode(m) {
   // Dense rows overwrite the whole image. All three layers can reuse the same staging buffer.
   denseUpload = m === DENSE ? (denseUpload ?? new Uint8Array(N * N)) : null;
-  mode = m; sailwings.reset(); surface.reset(); swimmerWake.reset(); post.previous = null;
+  mode = m; sailwings.reset(); surface.reset(); swimmerWake.reset(); grassPulses.reset(); post.previous = null;
   acc = { frames: 0, t: 0, ms: 0, up: 0 }; wall = 0;
   for (const f of [glowF, groundF, wearF]) f.set(m);
 }
@@ -3434,6 +3467,7 @@ function footstep(x, z, inWater, wetFeet, run, depth = 0.35) {
     wetContact(x,z,load,0.58);
   } else {
     glowF.contact(x,z,0.95); wearF.deposit(x,z,0,run?0.3:0.2);
+    if (night>0) grassPulses.touch(x,z,simT);
     if (wetFeet>0) groundF.contact(x,z,0.70*wetFeet);
   }
 }
@@ -4166,6 +4200,9 @@ function common(p, eye, VP, mirror, t) {
     gl.uniform2i(p.u('uSunLayers'), shadowKeys.layers[0], shadowKeys.layers[1]); gl.uniform1f(p.u('uSunBlend'), shadowKeys.blend);
     gl.uniform2f(p.u('uWindFrame'),wind.travel,wind.mix);
     gl.uniform1f(p.u('uNight'), night);
+    if (p === ANIMAL && night > 0. && player.wet > 0.) {
+      gl.uniform1f(p.u('uAnimalWaterLevel'), waterLevel(player.x,player.z));
+    }
     gl.uniform1f(p.u('uExposure'), exposure); gl.uniform1f(p.u('uTime'), t);
     gl.uniform1f(p.u('uStorm'), storm); gl.uniform1f(p.u('uFlash'), flash * storm * (0.3 + 0.7 * night));
     gl.uniform1f(p.u('uSheet'), sheet); gl.uniformMatrix3fv(p.u('uSky'), false, skyTurn);
@@ -4222,8 +4259,9 @@ function submitIndexedRuns(mesh,runs) {
   }
 }
 function meadowFields(tile) {
-  if(mode===DENSE) return night > 0 ? 7 : 6;
-  return (night > 0 && glowF.textureCache.tileBlocks[tile] ? 1 : 0) |
+  const waves = night>0 ? grassPulses.tiles[tile]<<3 : 0;
+  if(mode===DENSE) return waves | (night > 0 ? 7 : 6);
+  return waves | (night > 0 && glowF.textureCache.tileBlocks[tile] ? 1 : 0) |
     (groundF.textureCache.tileBlocks[tile] ? 2 : 0) | (wearF.textureCache.tileBlocks[tile] ? 4 : 0);
 }
 function drawScene(eye, b, VP, mirror, t, opts) {
@@ -4254,6 +4292,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   if (plants) { common(PLANT, eye, VP, mirror, t); plants.draw(planes, eye, mirror < 0 ? 0.72 : 1); }
   if (opts.grass) {
     common(GRASS, eye, VP, mirror, t);
+    if (grassPulses.update(simT)) gl.uniform4fv(GRASS.u('uGrassPulses[0]'),grassPulses.waves);
     if (bladeContact) {
       gl.uniform1i(GRASS.u('uContactEnabled'), Number(contactOn && Boolean(fox) && started && bladeContact.stats.roots > 0));
       gl.uniform1i(GRASS.u('uMarkContact'), Number(markContacts));

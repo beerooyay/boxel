@@ -87,31 +87,34 @@ test('a glow pulse blooms after contact, travels with the outgoing wave and fade
   waved.touch(x,z,0.9,0.8);
   quiet.touch(x,z,0,0.8);
   blocked.touch(x,z,0.9,0.8);
-  let firstLight=0, centrePeak=0, outerPeak=0, quietPeak=0;
+  let firstLight=0, secondLight=0, centrePeak=0, outerPeak=0, quietPeak=0;
   let centreTick=0, outerTick=0;
   for (let i=1; i<=270; i++) {
     for (const basin of [waved,quiet,blocked]) basin.advance(1/30);
     const centre=waved.sample(x,z).light, edge=waved.sample(outer,z).light;
     if (i===1) firstLight=centre;
+    if (i===2) secondLight=centre;
+    if (i===60) assert.ok(edge>1/255, 'the outgoing afterglow still crosses the outer water after two seconds');
     if (centre>centrePeak) { centrePeak=centre; centreTick=i; }
     if (edge>outerPeak) { outerPeak=edge; outerTick=i; }
     quietPeak=Math.max(quietPeak,quiet.sample(outer,z).light);
     assert.equal(blocked.sample(5.88,z).light,0);
   }
-  assert.ok(firstLight>0 && centrePeak>firstLight*2 && centreTick>=4);
+  assert.ok(firstLight>0 && centrePeak>firstLight*2 && secondLight>=0.5*centrePeak);
+  assert.ok(centreTick>=4 && centreTick<=8, 'the contact blooms progressively within a quarter second, rounded to a water tick');
   assert.ok(outerPeak>3/255 && outerPeak>quietPeak*3 && outerTick>centreTick);
   assert.ok(waved.sample(x,z).light<0.5/255 && waved.sample(outer,z).light<0.5/255);
 });
 
 test('skin contact charges adjacent wet cells continuously as a paw crosses a texel boundary', () => {
-  const z=4.44;
-  const left=tank(), right=tank();
-  left.stir(4.8-0.0001,z,0.9);
-  right.stir(4.8+0.0001,z,0.9);
-  left.advance(1/30); right.advance(1/30);
-  for (const x of [4.68,4.92]) {
-    assert.ok(left.sample(x,z).light>0.04);
-    assert.ok(Math.abs(left.sample(x,z).light-right.sample(x,z).light)<0.0001);
+  const z=4.44, offset=0.0001;
+  for (const dx of [-offset,offset]) {
+    const water=tank();
+    water.stir(4.8+dx,z,0.9);
+    water.advance(1/30);
+    const left=water.sample(4.68,z).light, right=water.sample(4.92,z).light;
+    assert.ok(left>0.04 && right>0.04);
+    assert.ok(Math.abs(right/(left+right) - (0.5+dx/grid.step))<1e-6);
   }
 });
 

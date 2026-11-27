@@ -5,6 +5,17 @@ const top = riverLevel(falls.lip),
 const fallTime = Math.sqrt((2 * (top - bottom)) / 9.81);
 const lipX = riverX(falls.lip),
   footX = riverX(falls.lip + falls.reach);
+
+// A long animal can span both reaches. On the downstream side only the pool
+// lights the fur; the airborne sheet is drawn separately and has no wake grid.
+export const swimmerWaterlineGLSL = `
+float swimmerWaterline(vec2 p,float localLevel){
+  float run=p.y-(${falls.lip});
+  if(abs(run)>4. || abs(p.x-(${lipX.toFixed(5)}))>6.) return localLevel;
+  if(run<=0.) return ${top.toFixed(5)} + run*(${(top - riverLevel(falls.lip - 1)).toFixed(5)});
+  return ${bottom.toFixed(5)} + (run-${falls.reach})*(${(riverLevel(falls.lip + falls.reach + 1) - bottom).toFixed(5)});
+}`;
+
 export const fallsBounds = {
   x0: Math.min(lipX, footX) - 3.5,
   z0: falls.lip - 1.0,

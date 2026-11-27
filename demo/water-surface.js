@@ -203,11 +203,11 @@ export function createWaterSurface(grid, bedAt) {
         const lap = h[l] + h[r] + h[n] + h[s] - 4 * h[k];
         const vel = (v[k] + wx * (v[upX] - v[k]) + wz * (v[upZ] - v[k]) + c2[k] * lap) * damping[k];
         const heightNext = h[k] + wx * (h[upX] - h[k]) + wz * (h[upZ] - h[k]) + DT * vel;
-        // A contact primes the organisms it sweeps. Release this charge over
-        // several fixed steps. The lit water then drifts with the current.
+        // Fresh charge releases half its light in about four water ticks.
+        // The current transports the afterglow on its own, slower timescale.
         let glow = 0;
         if (luminous) {
-          const lit = light[k], charge = excitation[k], release = 0.11 * charge;
+          const lit = light[k], charge = excitation[k], release = 0.17 * charge;
           excitation[k] = charge - release;
           const advected = lit + wx*(light[upX]-lit) + wz*(light[upZ]-lit);
           // Turbulent mixing broadens the trace. An arriving ripple can excite

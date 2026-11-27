@@ -87,23 +87,39 @@ layout(location=3) in uvec4 aJoints;
 uniform mat4 uBones[${MAX_JOINTS}];
 uniform mat3 uAnimalBasis;
 uniform vec3 uAnimalOrigin;
-uniform float uAnimalScale;
+uniform float uAnimalScale, uAnimalWet, uAnimalWaterLevel, uNight;
 out vec3 vWP, vN, vFur;
+out vec2 vWaterLight;
 void main() {
   mat4 skin = uBones[aJoints.x] * aWeights.x + uBones[aJoints.y] * aWeights.y
             + uBones[aJoints.z] * aWeights.z + uBones[aJoints.w] * aWeights.w;
   vWP = uAnimalOrigin + uAnimalBasis * (skin * vec4(aPos, 1.)).xyz * uAnimalScale;
   vFur = aColour;
   vN = uAnimalBasis * mat3(skin) * aNor;
+  vWaterLight = vec2(0.);
+  if (uNight > 0. && uMirror > 0. && uAnimalWet > 0.) {
+    float depth = swimmerWaterline(vWP.xz,uAnimalWaterLevel) - vWP.y;
+    vWaterLight.x = depth;
+    if (depth > -0.30) {
+      vec4 pulse = surfaceAt(vWP.xz);
+      depth += waterWave(vWP.xz,uTime).x + pulse.x;
+      vWaterLight = vec2(depth,planktonLight(pulse.a)/(1.+3.7*max(0.,depth)));
+    }
+  }
   gl_Position = project(vWP);
 }`, `
 in vec3 vWP, vN, vFur;
+in vec2 vWaterLight;
 uniform float uClip, uAnimalWet;
 out vec4 o;
 void main() {
   if (vWP.y < uClip) discard;
   vec3 N = normalize(vN), V = normalize(uCam-vWP);
   vec3 color = pbr(vFur * mix(1., .7, uAnimalWet), mix(.88, .56, uAnimalWet), 0., N, V, vWP);
+  // Grazing green light from the excited water catches the wet flanks and
+  // paws. Keep the fur pigment and let the refracted scene carry it to the eye.
+  float immersed = smoothstep(0.,0.055,vWaterLight.x);
+  color += vec3(0.14,0.66,0.48)*(0.26+0.74*vFur)*(0.64+0.36*N.y)*vWaterLight.y*immersed*uNight*uNight;
   o = vec4(tonemap(fogged(color, vWP)), 0.);
 }`);
 }
