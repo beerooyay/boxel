@@ -1,6 +1,46 @@
 // Roots use one eight-byte record. Wind, pigment and bend parameters reuse one
 // shuffled detail buffer across all tiles. Only visible tile prefixes are drawn.
-const MEADOW_TILE = 16;
+export const MEADOW_TILE = 8;
+export const SISTER_ONE = 0.16, SISTER_TWO = 0.40;
+const FULL_COVER = 14, DETAIL_END = 18;
+const ADAPT_START = 10, ADAPT_END = 30, FAR_FADE = 22;
+
+// The CPU evaluates this at the nearest point in a tile to bound the draw.
+// The shader uses the same curve at the exact root to feather its silhouette.
+export function meadowFraction(distance, density, far) {
+  const ratio = Math.min(1, FULL_COVER / Math.max(distance, 0.01));
+  const t = Math.max(0, Math.min(1, (distance - ADAPT_START) / (ADAPT_END - ADAPT_START)));
+  const fade = Math.max(0, Math.min(1, (far - distance) / FAR_FADE));
+  return ratio * ratio * fade * (1 + (density - 1) * t*t*(3-2*t));
+}
+
+// A shared index strip per detail level. Primitive restart keeps the blades
+// independent. Unused strips never connect to the next sheath.
+function bladeStrips(gl) {
+  const indices = [], levels = [];
+  for (const [rows, blades] of [[4,3],[3,3],[3,1],[2,1]]) {
+    const start = indices.length;
+    for (let j=0; j<blades; j++) {
+      if (j) indices.push(255);
+      const segments = j ? Math.max(2,rows-1) : rows;
+      for (let v=0; v<=2*segments; v++) indices.push(16*j+v);
+    }
+    levels.push({start, count:indices.length-start, rows});
+  }
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,buffer);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint8Array(indices),gl.STATIC_DRAW);
+  return {buffer, levels};
+}
+
+export const meadowLodGLSL = `
+uniform vec3 uPopulation; // reciprocal tile count, distant density, far limit
+float rootFraction(float d){
+  float ratio = min(1., ${FULL_COVER}. / max(d,0.01));
+  return ratio*ratio * clamp((uPopulation.z-d)/${FAR_FADE}.,0.,1.)
+       * mix(1.,uPopulation.y,smoothstep(${ADAPT_START}.,${ADAPT_END}.,d));
+}
+`;
 export const BLADE_HEIGHT_RANGE = 3.2;
 
 // Grass grows in tufts. Tuft centres sit one to a cell of CLUMP metres, jittered by an integer hash that this module
@@ -42,7 +82,7 @@ function plotBatch(gl, roots, details, order, grid, x0, z0, y0, y1) {
   let stems=0;
   for (const i of order) {
     const choice=details[4*i+3]/255;
-    const leaves=choice<=0.28 ? 1 : choice<=0.52 ? 2 : 3;
+    const leaves=choice<=SISTER_ONE ? 1 : choice<=SISTER_TWO ? 2 : 3;
     for(let sibling=0;sibling<leaves;sibling++,stems++) {
       words.set(roots.subarray(4*i,4*i+4),8*stems);
       bytes.set(details.subarray(4*i,4*i+4),16*stems+8);
@@ -73,8 +113,20 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
   // the ground, slope and noise queries for every candidate blade.
   // per metre: cover, blade height, and nearness to a trodden tread
   const habitat = new Float32Array(side * side * 3);
-  for (let z = 0; z < side; z++) for (let x = 0; x < side; x++)
-    habitatAt(x - half, z - half, habitat, 3 * (z * side + x));
+  const colours = new Uint8Array(side*side*4);
+  for (let z=0; z<side; z++) for (let x=0; x<side; x++) {
+    const post=z*side+x;
+    habitatAt(x-half,z-half,habitat,3*post,colours,4*post);
+  }
+  gl.activeTexture(gl.TEXTURE0+30);
+  gl.bindTexture(gl.TEXTURE_2D,gl.createTexture());
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,side,side,0,gl.RGBA,gl.UNSIGNED_BYTE,colours);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.bindVertexArray(null);
+  const strips = plot ? null : bladeStrips(gl);
 
   const contactBins = new Map(), binSize = 2, binsPerTile = tileSize/binSize;
   const maxSide = Math.ceil(tileSize * Math.sqrt(density));
@@ -150,6 +202,7 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
     gl.vertexAttribPointer(rootLoc, 4, gl.UNSIGNED_SHORT, true, 0, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, detailBuffer); gl.enableVertexAttribArray(detailLoc); gl.vertexAttribDivisor(detailLoc, 1);
     gl.vertexAttribPointer(detailLoc, 4, gl.UNSIGNED_BYTE, true, 0, 0);
+    if (strips) gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,strips.buffer);
     const grid=[x0,z0,n/tileSize,maxSide/tileSize];
     if (contact) {
       // An index per real root is the only additional world-sized storage.
@@ -188,7 +241,11 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
     count += used / 4;
   }
   gl.bindVertexArray(null); gl.useProgram(shader); gl.uniform2fv(shader.u('uGrassHeight'), heightRange);
-  const widthLoc = shader.u('uLodW'), rowsLoc = shader.u('uBladeRows'), far = touch ? 72 : 84;
+  const visible = [];
+  for(const tile of tiles)
+    tile.fieldTile=Math.floor((tile.z0+half)/tileSize)*(extent/tileSize)+Math.floor((tile.x0+half)/tileSize);
+  const signals = shader.u('uGrassFields');
+  const population = shader.u('uPopulation'), rowsLoc = shader.u('uBladeRows'), far = touch ? 72 : 84;
   return {
     count, heightRange, siteRate:maxSide/tileSize,
     nearRoots(x,z,reach) {
@@ -215,27 +272,41 @@ export function bakeMeadow({ gl, shader, half, density, heightRange, heightAt, h
       }
       return count;
     },
-    draw(planes, eye, densityScale) {
+    draw(planes, eye, densityScale, fieldsAt) {
       let drawn = 0;
       const width=plot ? binSize : tileSize;
+      visible.length=0;
       for (const tile of tiles) {
         const dx = Math.max(tile.x0 - eye[0], 0, eye[0] - tile.x0 - width);
         const dz = Math.max(tile.z0 - eye[2], 0, eye[2] - tile.z0 - width);
         const dy = Math.max(tile.y0 - eye[1], 0, eye[1] - tile.y1);
         const d2 = dx*dx + dz*dz + dy*dy;
         if (d2 >= far * far || outsideView(planes, tile, width)) continue;
-        const d = Math.sqrt(d2);
-        const fade = Math.min(1, (far - d) / 22);
-        // More blades near the eye, paid for by starting the thinning two metres sooner
-        const fraction = plot ? densityScale : Math.min(1, (15 / Math.max(1, d)) ** 1.8) * fade * densityScale;
-        const n = Math.floor(tile.count * fraction);
-        if (!n) continue;
+        tile.distance = Math.sqrt(d2);
+        visible.push(tile);
+      }
+      // An opaque blade in the foreground hides many layers of distant turf.
+      visible.sort((a,b)=>a.distance-b.distance);
+      let lastFields=-1;
+      for (const tile of visible) {
+        const d=tile.distance, fields=fieldsAt(tile.fieldTile);
+        if(fields!==lastFields){ gl.uniform1i(signals,fields); lastFields=fields; }
         gl.bindVertexArray(tile.vao);
         if (contact) gl.uniform4fv(shader.u('uRootGrid'),tile.grid);
-        gl.uniform1f(widthLoc, Math.min(2.2, 1 / Math.sqrt(fraction)));
-        const rows = plot ? (d < 2.4 ? 5 : d < 6 ? 3 : 2) : (d < 10.8 ? 4 : d < 24 ? 3 : 2);
-        gl.uniform1i(rowsLoc, rows);
-        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, !plot && rows === 4 ? 27 : 2*rows + 1, plot ? Math.floor(tile.stems*fraction) : n);
+        if (plot) {
+          const rows = d<2.4 ? 5 : d<6 ? 3 : 2;
+          gl.uniform1i(rowsLoc,rows);
+          gl.drawArraysInstanced(gl.TRIANGLE_STRIP,0,2*rows+1,tile.stems);
+          drawn += tile.count;
+          continue;
+        }
+        // The nearest point bounds the work for the tile. Each root then
+        // tapers its own width at its own distance, with stable shuffled rank.
+        const n = Math.ceil(tile.count * meadowFraction(d,densityScale,far));
+        const level = strips.levels[d<5 ? 0 : d<DETAIL_END ? 1 : d<29 ? 2 : 3];
+        gl.uniform3f(population,1/tile.count,densityScale,far);
+        gl.uniform1i(rowsLoc,level.rows);
+        gl.drawElementsInstanced(gl.TRIANGLE_STRIP,level.count,gl.UNSIGNED_BYTE,level.start,n);
         drawn += n;
       }
       return drawn;

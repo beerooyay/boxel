@@ -81,3 +81,24 @@ test('dense rows use the same byte convention and overwrite the entire previous 
   assert.deepEqual(gl.pixels.slice(0, size), Uint8Array.from(row, v => Math.min(255, Math.round(v * 255))));
   assert.ok(gl.pixels.slice(size).every(v => v === 0));
 });
+
+test('grass tiles keep a one-texel field halo through reuse and retirement', () => {
+  const size=256, cache=new FieldTexture(size,64), gl=destination(size);
+  const values=new Float32Array(256);
+  values[255]=1;
+  let live=true, freed=false;
+  const field={
+    blocks(visit) { if(live) visit(-5,-5,values); },
+    freed(visit) { if(freed) visit(-5,-5); },
+    forgetFreed() { freed=false; },
+  };
+  const occupied=()=>Array.from(cache.tileBlocks.keys()).filter(i=>cache.tileBlocks[i]);
+  cache.uploadSparse(gl,field);
+  assert.deepEqual(occupied(),[0,1,4,5]);
+  freed=true; cache.uploadSparse(gl,field);
+  for(const i of occupied()) assert.equal(cache.tileBlocks[i],1);
+  live=false; freed=true; cache.uploadSparse(gl,field);
+  assert.deepEqual(occupied(),[]);
+  live=true; cache.uploadSparse(gl,field); cache.reset();
+  assert.deepEqual(occupied(),[]);
+});

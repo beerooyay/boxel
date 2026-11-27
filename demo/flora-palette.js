@@ -2,7 +2,9 @@
 const swatches = {
   LEAF: '#4B9B50',
   NEW_GROWTH: '#A8BF53',
-  PRAIRIE_ROSE: '#F184A6',
+  PRAIRIE_ROSE: '#F5B5C8',
+  SEDGE: '#83AF89',
+  STRAW: '#D6B878',
   PETAL_PINK: '#EA4696',
   ORCHID: '#A16ACD',
   SCARLET: '#D94456',
@@ -54,21 +56,22 @@ vec3 crownPigment(float seed){
   if (seed < 0.985) return mix(HONEY, APRICOT, (seed - 0.95)/0.035);
   return GOLD;
 }
-vec3 meadowTip(vec2 p, float elevation, float jitter){
-  float habitat = 0.78*vnoise(p*0.030+3.) + 0.22*vnoise(p*0.09-5.) + jitter;
-  float variation = vnoise(p*0.052+12.);
-  float dry = smoothstep(0.4,8.,elevation);
-  vec3 green = mix(LEAF, NEW_GROWTH, 0.22+0.39*variation+0.09*dry);
-  float ground = habitat + 0.022*dry;
-  float fringe = smoothstep(0.51,0.72,ground);
-  vec3 spring = mix(green, NEW_GROWTH, fringe * (0.28 + 0.18 * variation));
-  // The rose meadows follow two sheltered banks. Within each, shoots of both
-  // colours interleave along an irregular margin. The open lakeshore stays green.
-  vec2 fen = (p - vec2(-31.,-6.)) / vec2(8.,12.);
-  vec2 bench = (p - vec2(33.,-24.)) / vec2(11.,7.);
-  float rim = min(dot(fen,fen),dot(bench,bench)) + (0.5-habitat)*0.9;
-  float colony = (1.-smoothstep(0.26,1.15,rim))*smoothstep(0.32,0.69,habitat);
-  float upland = smoothstep(57.,78.,max(abs(p.x),abs(p.y)));
-  float rose = max(colony, upland*smoothstep(0.77,0.88,ground));
-  return mix(spring,PRAIRIE_ROSE,rose) * mix(0.79,1.04,variation);
+uniform sampler2D uMeadowColour;
+vec4 meadowStand(vec2 p){
+  return textureLod(uMeadowColour, p / (uExtent+1.) + 0.5, 0.);
 }`;
+
+// Linear reflectance and local tone at one-metre posts. The blades, litter and
+// nocturnal glow sample the same stand from either side of a tile boundary.
+export function writeMeadowColour(bytes, offset, variation, shade, water, dry, rose) {
+  for (let c=0; c<3; c++) {
+    const leaf = pigment.LEAF[c], newGrowth = pigment.NEW_GROWTH[c];
+    let value = leaf + (newGrowth-leaf)*(0.33 + 0.42*variation);
+    value += (pigment.EVERGREEN[c]-value)*shade*0.51;
+    value += (pigment.SEDGE[c]-value)*water*0.79;
+    value += (pigment.STRAW[c]-value)*dry*0.77;
+    value += (pigment.PRAIRIE_ROSE[c]-value)*rose;
+    bytes[offset+c] = Math.round(255*value*(0.89+0.11*variation));
+  }
+  bytes[offset+3] = Math.round(255*variation);
+}

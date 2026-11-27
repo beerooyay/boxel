@@ -118,13 +118,15 @@ void main(){
   vec3 dir = normalize(ray);
   float transmission = 1.;
   vec3 light = vec3(0.);
-  float forward = pow(max(dot(dir, uStarDir), 0.), 6.);
+  float forward = pow(max(dot(dir, uStarDir), 0.), 10.);
   vec3 day = vec3(0.19, 0.29, 0.32) + forward * vec3(1., 0.68, 0.39) * uStarTint;
-  // Moist soil and standing water keep some low mist even under a high star.
-  vec2 densityRange = vec2(0.008, 0.064) * (1. - vec2(0.76, 0.42) * clearAfternoon());
-  // A little suspended moisture catches sunbeams inside the crowns. Only
-  // sun-facing rays need the extra canopy lookup. Reuse the mist shadow march.
-  float beam = forward * (1.-uNight) * (1.-0.85*uStorm) * smoothstep(-0.015,0.08,uStarDir.y);
+  // In daylight the low inversion burns off. Suspended droplets still pick
+  // out a sun-facing gap in the canopy, and rain restores a shallow wet layer.
+  float fair = clearAfternoon()*(1.-smoothstep(0.02,0.35,uSheet));
+  vec2 densityRange=mix(vec2(0.006,0.055),vec2(0.00015,0.0017),fair);
+  float beam=forward*(1.-uNight)*(1.-0.85*uStorm)*smoothstep(-0.015,0.08,uStarDir.y);
+  float lowMist=1.-smoothstep(0.76,0.98,fair);
+  if(lowMist==0. && beam<=0.035){ o=vec4(0.,0.,0.,1.); return; }
   float start = 0.;
   for (int i = 1; i <= 10; ++i) {
     float end = reach * float(i*i) * 0.01, stepLength = end - start;
@@ -134,15 +136,16 @@ void main(){
     vec2 levels = textureLod(uValleyGround, uv, 0.).gb;
     float bed = groundHeight(levels.x), water = groundHeight(levels.y);
     float above = wp.y - max(water, bed);
-    if (above < -0.3 || above > (beam > 0.025 ? 8. : 3.8)) continue;
+    if (above < -0.3 || above > (beam > 0.035 ? 8. : 3.8)) continue;
     float aerosol = 0.;
-    if (beam > 0.025)
-      aerosol = 0.026 * beam * canopyCover(wp) * smoothstep(0.12,1.1,above)
+    if (beam > 0.035)
+      aerosol = 0.014 * smoothstep(0.035,0.95,beam) * canopyCover(wp) * smoothstep(0.12,1.1,above)
         * (1.-smoothstep(3.5,8.,above));
     float wet = clamp(textureLod(uGround, uv, 0.).r + uSheet + 0.53 * (1. - smoothstep(-0.1, 1., bed - water)), 0., 1.);
     float drift = vnoise(wp.xz * 0.29 + vec2(-0.054, 0.017) * uTime + above * 0.16);
-    float density = atlasCoverage(uv) * mix(densityRange.x, densityRange.y, wet) * (0.3 + drift) * exp(-max(0., above) * 1.35);
+    float density = lowMist * atlasCoverage(uv) * mix(densityRange.x, densityRange.y, wet) * (0.3 + drift) * exp(-max(0., above) * 1.35);
     float scatter = 1. - exp(-(density + aerosol) * stepLength);
+    if(scatter<0.00008) continue;
     vec3 incident = vec3(0.021, 0.040, 0.068);
     if (uNight < 0.999) {
       float sun = mistSun(wp, uSunLayers.x);

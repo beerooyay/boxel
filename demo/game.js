@@ -6,14 +6,14 @@ import { contactVolume, contactGLSL } from './fox-contact.js';
 import { loadFox } from './fox.js';
 import { DAY_RATE, TIMELAPSE_SECONDS, timelapseTravel } from './sky-clock.js';
 import { bindCapture } from './capture.js';
-import { floraPalette, understoryPigment } from './flora-palette.js';
+import { floraPalette, understoryPigment, writeMeadowColour } from './flora-palette.js';
 import { createWind, windShader } from './wind.js';
 import { bakeTrailMaterial } from './trail-material.js';
 import { loadLeafSprays, uploadLeafSprays, sprayGLSL, STRAP_ASPECT } from './leaf-spray.js';
 import { loadSurface, uploadSurface } from './surface-texture.js';
 import { galaxyFragment } from './galaxy.js';
 import { FieldTexture } from './field-texture.js';
-import { bakeMeadow, BLADE_HEIGHT_RANGE, CLUMP, clumpGLSL } from './meadow.js';
+import { bakeMeadow, MEADOW_TILE, BLADE_HEIGHT_RANGE, CLUMP, clumpGLSL, meadowLodGLSL, SISTER_ONE, SISTER_TWO } from './meadow.js';
 import { BrushField } from './brush.js';
 import { waterBounds } from './water-view.js';
 import { stoneBed, stoneDrop, stoneSpacing } from './stone-bed.js';
@@ -166,7 +166,7 @@ const cellOf = (m) => Math.floor(m / CELL);
 /** The sparse field covers the whole plane. Its display uploads changed R8 regions inside the map.
  *  The dense reference steps the finite map and uploads its full image. */
 class Layer {
-  constructor(boxel, spec, tex) { Object.assign(this, { boxel, spec, tex, acc: 0, textureCache: new FieldTexture(N) }); }
+  constructor(boxel, spec, tex) { Object.assign(this, { boxel, spec, tex, acc: 0, textureCache: new FieldTexture(N,MEADOW_TILE/CELL) }); }
   set(mode) {
     this.f?.free(); this.g?.free(); this.f = this.g = null; this.acc = 0; this.steps = 0; this.lastStepped = 0; this.lastSteps = 0;
     if (mode === BOXEL) this.f = this.boxel.field({ spread: this.spec.spread, fade: this.spec.fade, tolerance: TOLERANCE, events: this.spec.events });
@@ -342,7 +342,7 @@ vec3 cobble(vec2 p){
 }
 float fbm3(vec2 p){ float s = 0., a = .5; for (int i = 0; i < 3; i++) { s += a * vnoise(p); p = p * 2.03 + 17.; a *= .5; } return s; }
 ${floraPalette}
-vec3 glowCol(vec2 p){ return meadowTip(p, 0., 0.) * 1.38; }
+vec3 glowCol(vec2 p){ return meadowStand(p).rgb * 1.38; }
 // Ease in across the lowest R8 levels so a one-level field change stays subtle in the dark.
 float glowI(float g){ return (1. - exp(-g * 5.)) * smoothstep(0., 0.045, g); }
 vec2 fieldUV(vec2 xz){ return xz / uExtent + 0.5; }
@@ -558,11 +558,10 @@ float leafVeins(float u, float side, float seed){
   veins *= (1. - smoothstep(0.12, 0.50, footprint)) * (1. - v * v);
   return max(rib * (1. - smoothstep(0.35, 1.1, fwidth(side))), veins * 0.64) * smoothstep(0.05, 0.23, u);
 }
-vec3 floraLight(vec3 gc, vec3 wp, vec3 N, vec3 V, float u, float self, float stir){
+vec3 floraLight(vec3 gc, vec3 wp, vec3 N, vec3 V, float u, float self, float stir, vec3 sunlight){
   // Both sides share diffuse light from the upper surface as the camera passes a leaf.
   if (N.y < 0.) N = -N;
   float ndl = max(dot(N, uSunDir), 0.) * 0.72 + 0.28;
-  vec3 sunlight = uSunCol * directLight(wp);
   float cover = canopyCover(wp);
   vec3 skyLight = contactLight(wp) * ambient(N) * mix(vec3(1.), vec3(0.38, 0.54, 0.54), cover);
   vec3 lit = gc * (skyLight * 2.35 + sunlight * ndl * 0.3 + floraSpill(wp));
@@ -620,7 +619,7 @@ vec3 brushBend(vec3 wp) {
 }
 `;
 const CANOPY = program(WORLD_VS + BRUSH_VS + valleyAir + canopyShelter + `
-in vec3 aPos, aNor, aStalk, aBlade; in float aTissue; in vec4 aSite, aHabit;
+in vec3 aPos, aNor, aStalk, aBlade; in float aTissue; in vec4 aSite, aHabit; in vec2 aSlope;
 centroid out vec2 vBlade; centroid out vec3 vWP, vNormal, vAcross;
 flat out float vTissue, vHue; out float vCrown; out vec3 vField; out vec4 vAir;
 void main(){
@@ -661,6 +660,9 @@ void main(){
     vBlade=vec2(aBlade.x*repeats,aBlade.y*aSite.w/0.86)+offset;
   }
   p+=boughOffset(load,stalk.y,1.)*min(1.,length(stalk.xz)*3.4);
+  float foot=1.-smoothstep(0.,0.18,aPos.y);
+  p.y += dot(p.xz,aSlope)*foot;
+  vNormal.xz -= aSlope*(vNormal.y*foot);
   vWP=aSite.xyz+p*aSite.w;
   vTissue=aTissue; vHue=aHabit.w;
   vCrown=clamp((aPos.y-0.25)*0.64+1.04*length(aPos.xz),0.,1.);
@@ -684,7 +686,7 @@ void main(){
     if(uCoverage ? cover<0.02 : spray.a<0.5) discard;
     vec3 across=normalize(vAcross-n*dot(n,vAcross)), along=cross(n,across);
     n=normalize(n+across*(spray.r-0.5)*1.60+along*(spray.g-0.5)*1.60);
-    if(dot(n,view)<0.) n=-n;
+    float underside=1.-smoothstep(-0.22,0.22,dot(n,view));
     float tone=spray.b, wood=1.-smoothstep(0.02,0.08,tone);
     vec3 pigment=crownPigment(vHue);
     float newLeaf=smoothstep(0.32,0.96,0.51*vCrown+0.32*tone+0.17*vBlade.x);
@@ -695,10 +697,10 @@ void main(){
     vec3 leaf=mix(pigment*(0.48+0.64*tone)*lightness,vec3(0.14,0.095,0.058),wood)*(1.-0.16*vField.y);
     vec3 sun=uSunCol*directLight(vWP);
     float facing=dot(n,uSunDir);
-    vec3 sky=ambient(n)*contactLight(vWP)*(1.-0.43*vField.z);
-    colour=leaf*(sky*2.25+floraSpill(vWP)+sun*(0.10+0.81*max(0.,facing)));
+    vec3 sky=mix(ambient(n),ambient(-n),0.55*underside)*contactLight(vWP)*(1.-0.43*vField.z);
+    colour=leaf*(sky*2.25+floraSpill(vWP)+sun*(0.10+0.78*mix(max(0.,facing),max(0.,-facing),underside)));
     // The thinner outside leaves transmit warm sunlight when the viewer faces the star.
-    float transmission=max(-facing,0.)*(0.28+0.36*newLeaf)+
+    float transmission=mix(max(-facing,0.),max(facing,0.),underside)*(0.40+0.29*newLeaf)+
       0.25*pow(max(0.,-dot(view,uSunDir)),4.)*newLeaf;
     colour+=leaf*sun*vec3(1.42,1.14,0.72)*transmission*(1.-wood);
     colour+=sun*pow(max(0.,dot(n,normalize(view+uSunDir))),18.)*(0.045+0.09*vField.y)*(1.-wood);
@@ -812,7 +814,7 @@ void main(){
   float hummocks = smoothstep(0.24, 0.68, n1 + (n2 - 0.5) * 0.36);
   // Under the meadow lies its own litter: last season's blades flat in fine strokes over dark soil, the colour of the
   // stand above it, so distant grass cover carries the same pigment as nearby blades.
-  vec3 stand = meadowTip(p, vWP.y, 0.);
+  vec3 stand = meadowStand(p).rgb;
   float thatch = 0.5, clump = vnoise(p * 2.3 + 4.1);
   if (fine > 0.) {
     // strokes of fallen blades lying every which way in tufts, and specks of bare soil between them
@@ -892,22 +894,23 @@ void main(){
     // One soil runs under everything. The tread is that soil packed bare. Under the meadow it is the same soil,
     // olive with old roots, and the stand's litter lies over it in drifts, thinnest toward the tread, so the path is
     // where the cover ends rather than a different ground.
-    vec3 loam = mix(tread, vec3(0.185,0.158,0.096)*(0.72+0.62*crumb), 0.43);
     float drifts = 0.51*thatch + 0.32*clump + 0.17*hummocks;
-    float cover = smoothstep(0.12,0.66,drifts - 0.49*pathMask);
+    float cover = smoothstep(0.32,0.78,drifts - 0.49*pathMask);
     // Earth and embedded grit show between grass roots. Fallen material takes
     // on a little of the stand's pigment even where the live blades fan apart.
     float bare = smoothstep(0.11,0.66,pathMask + 0.22 * smoothstep(0.04,0.55,wear));
     vec3 rootMat = stand * mix(0.23,0.57,thatch) * (0.72 + 0.4 * clump);
     float litterBits = smoothstep(0.38, 0.69, thatch + 0.08 * detail.a);
     vec3 chaff = mix(rootMat, NEW_GROWTH * vec3(0.41, 0.32, 0.23), 0.22);
-    vec3 duff = mix(loam * 0.48, chaff * (0.70 + 0.33 * detail.a), 0.46 + 0.43 * litterBits);
-    vec3 meadow = mix(loam * (0.87 + 0.18 * hummocks), duff, cover * (1. - bare * 0.73));
-    alb = mix(alb, meadow, meadowFloor);
-    alb = mix(alb, mix(meadow, tread, smoothstep(0.03,0.91,soilCover)), soilCover);
+    // Fine litter collects in the hollows. Raised chips of shale stay exposed
+    // and keep the same mineral colour and relief across the path margin.
+    float litterCover=cover*(0.17+0.56*litterBits)*(1.-0.92*grit)*(1.-bare);
+    vec3 meadow=mix(tread,chaff*(0.75+0.33*detail.a),litterCover);
+    float soilWeight=max(soilCover,meadowFloor);
+    alb=mix(alb,mix(meadow,tread,soilCover),soilWeight);
     vec2 relief=(2.*coarse.rg-1.)*0.65 + transpose(rot)*(2.*detail.rg-1.)*0.53;
-    N=normalize(N+vec3(relief.x,0.,relief.y)*max(soilCover,meadowFloor*(1.-0.88*cover))*0.78);
-    rough=mix(rough,0.89-0.12*grit,soilCover);
+    N=normalize(N+vec3(relief.x,0.,relief.y)*soilWeight*(1.-0.42*litterCover)*0.83);
+    rough=mix(rough,0.90-0.16*grit,soilWeight);
   }
   float vein = rk * smoothstep(0.74, 0.8, n3) * (1. - smoothstep(12., 28., dist));
   // Pale seams are silica in the bedrock, so they keep a broad dielectric highlight.
@@ -1173,22 +1176,25 @@ void main(){
   float vein = smoothstep(0.82, 0.97, tone);
   vec3 albedo = tint * (0.3 + 0.62 * tone) * (1. - 0.19 * wet);
   albedo = mix(albedo, vec3(0.15, 0.1, 0.075), stem);
-  vec3 face = dot(N, V) >= 0. ? N : -N;
+  float upper = smoothstep(-0.18, 0.18, dot(N, V));
   vec3 sun = uSunCol * directLight(vWP);
-  vec3 sky = ambient(face) * contactLight(vWP) * mix(vec3(1.), vec3(0.34, 0.48, 0.48), canopyCover(vWP));
-  float direct = dot(face, uSunDir);
-  vec3 light = albedo * (2.55 * sky + floraSpill(vWP) + sun * (0.06 + 0.55 * max(direct, 0.)));
+  vec3 sky = mix(ambient(-N), ambient(N), upper) * contactLight(vWP) * mix(vec3(1.), vec3(0.34, 0.48, 0.48), canopyCover(vWP));
+  float facing = dot(N,uSunDir);
+  vec2 sides = vec2(max(facing,0.),max(-facing,0.));
+  float direct = mix(sides.y,sides.x,upper);
+  vec3 light = albedo * (2.55 * sky + floraSpill(vWP) + sun * (0.06 + 0.55 * direct));
   // Green laminae transmit more amber and green light, most where they are thin.
   float green = smoothstep(0.01, 0.21, tint.g - tint.r);
   vec3 transmitted = albedo * mix(vec3(1.), vec3(1.58, 1.23, 0.58), green * 0.6);
-  light += sun * transmitted * max(-direct, 0.) * 0.36 * (1. - stem) * (0.7 + 0.3 * u);
-  float sheen = max(dot(face, normalize(V + uSunDir)), 0.);
+  light += sun * transmitted * mix(sides.x,sides.y,upper) * 0.36 * (1. - stem) * (0.7 + 0.3 * u);
+  float halfAngle = dot(N, normalize(V + uSunDir));
+  float sheen = mix(max(-halfAngle,0.),max(halfAngle,0.),upper);
   float broad = sheen * sheen; broad *= broad; broad *= broad;
   float gloss = broad * broad; gloss *= gloss;
-  light += sun * max(direct, 0.) * (broad * 0.025 + gloss * (0.15 + 0.27 * wet)) * (1. - stem);
+  light += sun * direct * (broad * 0.025 + gloss * (0.15 + 0.27 * wet)) * (1. - stem);
   // A waxy leaf also catches a broad strip of open sky between the boughs.
-  float skyFacing = max(0., reflect(-V, face).y);
-  float rim = 1. - abs(dot(face, V)); rim *= rim;
+  float skyFacing = max(0., reflect(-V, N).y);
+  float rim = 1. - abs(dot(N, V)); rim *= rim;
   light += sky * (skyFacing * skyFacing) * (0.10 + 0.64 * rim) * (0.60 + wet) * (1. - stem);
   float night = smoothstep(0.12, 0.95, uNight), response = glowI(vLeaf.z);
   float reached = smoothstep(0.01, 0.45 + 0.27 * u, response);
@@ -1216,6 +1222,11 @@ layout(location=2) in float aBladeIndex;
 uniform vec3 uCam;
 #endif
 uniform vec2 uGrassHeight; uniform int uBladeRows;
+#if defined(SOLVE_BLADE) || defined(STAMP_BLADE)
+const int uGrassFields=7;
+#else
+uniform int uGrassFields;
+#endif
 centroid out vec3 vWP; centroid out vec4 vGA; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
 flat out vec4 vGrassColour; centroid out vec4 vAir; centroid out float vDry;
 void main(){
@@ -1223,14 +1234,14 @@ void main(){
   int packed = int(aRoot.w*65535. + 0.5), cell = packed & 15;
   float edge = float((packed >> 4) & 7)/7.;
   vec4 aR = vec4(aDetail.xyz, float(packed >> 7)/511. * ${BLADE_HEIGHT_RANGE.toFixed(1)});
-  // Selected roots carry a bundle of three leaves. The extra strips share
-  // exactly the same origin and taper out before their close detail ends.
+  float distanceToRoot = distance(vec3(aG.x,aG.z,aG.y),uCam);
+  float widthScale = 1., coverage = 1.;
 #if defined(SOLVE_BLADE) || defined(STAMP_BLADE)
   int sibling=gl_InstanceID%3;
   ivec2 site=bladeSite(aG.xy), page=site-uSiteBase;
   gl_Position=vec4(3,3,0,1); gl_PointSize=1.;
   if (!onPage(page)) return;
-  if ((sibling==1 && aG.w<=0.28) || (sibling==2 && aG.w<=0.52)) return;
+  if ((sibling==1 && aG.w<=${SISTER_ONE}) || (sibling==2 && aG.w<=${SISTER_TWO})) return;
 #ifdef STAMP_BLADE
   int sampleIndex=gl_InstanceID/3;
   if(texelFetch(uBladeNow,ivec3(address(page,sibling),sampleIndex/2),0).a<0.5) return;
@@ -1241,8 +1252,20 @@ void main(){
 #ifdef GRASS_LAB
   int sibling=int(aBladeIndex);
 #else
-  int sibling = vid >= 19 ? 2 : vid >= 10 ? 1 : 0;
-  if (sibling != 0) { vid = max(0, vid - (sibling == 2 ? 20 : 11)); rows = 3; }
+  int sibling = vid/16;
+  vid %= 16;
+  if (sibling != 0) rows=max(2,rows-1);
+  float fraction = rootFraction(distanceToRoot);
+  float rank = (float(gl_InstanceID)+0.5)*uPopulation.x;
+  float feather = max(0.00001,min(0.16*fraction,0.40*(1.-fraction)));
+  coverage = fraction >= 0.9999 ? 1. : smoothstep(0.,feather,fraction-rank);
+  if(sibling>0) {
+    float end = sibling==1 ? 18. : 14.;
+    coverage *= 1.-smoothstep(end-6.,end,distanceToRoot);
+    if(aG.w <= (sibling==1 ? ${SISTER_ONE} : ${SISTER_TWO})) coverage=0.;
+  }
+  if(coverage<0.001) { gl_Position=vec4(2.,2.,2.,1.); return; }
+  widthScale = min(1.9,inversesqrt(max(0.01,fraction)));
 #endif
 #endif
   vec2 cq = aG.xy / ${CLUMP};
@@ -1258,8 +1281,11 @@ void main(){
   float shape = float(bh & 0xffffu)/65536., deadRoll = float(bh >> 16)/65536.;
   float a = aR.x*6.2831853 + (float(sibling) * (1.53 + 1.18 * aG.w));
   vec2 ax = vec2(cos(a), sin(a)), fd = vec2(-ax.y, ax.x);
-  vec2 uv = fieldUV(aG.xy); vec2 gr = vec2(texture(uGround, uv).r, texture(uWear, uv).r); float glow = texture(uGlow, uv).r;
-  float wet = min(1., gr.r + uSheet), trample = smoothstep(0.04, 0.45, gr.g);
+  vec2 uv=fieldUV(aG.xy);
+  float glow=(uGrassFields&1)!=0 ? textureLod(uGlow,uv,0.).r : 0.;
+  float moisture=(uGrassFields&2)!=0 ? textureLod(uGround,uv,0.).r : 0.;
+  float wear=(uGrassFields&4)!=0 ? textureLod(uWear,uv,0.).r : 0.;
+  float wet=min(1.,moisture+uSheet), trample=smoothstep(0.04,0.45,wear);
 #ifdef GRASS_LAB
   trample = 0.;
 #endif
@@ -1267,23 +1293,18 @@ void main(){
   // Three blades: most are ordinary, many slender and tall, a few broad and short. The tuft sets the height
   // around them, highest in its middle; by the tread they splay and stand a little lower.
   float slender = step(shape, 0.43), broad = step(0.91, shape);
-  float H = 0.52 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.55 * trample) * mix(1., 1.14, slender) * mix(1., 0.78, broad)
+  float H = 0.52 * (0.62 + 0.76 * aR.y) * aR.w * (1. - 0.28 * trample) * mix(1., 1.14, slender) * mix(1., 0.78, broad)
           * mix(0.8, 1.2, tuft) * (1. - 0.28 * smoothstep(0.22, 0.68, tuftDist)) * (1. - 0.1 * edge);
-  float distanceToRoot = length(aG.xy-uCam.xz);
-  // Keep the fan together through the normal third-person viewing distance.
-  // A shoot opens from the same root, and retires before its extra strip ends.
-  float sisters = (1. - smoothstep(6.8, 10.5, distanceToRoot)) * smoothstep(0.18, 0.31, aG.w);
-  if (sister) {
-    if (sibling == 2) sisters *= (1. - smoothstep(5.2, 9.0, distanceToRoot)) * smoothstep(0.40, 0.54, aG.w);
-    H *= (sibling == 2 ? 0.48 + 0.27 * shape : 0.68 + 0.24 * shape) * sisters;
-  }
+  // Sisters keep their arc length as detail retires. Only their screen
+  // coverage fades, so a change in frame rate cannot push tips underground.
+  if (sister) H *= sibling==2 ? 0.64+0.26*shape : 0.80+0.21*shape;
   // Corey's proportions (ceeboozwah/grass): a short blade is a broad one, and a blade holds its width most of the way
   // up, narrowing a little into its sheath at the foot.
-  float W0 = (0.05 + 0.03*aR.z)*mix(1.12, 1., clamp(H / 0.2, 0., 1.))*mix(1.,0.48,reed)*uLodW
-           * mix(1.,0.68,slender)*mix(1.,1.19,broad)*mix(1.12,1.,sisters)
+  float W0 = (0.05 + 0.03*aR.z)*mix(1.12, 1., clamp(H / 0.2, 0., 1.))*mix(1.,0.48,reed)*widthScale
+           * mix(1.,0.68,slender)*mix(1.,1.19,broad)
            * mix(0.61,1.,smoothstep(0.42,1.,aR.w));
   float wd = W0 * (0.43 + 0.57*smoothstep(0.,0.27,by)) * pow(1.-by,0.75);
-  if (sister) wd *= 0.79*sisters;
+  wd *= coverage*(sister ? 0.80 : 1.);
   // Each blade answers the same moving front with its own spring angle and
   // phase. Short shoots inside a tuft shelter behind its taller outer blades.
   float soak = smoothstep(0.05, 0.75, wet) * (1. - trample);
@@ -1308,7 +1329,7 @@ void main(){
 #else
   vec3 brush = brushBend(vec3(aG.x, aG.z + H * 0.5, aG.y));
 #endif
-  vec2 rest = mix(fd, away, 0.66 * smoothstep(0.09, 0.45, tuftDist));
+  vec2 rest = mix(fd, away, (sister ? 0.30 : 0.55) * smoothstep(0.09, 0.45, tuftDist));
   vec2 steer = WIND_DIR * sweep + rest * (0.24 + 0.46 * aR.z + 0.68 * soak + 0.31 * trample + 0.17 * edge)
              + lateral * flutter * (0.07 + 0.18 * abs(sweep)) * (1. - 0.53 * crowded) + brush.xz * 1.12;
   // Treat the adjacent shoots as a compliant tuft. Inward bending presses
@@ -1322,13 +1343,13 @@ void main(){
   float bow = sin(angle), upright = cos(angle);
   // Integrate the circular arc along the blade so its centreline has the
   // same length in still air, in a gust, and while springing back.
-  float arc = H * (1. - 0.18 * soak) * (1. - 0.42 * trample) * (1. + 0.36 * min(0., brush.y));
+  float arc = H * (1. - 0.18 * soak) * (1. - 0.20 * trample) * (1. + 0.36 * min(0., brush.y));
   vec3 root=vec3(aG.x,aG.z,aG.y);
 #ifdef SOLVE_BLADE
   if (arc<0.01) return;
-  solveBlade(root,vec3(ax.x,0.,ax.y)*0.5*W0*(sister ? 0.79*sisters : 1.),lean,arc,curvature,site,sibling);
+  solveBlade(root,vec3(ax.x,0.,ax.y)*0.5*W0*(sister ? 0.80 : 1.),lean,arc,curvature,site,sibling);
 #elif defined(STAMP_BLADE)
-  stamp(root,lean,arc,curvature,0.5*W0*(sister ? 0.79*sisters : 1.),site,sibling,sampleIndex);
+  stamp(root,lean,arc,curvature,0.5*W0*(sister ? 0.80 : 1.),site,sibling,sampleIndex);
 #else
   float horizontal = angle < 0.04 ? 0.5 * angle : (1. - upright) / angle;
   float vertical = angle < 0.04 ? 1. - angle * angle / 6. : bow / angle;
@@ -1370,18 +1391,18 @@ void main(){
   // last season's blades still standing: a few everywhere, more in some tufts, many along the tread
   vDry = step(deadRoll, 0.05 + 0.3 * tuft * tuft * tuft + 0.24 * edge);
   // Pigment belongs to the whole blade. The folded normal and glints still resolve per pixel.
-  vec3 tip = meadowTip(aG.xy, aG.z, (aR.y-0.5)*0.06 + (tuft-0.5)*0.05) * mix(0.9,1.12,tuft);
+  vec4 stand = meadowStand(aG.xy);
+  vec3 tip = stand.rgb * (0.86+0.20*tuft+0.08*aR.y);
   float young = smoothstep(0.83,0.98,tuft)*smoothstep(0.05,0.50,tip.r-tip.g);
   tip = mix(tip,mix(LEAF,NEW_GROWTH,0.63),young);
   tip = mix(tip, mix(NEW_GROWTH * vec3(0.98,0.78,0.67), tip*0.5+vec3(0.2,0.16,0.11),0.38), vDry);
-  float patchTone = 0.6*vnoise(aG.xy*0.28) + 0.4*vnoise(aG.xy*1.1);
-  vGrassColour = vec4(tip,patchTone);
+  vGrassColour = vec4(tip,0.76*stand.a+0.24*tuft);
   vAir = airAt(p);
   gl_Position = project(p);
 #endif
 }`;
 const grassHeader = WORLD_VS + BRUSH_VS + clumpGLSL + grassDefines + (!TEST ? bladeStateGLSL : '');
-const GRASS = program(grassHeader + valleyAir + valueNoiseGLSL + floraPalette + bladeVertex,
+const GRASS = program(grassHeader + meadowLodGLSL + valleyAir + floraPalette + bladeVertex,
 (GRASS_LAB ? '#define GRASS_LAB\n' : '') + `
 #ifdef GRASS_LAB
 in float vContact;
@@ -1408,7 +1429,8 @@ void main(){
   float rib = (1. - smoothstep(0.035, 0.12 + footprint, abs(vGA.z))) * (1. - smoothstep(0.17, 0.72, footprint));
   float margin = smoothstep(0.62, 1., abs(vGA.z))*(1.-smoothstep(0.30,0.90,footprint));
   gc *= 1. + (0.24*rib + 0.11*margin) * smoothstep(0.05, 0.36, y);
-  vec3 lit = floraLight(gc, vWP, normalize(vN), normalize(uCam - vWP), y, 0.12 * (1. - vDry), glowI(vGlow));
+  vec3 sunlight=uSunCol*directLight(vWP);
+  vec3 lit = floraLight(gc,vWP,normalize(vN),normalize(uCam-vWP),y,0.12*(1.-vDry),glowI(vGlow),sunlight);
   // a wet blade is a mirror: the sun glints along its fold and the sky shows in its face
   if (vWet > 0.03) {
     vec3 V = normalize(uCam - vWP), Nw = normalize(vN);
@@ -1418,7 +1440,7 @@ void main(){
     vec3 reflected = reflect(-V, Nw);
     float openSky = smoothstep(0.04,0.66,reflected.y);
     float film = smoothstep(0.03,0.60,vWet)*smoothstep(0.12,0.55,y)*(0.58+0.42*vPatch);
-    lit += film * (uSunCol * directLight(vWP) * glint * 0.57
+    lit += film * (sunlight * glint * 0.57
          + ambient(reflected) * openSky * (0.045 + 0.53*fres));
   }
   // Sky reflection on the exposed blade faces follows the crest across the stand.
@@ -1462,18 +1484,26 @@ void main(){
   float seed = fract(phi * 7.31 + aP.x * 0.13);
   vec3 up = vec3(0., 1., 0.), dir = vec3(cos(phi), 0., sin(phi)), sd = vec3(-sin(phi), 0., cos(phi));
   if (type > 5.5) {
+    // Run one half-strip up to the pointed tip and the other back down.
+    // The same 25 vertices now resolve the cupped midrib at every section.
+    int row = (vid <= 12 ? vid : 24-vid) / 2;
+    u = row == 0 ? 0. : 0.24+0.76*float(row-1)/5.;
+    side = vid < 12 ? float(vid % 2)-1. : vid == 12 ? 0. : 1.-float(vid % 2);
     float blade = clamp((u-0.24)/0.76,0.,1.);
     float belly = pow(max(0.,sin(3.14159*pow(blade,0.77))),0.79);
     float width = W*(0.043*(1.-blade)+belly*(1.-0.22*blade));
     float fold = (0.36+0.24*seed)*belly;
     vec3 along = normalize(dir + sd*(seed-0.5)*blade*0.8);
     vec3 across = normalize(sd + up*(seed-0.48)*0.9*blade);
+    vec3 tangent = along*(0.11 + (u >= 0.24 ? aS2.x/0.76 : 0.))
+      + up*(aS2.y + 3.14159*aS2.z*cos(u*3.14159) - 1.12*blade/0.76);
+    vec3 upper = normalize(cross(across,tangent));
     vec3 p = along*L*(0.11*u+aS2.x*blade) + up*L*(aS2.y*u+aS2.z*sin(u*3.14159)-0.56*blade*blade)
-      + across*width*side + up*fold*width*side*side;
+      + width*(across*side + upper*fold*abs(side));
     float gust = windWave(aP.xz+along.xz*blade*L)*uWind;
     p.xz += WIND_DIR * gust * L * 0.30*u*u;
     p += brushBend(aP.xyz+up*L*0.48)*L*0.57*u*u;
-    vN = normalize(up*(0.35+0.8*blade) - along*(aS2.y-1.25*blade) - across*side*fold);
+    vN = normalize(upper - across*side*fold);
     vWP=p+aP.xyz; vU=u; vSide=side; vType=type; vSeed=seed; vHue=aS2.w;
     vStir=texture(uGlow,fieldUV(aP.xz)).r;
     gl_Position = project(vWP); return;
@@ -1546,7 +1576,7 @@ void main(){
     gc *= (0.70 + 0.30 * striae) * (0.75 + 0.25 * abs(s));
   } else gc *= 0.86 + veins * 0.25;
   float stir = glowI(vStir);
-  vec3 lit = floraLight(gc, vWP, normalize(vN), normalize(uCam - vWP), u, 0.04, stir);
+  vec3 lit = floraLight(gc, vWP, normalize(vN), normalize(uCam - vWP), u, 0.04, stir, uSunCol*directLight(vWP));
   // The circulating pulse stays inside the living tissue and carries the leaf's own pigment.
   float breath = 0.92 + 0.08 * sin(uTime * 0.74 + vHue * 11. - 3.2 * u);
   lit += tip * smoothstep(0.10, 0.94, uNight) * tissue * breath * (0.56 + 0.68 * stir);
@@ -2597,7 +2627,8 @@ function buildValley() {
     if(Math.hypot(sc.trees[i]-23,sc.trees[i+2]-36)<Math.hypot(sc.trees[closest]-23,sc.trees[closest+2]-36)) closest=i;
   const oakSite=[sc.trees[closest],sc.trees[closest+2]];
   const oakReady=loadOak(gl,...oakSite,(x,z)=>nearH(near,x,z));
-  const stands = forestStands(sc.trees.filter((_,i)=>i<closest || i>=closest+5), highSites.instances, [sx,nearH(near,sx,sz)-0.08,sz,4.35,0.7317], vnoise, rng);
+  const stands = forestStands(sc.trees.filter((_,i)=>i<closest || i>=closest+5), highSites.instances, [sx,nearH(near,sx,sz)-0.08,sz,4.35,0.7317], vnoise, rng,
+    (x,z) => Math.max(Math.abs(x),Math.abs(z)) < NEAR.half ? nearH(near,x,z) : H(x,z));
   const rosettes = { R: [], D: [], M: [], B: [] };
   growRosettes(sc,near,rosettes);
   for (const key of Object.keys(rosettes)) rosettes[key] = new Float32Array(rosettes[key]);
@@ -2607,13 +2638,26 @@ function buildValley() {
   const forest = uploadForest(stands);
   const grass = bakeMeadow({ gl, shader: GRASS, half: WORLD_HALF, density: GRASS_LAB ? (touch ? 85 : 150) : GRASS_DENSITY, heightRange: near.heightRange,
     heightAt: (x, z) => nearH(near, x, z), outsideView, rng, touch, contact: !TEST, plot: GRASS_LAB ? PLOT : null,
-    habitatAt(x, z, data, i) {
+    habitatAt(x, z, data, i, colours, k) {
+      const y = nearH(near, x, z), water = waterLevel(x, z);
+      const stand = sm(0.28,0.68,fbm(x*0.035+21,z*0.035-9,3));
+      const tuftBed = vnoise(x*0.38,z*0.38);
+      const shade = sm(0.10,0.58,shelterAt(x,z));
+      const damp = 1-sm(0.12,1.05,y-water);
+      const heath = sm(5,17,y)*(1-0.6*shade);
+      // The rose bench follows the east hillside. Smaller colonies follow the
+      // sheltered west bank and a reach of the upper river. Break up their edges.
+      const warp = (stand-0.5)*4, drift = (tuftBed-0.5)*0.22;
+      const bench = ((x-19-0.62*(z-36)+warp)/6.8)**2 + ((z-36)/13)**2;
+      const fen = ((x+30+warp)/9)**2 + ((z+6)/13)**2;
+      const upper = ((x-riverX(z)-6+warp)/5.2)**2 + ((z+46)/12)**2;
+      const rose = GRASS_LAB ? 0 : (1-sm(0.30,1.38,Math.min(bench,fen,upper)+drift))*(1-0.33*damp);
+      writeMeadowColour(colours,k,0.60*stand+0.40*tuftBed,shade,damp,heath,rose);
       if (GRASS_LAB) {
         data[i] = 1;
-        data[i+1] = 0.68 + 0.48*(1-sm(PLOT.z-2, PLOT.z+4, z)) + 0.17*vnoise(x*0.38, z*0.38);
+        data[i+1] = 0.68 + 0.48*(1-sm(PLOT.z-2,PLOT.z+4,z)) + 0.17*tuftBed;
         return;
       }
-      const y = nearH(near, x, z), water = waterLevel(x, z);
       const tread = trailCover(x,z);
       if (y < water - 0.12 || tread >= 0.98) return;
       const island = Math.hypot((x-ISLET[0]+0.21*(z-ISLET[1]))/ISLET_WIDTH, (z-ISLET[1])/ISLET_DEPTH);
@@ -2633,19 +2677,15 @@ function buildValley() {
       const patch = vnoise(x * 0.64 + 7, z * 0.64 - 3);
       const grow = sm(0.06, 0.49, y - water) * (1 - sm(16 + 12 * upland, 25 + 16 * upland, y))
         * soil * (0.81 + 0.32 * patch);
-      const stand = sm(0.34, 0.68, fbm(x * 0.030 + 21, z * 0.030 - 9, 3));
-      const heath = 1 - sm(WORLD_HALF - 5 - 10 * stand, WORLD_HALF, edge);
-      data[i] = Math.min(1, grow * 1.47) * (0.08 + 0.92 * moisture) * heath * (1-sm(0.12,0.96,tread));
+      const mapEdge = 1 - sm(WORLD_HALF - 5 - 10 * stand, WORLD_HALF, edge);
+      data[i] = Math.min(1, grow * 1.47) * (0.08 + 0.92 * moisture) * mapEdge * (1-sm(0.12,0.96,tread));
       const distance = trailDistance(x,z);
       data[i + 2] = 1 - sm(0.9,2.7,distance);
-      const tuftBed = vnoise(x*0.38,z*0.38);
-      const clearing = (1-sm(0.06,0.47,shelterAt(x,z))) * sm(2.1,6.5,distance) * sm(0.70,0.96,grade);
-      // All meadow uses the inspection plot's mix of shoots. Most of the
-      // valley is cropped shorter; sunlit openings grow fox-shoulder-high.
-      const short = 0.54 + 0.19*tuftBed + 0.12*stand;
-      const tall = 1.01 + 0.21*tuftBed + 0.15*stand;
-      const opening = clearing * sm(0.33,0.81,stand);
-      data[i + 1] = (short + (tall-short)*opening) * (0.83+0.17*moisture) * (1-0.24*tread);
+      const opening = (1-0.77*shade)*sm(1.1,3.8,distance)*sm(0.58,0.88,grade);
+      const short = 0.72 + 0.16*tuftBed;
+      const tall = 1.18 + 0.22*tuftBed + 0.11*stand;
+      const meadow = Math.max(rose*0.95,opening*(0.46+0.54*stand));
+      data[i+1] = (short+(tall-short)*meadow)*(1-0.17*tread)*(1-0.20*heath);
     },
   });
   const pl = plantScatter(sc, near, shelterAt);
@@ -2660,13 +2700,14 @@ function buildValley() {
 function uploadForest(stands) {
   const site = { loc:loc(CANOPY,'aSite'), size:4, data:stands.sites, div:1 };
   const habit = { loc:loc(CANOPY,'aHabit'), size:4, data:stands.styles, div:1 };
+  const slope = { loc:loc(CANOPY,'aSlope'), size:2, data:stands.slopes, div:1 };
   const groups = stands.meshes.map((mesh, variant) => {
     const attrs = [
       { loc:loc(CANOPY,'aPos'), size:3, data:mesh.position },
       { loc:loc(CANOPY,'aNor'), size:3, data:mesh.normal },
       { loc:loc(CANOPY,'aBlade'), size:3, data:mesh.blade },
       { loc:loc(CANOPY,'aStalk'), size:3, data:mesh.stalk },
-      { loc:loc(CANOPY,'aTissue'), size:1, data:mesh.tissue }, site, habit,
+      { loc:loc(CANOPY,'aTissue'), size:1, data:mesh.tissue }, site, habit, slope,
     ];
     gl.bindVertexArray(null);
     const indices = uploadBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.index);
@@ -2683,7 +2724,7 @@ function drawTreeRun(group, firstTile, count, close) {
     close ? 0 : group.near * Uint16Array.BYTES_PER_ELEMENT, count);
 }
 function drawForest(planes, mirror, eye, slice = 0, slices = 1) {
-  const width = forest.width, distance = mirror < 0 ? 8 : 16;
+  const width = forest.width, distance = mirror < 0 ? 5 : 13;
   for (let i=slice; i<forest.groups.length; i+=slices) {
     const group=forest.groups[i];
     if (!group.count) continue;
@@ -2872,7 +2913,7 @@ void main(){
   float distanceToSun = length(toSun), weight = exp(-5. * distanceToSun);
   float gain = exp(5. * distanceToSun / steps) * 0.954;
   vec2 q = vUv + stepUV * 0.5;
-  float scattered = 0.;
+  float scattered = 0., openings = 0., observed = 0.;
   for (int i = 0; i < 24; i++) {
     // Clamping an offscreen shaft to the last screen pixel stretches a bright
     // streak across the land. Integrate only actual openings in the canopy.
@@ -2880,16 +2921,22 @@ void main(){
     vec4 c = texture(tMap, q);
     float sunlit = smoothstep(0.34, 1.45, max(c.r, max(c.g, c.b)));
     scattered += c.a * sunlit * weight;
+    openings += c.a; observed += 1.;
     weight *= gain; q += stepUV;
   }
   float reach = viewDepth(texture(tDepth, vUv).r);
   float foreground = smoothstep(0.45,8.,reach) * (1. - 0.72 * texture(tMap, vUv).a);
-  o = vec4(uRayCol * scattered * (uVis / steps) * foreground, 1.); }`);
+  // A shaft needs both a gap and an occluder along the sightline.
+  float brokenLight=1.-smoothstep(0.55,0.94,openings/max(1.,observed));
+  o=vec4(uRayCol*scattered*(uVis/steps)*foreground*brokenLight,1.); }`);
 const P_TEMPORAL = program(FSQ, temporalFragment), P_MIST = program(FSQ, mistFragment);
-const P_FINAL = program(FSQ, viewRay + historyColor + `uniform sampler2D tScene, tBloom, tRays, tMist; uniform float uBloom, uRays; in vec2 vUv; out vec4 o;
+const P_FINAL = program(FSQ, viewRay + historyColor + `uniform sampler2D tScene, tBloom, tRays, tMist; uniform float uBloom, uRays; uniform bool uMistActive; in vec2 vUv; out vec4 o;
 vec3 acesF(vec3 x){ return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0., 1.); }
 // Bilateral upsampling keeps air behind a nearby leaf or bank on its own side of the edge.
 vec4 valleyMist(){
+  if(!uMistActive) return vec4(0.,0.,0.,1.);
+  vec4 local=texture(tMist,vUv);
+  if(local.a==1. && dot(local.rgb,local.rgb)<1e-9) return vec4(0.,0.,0.,1.);
   vec2 size = vec2(textureSize(tMist, 0)), pixel = vUv * size - 0.5, f = fract(pixel);
   vec2 base = floor(pixel);
   float here = min(32., viewDepth(texture(tDepth, vUv).r)), sum = 0.;
@@ -2906,7 +2953,8 @@ vec4 valleyMist(){
   return mix(vec4(0., 0., 0., 1.), fog / max(0.00001, sum), smoothstep(0.015, 0.17, sum));
 }
 void main(){
-  vec3 c = unpackLight(texture(tScene, vUv).rgb), b = texture(tBloom, vUv).rgb, r = texture(tRays, vUv).rgb;
+  vec3 c = unpackLight(texture(tScene, vUv).rgb), b = texture(tBloom, vUv).rgb;
+  vec3 r = uRays>0. ? texture(tRays,vUv).rgb : vec3(0.);
   vec4 fog = valleyMist();
   if (uHDR > 0.5) c = pow(acesF((c + b * uBloom + r * uRays) * fog.a + fog.rgb), vec3(1. / 2.2));
   else c = pow(clamp(pow(clamp(c + b * uBloom * 0.7 + r * uRays * 0.6, 0., 1.), vec3(2.2)) * fog.a + fog.rgb, 0., 1.), vec3(1./2.2));
@@ -2968,10 +3016,11 @@ function ensurePost(w, h) {
   post.mist = { t: mt, f: fboFor(mt), w: mw, h: mh };
   post.mips = [];
   for (let i = 1; i <= 2; i++) { const mw = Math.max(2, w >> i), mh = Math.max(2, h >> i), t = colorTex(mw, mh); post.mips.push({ t, f: fboFor(t), w: mw, h: mh }); }
-  const rw = Math.max(2, w >> 1), rh = Math.max(2, h >> 1), rt = colorTex(rw, rh); post.rays = { t: rt, f: fboFor(rt), w: rw, h: rh };
+  post.rays = { t: colorTex(mw,mh), w:mw, h:mh };
+  post.rays.f=fboFor(post.rays.t);
   post.under = null;
   if (!post.ms) {
-    const t = colorTex(rw, rh);
+    const rw=Math.max(2,w>>1), rh=Math.max(2,h>>1), t=colorTex(rw,rh);
     post.under = { t, f: fboFor(t), w: rw, h: rh };
   }
 }
@@ -3011,9 +3060,10 @@ function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
   const P = [eye[0] + rd[0] * 1000, eye[1] + rd[1] * 1000, eye[2] + rd[2] * 1000, 1];
   const cx = VP[0] * P[0] + VP[4] * P[1] + VP[8] * P[2] + VP[12], cy = VP[1] * P[0] + VP[5] * P[1] + VP[9] * P[2] + VP[13], cw = VP[3] * P[0] + VP[7] * P[1] + VP[11] * P[2] + VP[15];
   const facing = b.f[0] * rd[0] + b.f[1] * rd[1] + b.f[2] * rd[2];
-  const vis = cw > 0 ? Math.max(0, Math.min(1, (facing - 0.05) / 0.45)) : 0;
+  const sunEdge=cw>0 ? Math.max(Math.abs(cx/cw),Math.abs(cy/cw)) : Infinity;
+  const vis=sm(0.34,0.78,facing)*(1-sm(0.85,1.42,sunEdge));
   gl.activeTexture(gl.TEXTURE15); gl.bindTexture(gl.TEXTURE_2D, post.depth);
-  const rayStrength = vis > 0 ? (HDR ? 0.68 : 0.48) * (1 - night) : 0;
+  const rayStrength = vis > 0 ? (HDR ? 0.46 : 0.32) * (1 - night) : 0;
   if (rayStrength > 0) {
     pass(P_RAYS, post.rays.f, post.rays.w, post.rays.h, post.res);
     gl.uniform1i(P_RAYS.u('tDepth'), 15); gl.uniform2fv(P_RAYS.u('uDepthRange'), depthRange);
@@ -3022,7 +3072,14 @@ function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
   const history = post.history[post.write];
+  // If even the closest ray in the frustum misses the shaft cone, clear
+  // afternoon air has exactly unit transmission throughout this view.
+  const halfCone=Math.atan(Math.hypot(tanX,tanY));
+  const sunAngle=Math.acos(Math.min(1,Math.max(-1,b.f[0]*starDirection[0]+b.f[1]*starDirection[1]+b.f[2]*starDirection[2])));
+  const fair=(1-night)*(1-storm)*sm(0.055,0.34,starDirection[1])*(1-sm(0.02,0.35,sheet));
+  const mistActive=fair<0.98 || sunAngle < halfCone+Math.acos(0.035**0.1)+0.005;
   for (const p of [P_MIST, P_TEMPORAL]) {
+    if (p===P_MIST && !mistActive) continue;
     if (p === P_MIST) pass(p, post.mist.f, post.mist.w, post.mist.h);
     else pass(p, history.f, w, h, post.res);
     common(p, eye, VP, 1, t);
@@ -3055,6 +3112,7 @@ function postProcess(VP, eye, b, w, h, t, tanX, tanY, jitter) {
   gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, post.mips[0].t); gl.uniform1i(P_FINAL.u('tBloom'), 5);
   gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, post.rays.t); gl.uniform1i(P_FINAL.u('tRays'), 6);
   gl.uniform1f(P_FINAL.u('uNight'),night); gl.uniform1f(P_FINAL.u('uStorm'),storm);
+  gl.uniform1i(P_FINAL.u('uMistActive'),mistActive);
   gl.uniform1f(P_FINAL.u('uBloom'), 0.085); gl.uniform1f(P_FINAL.u('uRays'), rayStrength); gl.uniform1f(P_FINAL.u('uHDR'), HDR ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
@@ -3678,6 +3736,7 @@ function windStrength() { return (rain && !TEST ? 1.18 : 1.0) + 0.7 * storm; }
 function common(p, eye, VP, mirror, t) {
   gl.useProgram(p);
   if (p.worldFrame === undefined) {
+    gl.uniform1i(p.u('uMeadowColour'),30);
     gl.uniform1i(p.u('uOakColor'),28); gl.uniform1i(p.u('uOakNormal'),29);
     gl.uniform1i(p.u('uBarkColor'),26); gl.uniform1i(p.u('uBarkNormal'),27);
     gl.uniform1i(p.u('uOceanAtlas'),18); gl.uniform1i(p.u('uLeafSprays'), 20); gl.uniform1i(p.u('uRockSurface'), 19); gl.uniform1i(p.u('uGusts'),16); gl.uniform1i(p.u('uTrailMaterial'),17);
@@ -3745,6 +3804,11 @@ function drawIndexedPatches(mesh, planes, eye, focalPixels) {
     for (let i = 0; i < runs; i++) gl.drawElements(gl.TRIANGLES, drawCounts[i], gl.UNSIGNED_INT, byteOffsets[i]);
   }
 }
+function meadowFields(tile) {
+  if(mode===DENSE) return 7;
+  return (glowF.textureCache.tileBlocks[tile] ? 1 : 0) |
+    (groundF.textureCache.tileBlocks[tile] ? 2 : 0) | (wearF.textureCache.tileBlocks[tile] ? 4 : 0);
+}
 function drawScene(eye, b, VP, mirror, t, opts) {
   const planes = prepareViewPlanes(VP, mirror, opts.crop);
   gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
@@ -3761,9 +3825,8 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   common(CANOPY, eye, VP, mirror, t);
   gl.uniform1i(CANOPY.u('uCoverage'),coverage);
   drawForest(planes,mirror,eye);
-  if (coverage) gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
-  common(OAK,eye,VP,mirror,t); drawOak(gl,oakParts);
-  if (coverage) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+  common(OAK,eye,VP,mirror,t);
+  gl.uniform1i(OAK.u('uCoverage'),coverage); drawOak(gl,oakParts,OAK,planes,outsideView);
   common(JLEAF, eye, VP, mirror, t);
   gl.uniform1i(JLEAF.u('uCoverage'),coverage);
   leaves.draw(planes, eye, mirror < 0 ? 0.62 : 1);
@@ -3778,7 +3841,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
       gl.uniform1i(GRASS.u('uStillGrass'), Number(stillGrass));
       bladeContact.bind(GRASS);
     }
-    grassDrawn = grass.draw(planes, eye, grassDensity);
+    grassDrawn = grass.draw(planes, eye, grassDensity, meadowFields);
   }
   // Shade the sky only through gaps left in the opaque scene.
   gl.depthMask(false); gl.depthFunc(gl.LEQUAL);
@@ -3868,7 +3931,6 @@ function render(t, camOverride, glowTexture = texGlow, dt = 0) {
     bladeContact.advance(dt,player.x,foxPose.height,player.z,H(player.x,player.z),fox,foxBasis(),grass,p => {
       common(p,cam.eye,VP,1,t);
       gl.uniform2fv(p.u('uGrassHeight'),grass.heightRange);
-      gl.uniform1f(p.u('uLodW'),1.);
       gl.uniform1i(p.u('uStillGrass'),Number(stillGrass));
     },coupled);
   }
@@ -3976,7 +4038,8 @@ function adaptDensity(rawDt) {
       sceneSamples = lightSamples;
       renderScale = Math.max(0.72, renderScale * 0.86);
       grassDensity = Math.max(0.30, grassDensity * 0.85);
-    } else if (grassDensity > 0.6) grassDensity *= 0.85;
+    } else if (sceneSamples>lightSamples) sceneSamples=lightSamples;
+    else if (grassDensity>0.65) grassDensity=Math.max(0.65,grassDensity*0.88);
     else if (renderScale > 0.72) renderScale = Math.max(0.72, renderScale * 0.9);
     else grassDensity = Math.max(0.30, grassDensity * 0.85);
     coolUntil = warm + 6;

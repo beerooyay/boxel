@@ -2,14 +2,18 @@
 // short row of blocks can share an upload without spanning distant splashes.
 const BLOCK = 16, STRIP = 8 * BLOCK;
 export class FieldTexture {
-  constructor(size) {
+  constructor(size, tileCells = 4*BLOCK) {
     this.size = size;
     this.strips = Math.ceil(size / STRIP);
     this.pages = new Map();
+    this.tileCells = tileCells;
+    this.tilesAcross = Math.ceil(size/tileCells);
+    this.tileBlocks = new Uint16Array(this.tilesAcross*this.tilesAcross);
   }
 
   reset() {
     this.pages.clear();
+    this.tileBlocks.fill(0);
   }
 
   uploadSparse(gl, field) {
@@ -46,6 +50,14 @@ export class FieldTexture {
           page.left = Math.min(page.left, offset + left); page.right = Math.max(page.right, offset + right);
           page.top = Math.min(page.top, row); page.bottom = Math.max(page.bottom, row + 1);
         }
+      }
+      if (Boolean(visible) !== Boolean(page.visibleBlocks & blockBit)) {
+        // Bilinear samples just across a tile edge still see this block.
+        const cells=this.tileCells, across=this.tilesAcross;
+        const x0=Math.max(0,Math.floor((x-1)/cells)), x1=Math.min(across-1,Math.floor((x+BLOCK)/cells));
+        const y0=Math.max(0,Math.floor((y-1)/cells)), y1=Math.min(across-1,Math.floor((y+BLOCK)/cells));
+        for(let ty=y0; ty<=y1; ty++) for(let tx=x0; tx<=x1; tx++)
+          this.tileBlocks[ty*across+tx] += visible ? 1 : -1;
       }
       if (visible) page.visibleBlocks |= blockBit;
       else page.visibleBlocks &= ~blockBit;

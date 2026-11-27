@@ -1,9 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { readTuft, CLUMP } from '../demo/meadow.js';
-import { forestStands } from '../demo/high-canopy.js';
+import { readTuft, CLUMP, meadowFraction } from '../demo/meadow.js';
+import { forestStands, highCanopyMesh } from '../demo/high-canopy.js';
 import { bakeCanopy } from '../demo/atmosphere.js';
+
+test('a slow frame keeps every foreground root and only thins the distant meadow', () => {
+  for (const far of [72,84]) for (const density of [0.3,0.65,1]) {
+    let previous = 1;
+    for (let distance = 0; distance <= far; distance += 0.25) {
+      const fraction = meadowFraction(distance,density,far);
+      if (distance <= 10) assert.equal(fraction,1);
+      assert.ok(fraction >= 0 && fraction <= previous);
+      previous = fraction;
+    }
+    assert.equal(previous,0);
+    assert.ok(meadowFraction(40,0.3,far) < meadowFraction(40,1,far));
+  }
+});
 
 test('a root encodes its nearest tuft across cell boundaries, including in negative coordinates', () => {
   const result = {};
@@ -58,6 +72,30 @@ test('the desktop and mobile atlases decode to the baked leaf cutouts at every d
   }
 });
 
+test('both canopy meshes cover the opaque leaflets across all four atlas variants', () => {
+  const tile = 64, atlas = makeLeafSprays(seeded(2024), tile).levels[0];
+  const mesh = highCanopyMesh(seeded(9942));
+  const tissue = mesh.tissue.find(value => value >= 0);
+  for (const indices of [mesh.index.subarray(0,mesh.nearCount), mesh.index.subarray(mesh.nearCount)]) {
+    const triangles = [];
+    for (let i = 0; i < indices.length; i += 3) {
+      if (mesh.tissue[indices[i]] !== tissue) continue;
+      triangles.push(Array.from(indices.subarray(i,i+3), vertex => mesh.blade.subarray(3*vertex,3*vertex+2)));
+    }
+    for (let y = 0; y < tile; y++) for (let x = 0; x < tile; x++) {
+      const u = ((y+0.5)/tile-0.02)/0.96, side = 2*((x+0.5)/tile-0.02)/0.96-1;
+      if (u < 0 || u > 1 || Math.abs(side) > 1) continue;
+      const opaque = [0,1,2,3].some(col => atlas.bytes[4*(y*atlas.width+col*tile+x)+3] >= 128);
+      if (!opaque) continue;
+      const covered = triangles.some(tri => tri.every(([a,b], k) => {
+        const [c,d] = tri[(k+1)%3];
+        return (c-a)*(side-b) - (d-b)*(u-a) <= 1e-6;
+      }));
+      assert.ok(covered, `leaflet clipped at length ${u}, width ${side}`);
+    }
+  }
+});
+
 test('valley, upland and island trees share an anchored crown at both viewing distances', () => {
   const valley = [3,0,4,0.43,4, -18,2,36,0.63,7], upland = [78,11,31,14], island = [-6,1.3,8,4.35,0.7317];
   const forest = forestStands(valley, upland, island, () => 0.5, seeded);
@@ -99,4 +137,25 @@ test('meadow shelter follows the rotated, scaled leaf area even away from the tr
   assert.equal(shelter(9,2),0);
   assert.equal(shelter(1,2),0);
   assert.equal(shelter(51,51),0);
+});
+
+test('the downhill rim of each trunk enters the triangulated slope', () => {
+  const height=(x,z)=>0.61*x-0.34*z+0.04*Math.abs(z);
+  const forest=forestStands([3,0,4,0.43,5],[],[-6,0,8,4.35,0.7317],()=>0.5,seeded,height);
+  for(const tile of forest.tiles) {
+    const mesh=forest.meshes[tile.variant];
+    for(let i=tile.start; i<tile.start+tile.count; i++) {
+      const [x,y,z,h]=forest.sites.subarray(4*i,4*i+4);
+      const [c,s,width]=forest.styles.subarray(4*i,4*i+3);
+      const [gx,gz]=forest.slopes.subarray(2*i,2*i+2);
+      for(let j=0;j<12;j++) {
+        const [px,py,pz]=mesh.position.subarray(3*j,3*j+3);
+        const dx=h*width*(c*px-s*pz), dz=h*width*(s*px+c*pz);
+        const t=Math.max(0,Math.min(1,py/0.18));
+        const rim=y+h*py+(1-t*t*(3-2*t))*(gx*dx+gz*dz);
+        const buried=height(x+dx,z+dz)-rim;
+        assert.ok(buried>=0.025 && buried<0.22, `root rim buried ${buried} m`);
+      }
+    }
+  }
 });
