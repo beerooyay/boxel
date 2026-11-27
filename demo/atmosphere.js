@@ -67,13 +67,20 @@ float canopyCover(vec3 wp) {
 
 // Approximate how much overhead sky remains visible below each crown. Use the
 // actual area and height of the leaves, then blur over a few metres of sky.
-export function bakeCanopy(gl, groundLeaves, forest, extent) {
+export function bakeCanopy(gl, groundLeaves, forest, extent, oaks = []) {
   const size = extent, area = new Float32Array(size * size), moment = new Float32Array(area.length);
   function deposit(x, y, z, cover) {
     const ix = Math.floor(x + size / 2), iz = Math.floor(z + size / 2);
     if (ix < 0 || ix >= size || iz < 0 || iz >= size) return;
     const k = iz * size + ix;
     area[k] += cover; moment[k] += cover * y;
+  }
+  for (const {x,y,z,height} of oaks) {
+    const r=height*0.36;
+    for(let dz=-Math.ceil(r);dz<=r;dz++) for(let dx=-Math.ceil(r);dx<=r;dx++) {
+      const core=1-(dx*dx+dz*dz)/(r*r);
+      if(core>0) deposit(x+dx,y+height*(0.65+0.23*core),z+dz,1.7*core);
+    }
   }
   const { R, D, M } = groundLeaves;
   for (let i = 0; i < R.length; i += 4) {

@@ -1,6 +1,6 @@
 # Tarn tree and flora audit
 
-The November 27, 2026 valley has **1,229 trees**. The fine-leaved tree in the pink hillside meadow is the single summer oak from LOLIPOP’s pack. The other 1,228 trees share Tarn’s procedural broadleaf family. A warm crown beside the oak is one of those broadleaves. Its neighbouring upright stone was removed at world coordinates (25.34, 44.04). Before-and-after inventories match every trunk position and the four other standing stones. [Visit the hillside](https://beerooyay.github.io/boxel/?oak)
+The valley has **1,229 trees**. All 12 trunk sites inside the starting hillside trial use LOLIPOP summer oaks. The original fine-leaved landmark is one medium oak, joined by four forked medium oaks and seven broad oaks. The other 1,217 trees use Tarn’s procedural broadleaves. The trial covers a 32 × 26 m ellipse centred at (18, 36). Trees beyond its edge remain visible from the meadow. The upright stone at (25.34, 44.04) was removed in the earlier hillside pass. [Visit the hillside](https://beerooyay.github.io/boxel/?oak)
 
 ## Trees in the world
 
@@ -17,14 +17,14 @@ The procedural forest grows three branching shapes from two seeds each. Every tr
 
 | Shape | Trees | Near triangles per tree | Distant triangles per tree | Leaf sprays across all instances |
 | --- | ---: | ---: | ---: | ---: |
-| Spreading A | 215 | 2,215 | 980 | 43,645 |
-| Upright A | 235 | 2,203 | 972 | 47,235 |
-| Rounded A | 169 | 2,191 | 964 | 33,631 |
-| Spreading B | 211 | 2,464 | 1,088 | 47,686 |
-| Upright B | 237 | 2,476 | 1,096 | 54,036 |
-| Rounded B | 161 | 2,191 | 964 | 32,039 |
+| Spreading A | 215 | 2,593 | 980 | 43,645 |
+| Upright A | 232 | 2,569 | 964 | 46,168 |
+| Rounded A | 168 | 2,605 | 988 | 34,440 |
+| Spreading B | 210 | 2,896 | 1,088 | 47,460 |
+| Upright B | 232 | 2,872 | 1,072 | 51,504 |
+| Rounded B | 160 | 2,581 | 972 | 32,160 |
 
-The 1,228 procedural crowns break down into **893 green, 146 dark evergreen, 64 blossom pink and 125 honey/apricot**. Two additional crown palette ranges, solid petal pink and solid gold, receive zero procedural trees. Those colours also serve other vegetation. The imported oak has its own summer leaf material. [Pigment definitions](../demo/flora-palette.js)
+The 1,217 procedural crowns break down into **889 green, 140 dark evergreen, 64 blossom pink and 124 honey/apricot**. Two additional crown palette ranges, solid petal pink and solid gold, receive zero procedural trees. Those colours also serve other vegetation. The imported oak has its own summer leaf material. [Pigment definitions](../demo/flora-palette.js)
 
 **Why the oak reads differently.** The artist built irregular branch contours and textured clusters of small oak leaves with open sky between them. The nearby broadleaves repeat four denser leaf-spray patterns on branching shoots. Their trunks have modeled flutes, buttresses and forks, plus a shared 768 × 768 scanned bark colour and normal pair. The normals give the grooves a lighting response. The modeled wood supplies the silhouette. [Oak renderer](../demo/oak.js) · [Leaf atlas generator](../tools/bake-leaf-sprays.mjs) · [Bark scan](https://polyhaven.com/a/bark_brown_02)
 
@@ -32,9 +32,9 @@ The 1,228 procedural crowns break down into **893 green, 146 dark evergreen, 64 
 
 The 146.1 MiB source GLB contains **17 distinct forms** across four large, four big, three medium, three small and three saplings. Each has three mesh detail levels, a bark and a leaf part per level, and one billboard. Those account for 119 mesh records. Five additional showcase copies of one large oak contribute ten records. A checker floor and a scale figure bring the file to 131 mesh records, 227 nodes, 25 materials and 72 embedded images. [LOLIPOP’s original pack](https://sketchfab.com/3d-models/oak-trees-pack-17var-lods-seasons-gameready-a5e4e64f9f1d4089bdcc6170a9333393) · [CC Attribution 4.0](https://creativecommons.org/licenses/by/4.0/)
 
-The game loads **six oak files totalling 1.88 MiB**. `Medium_oak_tree__001_LOD0` contains 1,744 bark triangles and 3,378 leaf triangles. The summer leaf colour/opacity map is 2,048², the leaf normal map is 1,024², and both bark maps are 512 × 1,024. Its root flare conforms to the triangulated hillside across its lowest 0.95 m. The trial replaces one procedural site and draws the authored bark and leaves into the main view, reflections and directional shadows. [Runtime assets](../demo/oak)
+The game loads **16 oak files totalling 2.62 MiB**. Three forms share the summer colour/opacity and normal maps, 2,048² and 1,024² for leaves and 512 × 1,024 for bark. The original medium landmark keeps its LOD0 near mesh. The forked medium and broad forms use LOD1 nearby. All three switch to LOD2 beyond 42 m and cast cutout shadows with that mesh. The other 14 forms, alternate seasons and billboards remain source assets. [Runtime assets](../demo/oak)
 
-**Limits of the trial.** The other 16 forms, alternate seasons, coarser meshes, billboards and extra material channels are available as source assets only. The oak crown is static in wind and uses its full mesh at every visible distance. Its occupied site is available for ground plant placement. The separate canopy shelter bake, trunk ambient-occlusion bake and sailwing obstacle list currently take their trees from the procedural stands alone. These gaps matter if the pack expands into whole groves. [Canopy shelter](../demo/atmosphere.js) · [Ground lighting](../demo/valley-light.js) · [Sailwing routes](../demo/fauna.js)
+Each oak’s root flare follows the triangulated slope across its lowest 0.95 m. The trunk base stays anchored while the upper crown bends with the wind. The grove contributes crown shelter, trunk occlusion and clearance for sailwing flight. The shelter and flight calculations use approximate crown volumes. [Canopy shelter](../demo/atmosphere.js) · [Ground lighting](../demo/valley-light.js) · [Sailwing routes](../demo/fauna.js)
 
 ## Rooted flora
 
@@ -42,7 +42,7 @@ Each root or stalk is counted once at its generated position. In a colony, indiv
 
 | Flora | Desktop roots or stalks | Coarse-pointer roots or stalks | Desktop pieces | Typical habitat |
 | --- | ---: | ---: | ---: | --- |
-| Crimson rosette | 560 | 364 | 6,156 | Sheltered tree and stone bases |
+| Blush rosette | 560 | 364 | 6,156 | Sheltered tree and stone bases |
 | Cut-leaf fern | 480 | 312 | 5,743 | Grove shade and shore |
 | Glow tube | 3,101 | 2,024 | 6,202 | Colonies at the waterline and around rocks |
 | Coilfern | 3,038 | 2,066 | 6,076 | Fern walk, west groves and upland trails |
@@ -52,7 +52,7 @@ Each root or stalk is counted once at its generated position. In a colony, indiv
 | Spiral rosette | 500 | 500 | 10,500 | Path edges, banks and grove margins |
 | **Total** | **10,801** | **7,421** | **51,666** | |
 
-Crimson and spiral rosettes have separate generators and silhouettes. The first seven families share a strip renderer with **41,166** desktop pieces or **27,941** on coarse pointers. Each tidecup has 12 lobes and five pollen filaments. Its filaments reuse the glow-tube shader, accounting for 1,975 desktop strips. The spiral rosettes have 21 strap leaves each. The engine’s desktop `leaves` readout of **268,772** combines their 10,500 straps with 258,272 procedural tree sprays. Individual leaflets and the imported oak’s foliage have no entry in that counter.
+Blush and spiral rosettes have separate generators and silhouettes. The first seven families share a strip renderer with **41,166** desktop pieces or **27,941** on coarse pointers. Each tidecup has 12 lobes and five pollen filaments. Its filaments reuse the glow-tube shader, accounting for 1,975 desktop strips. The spiral rosettes have 21 strap leaves in three overlapping fans each. The engine’s desktop `leaves` readout of **265,877** combines their 10,500 straps with 255,377 procedural tree sprays. Individual leaflets and the imported oak’s foliage have no entry in that counter.
 
 **Grass and surface cover.** The full map holds **5,571,606 grass root records** on desktop and **2,621,446** on coarse pointers. A root occupies eight bytes and can carry one to three blades up close. Tile visibility and distance determine how many blades the GPU draws each frame. Shade, moisture, exposure and elevation blend green meadow, sedge and straw heath. Light pink grass grows in the eastern meadow, western fen and a band along the upper river. Reeds share the grass renderer. Ground moss, fungal filaments, rock lichen and fallen litter live in surface materials. Eight drifting spore pods, airborne motes and spore rain are effects. [Meadow generation](../demo/meadow.js) · [Habitats and surface materials](../demo/game.js)
 
@@ -62,9 +62,9 @@ The separate 10 × 10 m grass lab has **15,016 desktop roots** or **8,566 coarse
 
 - **Trunk placement.** All 1,229 positions are distinct. Nine pairs have centres less than 0.5 m apart, five of them inside the map. At 1 m the count rises to 24 pairs, 13 inside. The closest pair is 10.4 cm apart at (−92.63, −25.24) and (−92.73, −25.22). The upland scatter tests habitat and slope and permits adjacent trunks. These stands are still present. The census prints coordinates for all 24 pairs.
 - **Plant placement.** The audit found zero coincident rooted understory placements, including checks between the two rosettes and all seven strip families, and zero understory roots exactly on a trunk centre. Crossed strips, cup filaments and clumped grass siblings intentionally share a base.
-- **Shipped art.** All 11 dedicated tree and leaf asset files have distinct file hashes. The small compressed leaf atlas and its raw fallback decode to the same six mip levels, also present in the larger atlas. Each browser selects one file. The game’s atlas supplies four canopy sprays and four ground-leaf shapes. [Atlas selection](../demo/leaf-spray.js)
+- **Shipped art.** All 21 dedicated tree and leaf asset files have distinct file hashes. The small compressed leaf atlas and its raw fallback decode to the same six mip levels, also present in the larger atlas. Each browser selects one file. The game’s atlas supplies four canopy sprays and four ground-leaf shapes. [Atlas selection](../demo/leaf-spray.js)
 - **Source-only art.** Of 55 PNGs in the artist’s main texture folder, 54 have unique SHA-256 hashes. The winter cluster’s `Subsurface` and `SubsurfaceAmount` PNGs are byte-identical. The billboard folder has 323 PNGs and 323 distinct hashes. Both folders stay outside the runtime download.
-- **Startup work removed.** The ground-light bake now stamps the tallest part at each root once. Desktop plant stamps fell from 16,022 to 3,804, and coarse-pointer stamps from 10,746 to 2,519. The 512² RGB lighting texture matched byte for byte before and after on both device profiles in both game and lab. Skipping hidden understory uploads in the lab saves 41,511 desktop or 28,133 coarse-pointer strip instances at startup.
+- **Startup work removed.** The ground-light bake now stamps the tallest part at each root once. Desktop plant stamps fell from 15,814 to 3,781, and coarse-pointer stamps from 10,613 to 2,507. Skipping hidden understory uploads in the lab saves 41,511 desktop or 28,133 coarse-pointer strip instances at startup.
 
 ## Reproduce the census
 

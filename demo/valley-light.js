@@ -49,7 +49,7 @@ export function groundAtlas(size, extent, groundAt, waterAt, addOccluders) {
   return { data, heightRange: [min, span] };
 }
 
-export function bakeGroundLight(gl, extent, groundAt, waterAt, sc, forest, pl) {
+export function bakeGroundLight(gl, extent, groundAt, waterAt, sc, forest, pl, oaks = []) {
   const size = 2 * extent;
   const atlas = groundAtlas(size, extent, groundAt, waterAt, stamp => {
     for (let g = 0; g < sc.rv.length; g++) {
@@ -62,6 +62,7 @@ export function bakeGroundLight(gl, extent, groundAt, waterAt, sc, forest, pl) {
       const h = forest.sites[i+3], r = Math.max(0.26, 0.085 * h * forest.styles[i+2]);
       stamp(forest.sites[i], forest.sites[i+1], forest.sites[i+2], r, h * 0.44, r, 0);
     }
+    for(const {x,y,z,height} of oaks) stamp(x,y,z,0.044*height,0.48*height,0.044*height,0);
     // The scatter emits each root's petals and crossed strips consecutively.
     // Their concentric occluders nest, so their union is the tallest one.
     for (let i = 0; i < pl.P.length;) {
@@ -129,7 +130,7 @@ void main(){
   // In daylight the low inversion burns off. Suspended droplets still pick
   // out a sun-facing gap in the canopy, and rain restores a shallow wet layer.
   float fair = clearAfternoon()*(1.-smoothstep(0.02,0.35,uSheet));
-  vec2 densityRange=mix(vec2(0.006,0.055),vec2(0.00015,0.0017),fair);
+  vec2 densityRange=mix(vec2(0.002,0.033),vec2(0.00015,0.0017),fair);
   float beam=forward*(1.-uNight)*(1.-0.85*uStorm)*smoothstep(-0.015,0.08,uStarDir.y);
   float lowMist=1.-smoothstep(0.76,0.98,fair);
   if(lowMist==0. && beam<=0.035){ o=vec4(0.,0.,0.,1.); return; }
@@ -145,7 +146,7 @@ void main(){
     if (above < -0.3 || above > (beam > 0.035 ? 8. : 3.8)) continue;
     float aerosol = 0.;
     if (beam > 0.035)
-      aerosol = 0.014 * smoothstep(0.035,0.95,beam) * canopyCover(wp) * smoothstep(0.12,1.1,above)
+      aerosol = 0.009 * smoothstep(0.035,0.95,beam) * canopyCover(wp) * smoothstep(0.12,1.1,above)
         * (1.-smoothstep(3.5,8.,above));
     float wet = clamp(textureLod(uGround, uv, 0.).r + uSheet + 0.53 * (1. - smoothstep(-0.1, 1., bed - water)), 0., 1.);
     float drift = vnoise(wp.xz * 0.29 + vec2(-0.054, 0.017) * uTime + above * 0.16);
@@ -168,7 +169,7 @@ void main(){
       incident += uNight * uNight * (0.42 * colony + 3.8 * glow * hue);
     }
     light += transmission * scatter * incident;
-    transmission *= 1. - scatter;
+    transmission *= exp(-density * stepLength);
   }
   vec3 radiance = light * uExposure;
   o = vec4(uHDR > 0.5 ? radiance : sqrt(radiance), transmission);

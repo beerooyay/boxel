@@ -1,16 +1,15 @@
 // Artist-facing sRGB swatches. Materials and baked colony light use linear RGB.
 const swatches = {
-  LEAF: '#4B9B50',
+  LEAF: '#708B49',
   NEW_GROWTH: '#A8BF53',
   PRAIRIE_ROSE: '#F5B5C8',
   SEDGE: '#83AF89',
   STRAW: '#D6B878',
-  PETAL_PINK: '#EA4696',
-  ORCHID: '#A16ACD',
-  SCARLET: '#D94456',
+  PETAL_PINK: '#F0B5C7',
+  FERN: '#758D5A',
   GOLD: '#F3CB59',
   BLUE: '#568FDC',
-  EVERGREEN: '#287149',
+  EVERGREEN: '#506C40',
   BLOSSOM: '#FF9EC6',
   BLOSSOM_TIP: '#FFD4E1',
   HONEY: '#FFC358',
@@ -25,13 +24,13 @@ const pigment = Object.fromEntries(Object.entries(swatches).map(([name, hex]) =>
 
 // Species inherit a pair of pigments with a stable colony-wide split.
 const undergrowth = [
-  ['SCARLET', 'PETAL_PINK', 0.47],
+  ['PRAIRIE_ROSE', 'PETAL_PINK', 0.47],
   ['LEAF', 'LEAF', 1],
   ['BLUE', 'BLUE', 1],
-  ['ORCHID', 'BLUE', 0.78],
-  ['GOLD', 'ORCHID', 0.58],
-  ['SCARLET', 'GOLD', 0.64],
-  ['LEAF', 'ORCHID', 0.72],
+  ['FERN', 'BLUE', 0.78],
+  ['GOLD', 'FERN', 0.58],
+  ['PRAIRIE_ROSE', 'GOLD', 0.64],
+  ['LEAF', 'FERN', 0.72],
 ];
 
 export function understoryPigment(type, hue) {
@@ -49,7 +48,7 @@ vec3 understoryPigment(float type, float hue) {
 }
 // A stand has a stable inherited hue. Exposure and moisture can modulate its value.
 vec3 crownPigment(float seed){
-  if (seed < 0.78) return mix(LEAF,NEW_GROWTH,0.19*seed/0.78);
+  if (seed < 0.78) return mix(LEAF,NEW_GROWTH,0.26+0.19*seed/0.78);
   if (seed < 0.85) return PETAL_PINK;
   if (seed < 0.91) return mix(EVERGREEN, LEAF, 0.22 * (seed - 0.85)/0.06);
   if (seed < 0.95) return mix(BLOSSOM, BLOSSOM_TIP, 0.72 * (seed - 0.91)/0.04);

@@ -4,12 +4,13 @@ const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 
 function census(stands, local, upland, oak, rosettes, plants, half) {
-  const trees = [oak], hues = [0, 0, 0, 0, 0, 0];
+  const trees = oak.map(site => [site.x,site.z]), hues = [0, 0, 0, 0, 0, 0];
   for (let i = 0; i < stands.sites.length; i += 4) {
     trees.push([stands.sites[i], stands.sites[i+2]]);
     const hue = stands.styles[i+3];
     hues[[0.78, 0.85, 0.91, 0.95, 0.985, Infinity].findIndex(limit => hue < limit)]++;
   }
+  const proceduralInGrove = trees.slice(oak.length).filter(([x,z]) => ((x-18)/16)**2+((z-36)/13)**2 <= 1).length;
   const inside = ([x,z]) => Math.abs(x) <= half && Math.abs(z) <= half;
   const closePairs = [];
   for (let i = 0; i < trees.length; i++) {
@@ -51,7 +52,7 @@ function census(stands, local, upland, oak, rosettes, plants, half) {
   for (const family of roots) for (const site of family) understorySites.add(site);
   return {
     trees: { total: trees.length, inside: trees.filter(inside).length, outerForest: upland.length/4,
-      localIncludingOak: local.length/5, islet: 1, oak, shapes, hues,
+      localIncludingOak: local.length/5, islet: 1, oak, proceduralInGrove, shapes, hues,
       closePairs: closePairs.sort((a,b) => a.metres-b.metres) },
     spiralRosettes: { roots: spiralBases.size, leaves: rosettes.B.length/4 },
     understory: Object.fromEntries(families.map((name,i) => [name,{roots: roots[i].size, pieces: pieces[i]}])),
@@ -72,7 +73,7 @@ async function main() {
         const at = '  const heightRange = bakeGroundLight(';
         assert(source.includes(at), 'Missing valley construction hook');
         const probe = '  window.floraCensus = (' + census.toString() +
-          ')(stands, sc.trees, highSites.instances, oakSite, rosettes, pl, WORLD_HALF);\n';
+          ')(stands, sc.trees, highSites.instances, oakSites, rosettes, pl, WORLD_HALF);\n';
         await route.fulfill({ response, body: source.replace(at, probe+at) });
       });
       url.search = lab ? '?grass-lab' : '';
@@ -83,6 +84,8 @@ async function main() {
         ...window.floraCensus, render: window.__game.state().instances}));
       assert.equal(result.coarse, coarse);
       assert.equal(result.trees.total, result.render.trees);
+      assert.equal(result.trees.oak.length, result.render.oaks);
+      assert.equal(result.trees.proceduralInGrove, 0, 'The hillside trial contains only pack oaks');
       const pieces = Object.values(result.understory).reduce((n, family) => n+family.pieces, 0);
       assert.equal(result.render.plants, lab ? 0 : pieces);
       console.log(JSON.stringify({lab, ...result}));

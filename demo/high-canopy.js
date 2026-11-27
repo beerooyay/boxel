@@ -151,12 +151,14 @@ export function highCanopyMesh(random, variant = 0) {
     // A swollen collar grows out of the trunk into a load-bearing crook.
     // The branch rises close to the trunk, reaches sideways, then lifts its fork.
     const collar = extend(base, a-0.12*turn, reach*0.13, lift*0.26);
-    const elbow = extend(collar, a, reach*0.34, lift*0.31);
+    const elbow = extend(collar, a, reach*0.34, lift*(0.22+0.16*t));
     const wrist = extend(elbow, a+turn*0.62, reach*0.29, lift*0.12);
     const hand = extend(wrist, a+turn, reach*0.24, lift*0.31);
     const baseRadius = 0.030 - 0.014*t;
-    wood([base, collar, elbow, wrist, hand],
-      [baseRadius*1.27, baseRadius*0.94, baseRadius*0.62, baseRadius*0.33, 0.0032], 7, [0,2,4]);
+    const haunch = mix(base, collar, 0.48);
+    haunch[1] -= baseRadius*0.21;
+    wood([base, haunch, collar, mix(collar,elbow,0.75), mix(elbow,wrist,0.25), wrist, hand],
+      [baseRadius*1.48, baseRadius*1.20, baseRadius*0.94, baseRadius*0.70, baseRadius*0.55, baseRadius*0.33, 0.0032], 9, [0,3,6]);
     shoot(elbow, a - 0.82, reach * 0.74, 0.055 + 0.075 * random());
     shoot(wrist, a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random());
     shoot(hand, a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random());

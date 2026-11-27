@@ -211,8 +211,8 @@ The tree and understory leaf atlases ship with coverage-preserving mip levels in
 To rebuild both sizes, install the [Khronos KTX tools](https://github.com/KhronosGroup/KTX-Software)
 and run `node tools/bake-leaf-sprays.mjs`.
 
-The hillside trial uses LOLIPOP’s summer medium oak under CC Attribution 4.0. Tarn extracts one mesh pair,
-resizes the material maps and fits the root flare to the terrain. [Visit the oak](https://beerooyay.github.io/boxel/?oak) · [Original pack](https://sketchfab.com/3d-models/oak-trees-pack-17var-lods-seasons-gameready-a5e4e64f9f1d4089bdcc6170a9333393) · [License](https://creativecommons.org/licenses/by/4.0/)
+The starting hillside has twelve summer oaks from three forms in LOLIPOP’s oak pack under CC Attribution 4.0.
+Tarn extracts two detail levels per form, shares the resized material maps and fits each root flare to the terrain. [Visit the oak](https://beerooyay.github.io/boxel/?oak) · [Original pack](https://sketchfab.com/3d-models/oak-trees-pack-17var-lods-seasons-gameready-a5e4e64f9f1d4089bdcc6170a9333393) · [License](https://creativecommons.org/licenses/by/4.0/)
 
 Quaternius made the fox and its eleven neighbours and released the pack under CC0. The ambient animals use
 the authored walk, idle and eating clips. To rebuild their runtime GLBs, run

@@ -214,13 +214,14 @@ const habitats = [
 ];
 const samples = 64;
 
-function makeRoutes(groundAt, waterLevel, riverX, sc, forest, random) {
+function makeRoutes(groundAt, waterLevel, riverX, sc, forest, random, oaks) {
   const routes = [];
   const obstacles = [];
   for (let i = 0; i < forest.sites.length; i += 4) {
     const h = forest.sites[i+3], spread = forest.styles[i+2];
     obstacles.push({ x: forest.sites[i], y: forest.sites[i+1], z: forest.sites[i+2], radius: 0.57 * h * spread, height: h * 1.12 + 0.4 });
   }
+  for (const {x,y,z,height} of oaks) obstacles.push({x,y,z,radius:0.53*height,height:height+0.4});
   for (let group = 0; group < sc.rv.length; group++) {
     if (group === 3) continue; // beach gravel
     const pos = sc.rv[group], scale = sc.rs[group];
@@ -267,9 +268,9 @@ function makeRoutes(groundAt, waterLevel, riverX, sc, forest, random) {
   return routes;
 }
 
-export function createSailwings({ gl, program, vao, worldVertex, groundAt, waterLevel, riverX, sc, stands, random, outsideView, windAt }) {
+export function createSailwings({ gl, program, vao, worldVertex, groundAt, waterLevel, riverX, sc, stands, oaks = [], random, outsideView, windAt }) {
   const shader = program(worldVertex + vertexSource, fragmentSource);
-  const mesh = sailwingMesh(), routes = makeRoutes(groundAt, waterLevel, riverX, sc, stands, random);
+  const mesh = sailwingMesh(), routes = makeRoutes(groundAt, waterLevel, riverX, sc, stands, random, oaks);
   const instances = new Float32Array(routes.length * 9), buffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, 2 * instances.byteLength, gl.DYNAMIC_DRAW);
   const attrs = [
