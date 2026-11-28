@@ -3685,7 +3685,7 @@ const chase = { height: player.y, arm: 3.55 };
 const contactGrid = TEST ? null : contactVolume();
 const bladeContact = TEST ? null : createBladeContact(gl,solveBlades,stampBlades,contactGrid);
 let contactOn = true, coupled = true, markContacts = false, stillGrass = true, labView = 0;
-const foxPose = { yaw: player.yaw, turn: 0, bend: 0, backing: false, reverseYaw: null, pitch: 0, roll: 0, height: player.y };
+const foxPose = { yaw: player.yaw, turn: 0, bend: 0, backing: false, reverseYaw: null, pitch: 0, roll: 0, height: player.y, impact: 0, landingTime: 1 };
 function indexBoulders(sc) {
   const cells = new Map();
   for (let group = 0; group < 3; group++) {
@@ -3762,16 +3762,24 @@ function updateFox(dt, ground, distance, alongBody, running) {
   const x = player.x, z = player.z, size = Math.sqrt(fox?.contactScale ?? 1);
   const f = Math.sin(foxPose.yaw), g = -Math.cos(foxPose.yaw);
   const span = 0.44 * size, width = 0.20 * size;
-  const support = player.onStone ? climbingSupport : H;
-  const front = player.swimming ? ground : support(x + span*f, z + span*g);
-  const rear = player.swimming ? ground : support(x - span*f, z - span*g);
-  const left = player.swimming ? ground : support(x + width*g, z - width*f);
-  const right = player.swimming ? ground : support(x - width*g, z + width*f);
-  const pitch = player.swimming ? 0.065 : Math.atan(Math.max(-3.4,Math.min(3.4,(front-rear)/(2*span))));
-  const roll = player.swimming ? 0.026*Math.sin(2*Math.PI*player.stroke)
+  // Sample the paws' reach, including the lip before the body reaches a stone.
+  const pawHeight = (ahead, side) => player.grounded
+    ? climbingSupport(x + ahead*f + side*g, z + ahead*g - side*f) : ground;
+  const fl = pawHeight(span,width), fr = pawHeight(span,-width);
+  const hl = pawHeight(-span,width), hr = pawHeight(-span,-width);
+  const front = (fl+fr)*0.5, rear = (hl+hr)*0.5;
+  const left = (fl+hl)*0.5, right = (fr+hr)*0.5;
+  // The pitch and roll account for the support plane. A rock under just one
+  // paw leaves a diagonal residual that the individual legs can take up.
+  const diagonal = Math.max(-0.09*size,Math.min(0.09*size,(fl-fr-hl+hr)*0.25));
+  const flying = !player.swimming && !player.grounded;
+  const pitch = flying ? 0.21*Math.tanh(player.vy/3) : player.swimming ? 0.065 : Math.atan(Math.max(-3.4,Math.min(3.4,(front-rear)/(2*span))));
+  const roll = flying ? 0 : player.swimming ? 0.026*Math.sin(2*Math.PI*player.stroke)
     : Math.atan(Math.max(-0.80,Math.min(0.80,(right-left)/(2*width))));
   foxPose.pitch += (pitch - foxPose.pitch) * ease;
   foxPose.roll += (roll - foxPose.roll) * ease;
+  foxPose.landingTime += dt;
+  const settle = player.grounded ? foxPose.impact * sm(0,0.055,foxPose.landingTime) * (1-sm(0.055,0.23,foxPose.landingTime)) : 0;
   const sole = ground + Math.min(0.10*size,Math.max(-0.05,0.225*(front+rear-2*ground))) + 0.02;
   foxPose.height = player.grounded ? Math.max(ground - 0.05, foxPose.height + (sole-foxPose.height)*ease) : player.y + 0.02;
   const follow = player.swimming ? player.y : ground + 0.65*Math.max(0, player.y-ground);
@@ -3779,7 +3787,8 @@ function updateFox(dt, ground, distance, alongBody, running) {
   const reverse = Math.abs(alongBody) > 0.0001 ? alongBody < 0 : foxPose.backing;
   const stride = Math.max(distance, Math.abs(foxPose.turn)*0.33) * (reverse ? -1 : 1);
   const phase = player.grounded || player.swimming ? -1 : Math.min(0.94, 0.24 + 0.70*player.flight/jumpDuration);
-  fox?.advance(dt,stride,running && distance/dt>2,foxPose.bend,phase,player.swimming,player.scrambling,player.stroke);
+  const grade = player.grounded ? Math.max(-1, Math.min(1, (front-rear)/(2*span))) * sm(0.1,0.6,distance/dt) : 0;
+  fox?.advance(dt,stride,running && distance/dt>2,foxPose.bend,phase,player.swimming,player.scrambling,player.stroke,grade,diagonal,settle);
 }
 
 function foxCamera(dt = 0) {
@@ -3906,7 +3915,12 @@ function crossSlope(dx, dz, draft) {
   player.x=x+dx*fraction; player.z=z+dz*fraction;
 }
 
+let jumpBuffer = 0;
 function stepPlayer(dt) {
+  if (jumpBuffer > 0) {
+    if (player.swimming || requestJump(player)) jumpBuffer = 0;
+    else jumpBuffer -= dt;
+  }
   let mx = controller.input.x, mz = controller.input.forward;
   if (keys.KeyW || keys.ArrowUp) mz += 1; if (keys.KeyS || keys.ArrowDown) mz -= 1;
   if (keys.KeyA || keys.ArrowLeft) mx -= 1; if (keys.KeyD || keys.ArrowRight) mx += 1;
@@ -3948,7 +3962,10 @@ function stepPlayer(dt) {
     if (terrain<=ceiling && (!side || support>terrain+0.02) && walkable(x,z)) {
       player.x=x; player.z=z; target=support;
     } else target=stoneTop(oldX,oldZ,ceiling,ground);
+    const impactSpeed = Math.max(0,-player.vy);
     if (advanceFlight(player,target,dt)) {
+      foxPose.impact = Math.min(1,impactSpeed/5);
+      foxPose.landingTime = 0;
       const d=waterLevel(player.x,player.z)-target;
       if (d<=0.015 && target<=H(player.x,player.z)+0.02) footstep(player.x,player.z,false,player.wet,true,d);
       player.stride=0;
@@ -3971,7 +3988,7 @@ function stepPlayer(dt) {
   }
   const travel = Math.hypot(player.x-oldX, player.z-oldZ);
   const rise=player.y-oldY;
-  const distance = player.swimming ? travel : wasGrounded && player.grounded ? Math.hypot(travel,rise) : 0;
+  const distance = wasGrounded && player.grounded ? Math.hypot(travel,rise) : player.swimming || player.grounded ? travel : 0;
   if (player.grounded && wasGrounded && travel>0.0001) {
     player.scrambling=Math.abs(rise)/travel > (player.scrambling ? 0.65 : 0.84);
   } else if (!player.grounded || !wasGrounded) player.scrambling=false;
@@ -4002,7 +4019,10 @@ function stepPlayer(dt) {
   if (!GRASS_LAB) brush.advance(player.x, player.y, player.z, dt);
 }
 
-function jump() { if (started && !menu.open && !capture?.viewing) requestJump(player); }
+function jump() {
+  if (!started || menu.open || capture?.viewing || player.swimming) return;
+  if (!requestJump(player) && player.vy < 0) jumpBuffer = 0.12;
+}
 
 function throwStone() {
   const cam = playerCamera(0);
@@ -4973,6 +4993,7 @@ function scripted(m, frames = 900, view = 'shore') {
         player.y=level-fox.draft; player.swimming=true; player.grounded=false;
       }
       foxPose.yaw = player.yaw; foxPose.reverseYaw = null; foxPose.pitch = foxPose.roll = 0;
+      jumpBuffer = 0; foxPose.impact = 0; foxPose.landingTime = 1;
       foxPose.height = chase.height = player.swimming ? player.y : terrain;
       chase.arm = 3.55; swimmerWake.reset(); post.previous = null;
     }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), animal: fox?.species.id, gait: fox?.gait, started, wildlife: wildlife?.state() ?? [],

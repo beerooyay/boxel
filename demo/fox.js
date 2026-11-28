@@ -16,7 +16,7 @@ export async function loadPlayerAnimal(gl, shader, species) {
   for (const [side, phase] of [['L', 0], ['R', Math.PI]]) {
     for (const front of [true, false]) {
       const end = front ? 'Front' : 'Back', shoulder = nodeIndex(end + 'Shoulder.' + side);
-      const limb = { shoulder, front, phase: phase + (front ? 0 : 0.80 * Math.PI) };
+      const limb = { shoulder, front, diagonal: front === (side === 'L') ? 1 : -1, phase: phase + (front ? 0 : 0.80 * Math.PI) };
       limbs.set(shoulder, limb);
       limbs.set(nodeIndex('IK' + end + 'Leg.' + side), limb);
     }
@@ -40,26 +40,35 @@ export async function loadPlayerAnimal(gl, shader, species) {
   const contactScale = species.id === 'Fox' ? 1 : Math.max(0.72, eyeHeight / 0.85, shoulderHeight / 0.51);
   let gait = 'Idle', time = 0, fade = 1, dirty = true, contactDirty = true;
   let steering = 0, tailLag = 0, bakedLift = 0, fromLift = 0;
-  let swim = 0, climb = 0;
+  let swim = 0, climb = 0, swimPhase = 0;
+  let pawOffset = 0, compression = 0;
+  function isStride(g) { return g !== 'Idle' && g !== 'Gallop_Jump'; }
   function clipFor(g) { return clips[g === 'Swim' || g === 'Scramble' ? 'Walk' : g]; }
-  function advance(dt, distance, running, turning, jumpPhase, swimming, scrambling, stroke) {
+  function advance(dt, distance, running, turning, jumpPhase, swimming, scrambling, stroke, grade = Number(scrambling), diagonal = 0, settle = 0) {
+    pawOffset += (diagonal/scale-pawOffset) * -Math.expm1(-24*dt);
+    compression = settle * 0.10;
     const next = swimming ? 'Swim' : jumpPhase >= 0 ? 'Gallop_Jump' : scrambling ? 'Scramble'
       : Math.abs(distance) / dt < 0.10 ? 'Idle' : running ? 'Gallop' : 'Walk';
     if (next !== gait) {
       if (dirty) palette();
-      for (let i = 0; i < from.length; i++) from[i].set(blended[i]);
+      for (let i = 0; i < from.length; i++) from[i].set(fade < 1 ? blended[i] : pose[i]);
       fromLift = bakedLift;
-      time = 0; fade = 0; gait = next;
+      // Walk and scramble share the same footfalls. Carry the stride across
+      // changes of grade and speed so a planted foot can finish its step.
+      const carryStride = isStride(gait) && isStride(next);
+      time = carryStride ? time / clipFor(gait).duration * clipFor(next).duration : 0;
+      if (next === 'Swim') swimPhase = carryStride ? time / clipFor(next).duration - stroke : 0;
+      fade = 0; gait = next;
     }
     const clip = clipFor(gait);
     const stride = (gait === 'Gallop' ? 1.95 : gait === 'Scramble' ? 0.63 : 0.94) * Math.sqrt(contactScale);
-    if (swimming) time = stroke * clip.duration;
+    if (swimming) time = ((stroke + swimPhase + 1) % 1) * clip.duration;
     else if (jumpPhase >= 0) time = jumpPhase * clip.duration;
     else time = (time + (gait === 'Idle' ? dt : distance * clip.duration / stride) + clip.duration) % clip.duration;
     steering += (turning-steering) * -Math.expm1(-18*dt);
     tailLag += (steering-tailLag) * -Math.expm1(-6*dt);
     swim += (Number(swimming)-swim) * -Math.expm1(-9*dt);
-    climb += (Number(scrambling)-climb) * -Math.expm1(-12*dt);
+    climb += (grade-climb) * -Math.expm1(-12*dt);
     fade = Math.min(1, fade + dt / (jumpPhase >= 0 ? 0.09 : 0.14));
     dirty = true;
   }
@@ -91,9 +100,15 @@ export async function loadPlayerAnimal(gl, shader, species) {
     if (index === chest || frontFeet.includes(index)) steerBone(world[index], -steering, world[chest]);
     else if (index === neck) steerBone(world[index], -steering*0.48);
     else if (index === tail) steerBone(world[index], tailLag*0.82);
-    if (swim + climb < 0.001) return;
-    if (index === neck) pitchBone(world[index], -0.23*swim + 0.16*climb);
     const limb = limbs.get(index);
+    if (limb && (compression > 0 || Math.abs(pawOffset) > 0.0001)) {
+      // Compress both the leg chain and its separately weighted paw target.
+      const m = world[index], pivotY = world[limb.shoulder][13];
+      for (let k = 1; k < 12; k += 4) m[k] *= 1-compression;
+      m[13] += (pivotY-m[13])*compression + limb.diagonal*pawOffset;
+    }
+    if (swim + Math.abs(climb) < 0.001) return;
+    if (index === neck) pitchBone(world[index], -0.23*swim + 0.16*climb);
     if (limb) {
       const phase = time / clipFor(gait).duration * 2*Math.PI + limb.phase;
       const pull = Math.sin(phase), recovery = Math.max(0, Math.cos(phase));
@@ -104,13 +119,14 @@ export async function loadPlayerAnimal(gl, shader, species) {
   }
   function palette() {
     rig.sample(pose, clipFor(gait), time);
-    for (let i = 0; i < pose.length; i++) {
-      interpolate(blended[i], from[i], 0, pose[i], 0, 3, fade, 0);
-      interpolate(blended[i], from[i], 3, pose[i], 3, 4, fade, 3);
+    const weight = fade*fade*(3-2*fade);
+    if (fade < 1) for (let i = 0; i < pose.length; i++) {
+      interpolate(blended[i], from[i], 0, pose[i], 0, 3, weight, 0);
+      interpolate(blended[i], from[i], 3, pose[i], 3, 4, weight, 3);
     }
     // World physics supplies the jump arc; keep the authored leg motion.
-    bakedLift = fromLift*(1-fade) + (gait === 'Gallop_Jump' ? (pose[body][2]-jumpBase)*100 : 0)*fade;
-    rig.apply(blended, steer, bakedLift);
+    bakedLift = fromLift*(1-weight) + (gait === 'Gallop_Jump' ? (pose[body][2]-jumpBase)*100 : 0)*weight;
+    rig.apply(fade < 1 ? blended : pose, steer, bakedLift + compression*shoulderHeight/scale);
     dirty = false;
     contactDirty = true;
   }
