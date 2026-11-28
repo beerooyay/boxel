@@ -777,10 +777,7 @@ void main(){
       vec3 projected=w.x*texture(uBarkColor,p.zy).rgb+w.y*texture(uBarkColor,p.xz).rgb+w.z*texture(uBarkColor,p.xy).rgb;
       bark=mix(bark,projected,vBarkSpace.w);
     }
-    // Increase fine relief only at walking distance. Reuse the normal map
-    // so grazed ridges catch the moving light without tessellating the bark.
-    float nearGrain=1.-smoothstep(2.,9.,length(uCam-vWP));
-    n=normalize(n+relief*(1.+0.24*nearGrain));
+    n=normalize(n+relief);
     float damp=vField.y;
     bark*=1.-0.29*damp;
     vec3 sun=uSunCol*directLight(vWP), sky=ambient(n)*contactLight(vWP);

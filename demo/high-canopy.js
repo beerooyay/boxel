@@ -76,8 +76,6 @@ export function highCanopyMesh(random, variant = 0) {
     }
     const target=throat.slice(shift).concat(throat.slice(0,shift));
     const centre=rim.reduce((sum,id)=>sum.map((v,j)=>v+position[3*id+j]/rim.length),[0,0,0]);
-    const arcLength=primary ? Math.hypot(...centre.map((x,k)=>
-      throat.reduce((sum,id)=>sum+position[3*id+k],0)/throat.length-x)) : 0;
     let previous=rim;
     for(const t of (primary ? [0.08,0.28,0.62] : [0.28,0.62])) {
       const loop=rim.map((id,i)=>{
@@ -96,11 +94,7 @@ export function highCanopyMesh(random, variant = 0) {
           // appear as soon as the surface turns away from the trunk.
           const v=3*target[j];
           blade[3*index]=(blade[v]+(u-j)/target.length)%1;
-          // Across any one ring the fibres have travelled the same arc.
-          // Projecting each vertex separately sheared the grain into eddies.
-          blade[3*index+1]=blade[v+1]-0.42*(1-t)*arcLength;
-          const fibre=normalise(...mix(q.map((x,k)=>x-p[k]),axis.map(x=>x*run),t));
-          for(let k=0;k<3;k++) stalk[3*index+k]=fibre[k];
+          blade[3*index+1]=blade[v+1]+point.reduce((sum,x,k)=>sum+(x-q[k])*axis[k],0);
           blade[3*index+2]=blade[v+2];
           // Keep upright grain only at the trunk lip. Across the visible
           // shoulder both bark colour and relief follow the limb chart.
@@ -195,10 +189,7 @@ export function highCanopyMesh(random, variant = 0) {
           blend=(1-Math.min(1,Math.max(0,(reach/parent.radius-0.72)/1.6)))**2;
           n=normalise(...mix(n,radial,blend));
         }
-        // Stretch the photographed grain along the load-bearing heel. A
-        // compressed knot here reads like a whirl as the ring opens out.
-        const grainRun=join===true ? arc-0.58*Math.min(arc,0.15) : arc;
-        const id=vertex(surface,n,buttress ? -2 : -1,i/sides,grainRun,axis,girth);
+        const id=vertex(surface,n,buttress ? -2 : -1,i/sides,arc,axis,girth);
         graft[id]=buttress || (join && k===1) ? 1 : blend;
         if(i===sides) seamCopies.set(id,id-sides);
       }
