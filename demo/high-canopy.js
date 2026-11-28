@@ -116,6 +116,13 @@ export function highCanopyMesh(random, variant = 0) {
           if(skin) {
             let reach=skin.r/skin.radius;
             if(k===0) reach=Math.min(0.64,reach);
+            else {
+              // A rounded union in the radial section: as the two surfaces
+              // meet, the collar takes the trunk tangent, then rolls outward.
+              const fillet=0.46;
+              const overlap=Math.max(0,fillet-Math.abs(reach-1));
+              reach=Math.max(0.993,reach)+overlap*overlap/(4*fillet);
+            }
 
             surface[0]=skin.centre[0]+skin.nx*skin.radius*reach;
             surface[2]=skin.centre[2]+skin.nz*skin.radius*reach;
@@ -257,17 +264,25 @@ export function highCanopyMesh(random, variant = 0) {
     const knots=[haunch,collar,shoulder,elbow,wrist,hand];
     const widths=[1.32,1.15,0.84,0.52,0.28,0.0024/baseRadius];
     const points=[base,haunch,collar], radii=[1.42,widths[0],widths[1]].map(w=>w*baseRadius);
-    for(let k=1;k<knots.length-1;k++) {
-      for(let step=1;step<=2;step++) {
-        const u=step/2;
-        points.push(curvePoint(knots[k-1],knots[k],knots[k+1],knots[Math.min(k+2,knots.length-1)],u));
+    // Relax sharp changes of direction over the neighbouring growth spans.
+    // The roots of the shoots follow the rounded centreline in both LODs.
+    const relaxed=knots.map((p,k)=>k<2 || k===knots.length-1 ? p :
+      mix(p,mix(knots[k-1],knots[k+1],0.5),0.26));
+    const coarseRings=[0,2];
+    for(let k=1;k<relaxed.length-1;k++) {
+      const steps=k<4 ? 3 : 2;
+      for(let step=1;step<=steps;step++) {
+        const u=step/steps;
+        points.push(curvePoint(relaxed[k-1],relaxed[k],relaxed[k+1],relaxed[Math.min(k+2,relaxed.length-1)],u));
         radii.push(baseRadius*(widths[k]*(1-u)+widths[k+1]*u));
       }
+      coarseRings.push(points.length-1);
     }
-    const branch=wood(points,radii,9,[0,2,4,6,8,10],false,true);
-    shoot(elbow, a - 0.82, reach * 0.74, 0.055 + 0.075 * random(),0.0064,branch[6]);
-    shoot(wrist, a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random(),0.0064,branch[8]);
-    shoot(mix(wrist,hand,0.987), a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random(),0.0027,branch[10]);
+    const branch=wood(points,radii,9,coarseRings,false,true);
+    const outerFork=branch[coarseRings[3]], tipFork=branch[coarseRings[4]], tip=branch[coarseRings[5]];
+    shoot(outerFork.p, a - 0.82, reach * 0.74, 0.055 + 0.075 * random(),0.0064,outerFork);
+    shoot(tipFork.p, a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random(),0.0064,tipFork);
+    shoot(mix(tipFork.p,tip.p,0.987), a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random(),0.0027,tip);
   }
   for (let i = 0; i < 4; i++)
     shoot(spine(0.86 + i * 0.022), rotation + i * 1.55, 0.16 + 0.095 * random(), 0.07 + 0.065 * random());
