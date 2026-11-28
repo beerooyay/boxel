@@ -118,6 +118,30 @@ test('skin contact charges adjacent wet cells continuously as a paw crosses a te
   }
 });
 
+test('water glow has a rounded contact peak and retains its charge along a bank', () => {
+  const x = 5.4, z = 4.44;
+  const open = tank(), bank = tank(0, true), shifted = tank();
+  for (const water of [open, bank, shifted]) {
+    water.stir(x + (water === shifted ? 0.001 : 0), z, 0.8);
+    water.advance(1 / 30);
+  }
+  let openLight = 0, bankLight = 0;
+  for (let i = -2; i <= 2; i++) {
+    for (let j = -2; j <= 2; j++) {
+      const sx = x + i * grid.step, sz = z + j * grid.step;
+      openLight += open.sample(sx, sz).light;
+      const light = bank.sample(sx, sz).light;
+      bankLight += light;
+      if (i > 0) assert.equal(light, 0);
+    }
+  }
+  const peak = open.sample(x, z).light;
+  assert.ok(peak > openLight * 0.45 && peak < openLight * 0.65);
+  assert.ok(open.sample(x + grid.step, z + grid.step).light > 0);
+  assert.ok(Math.abs(shifted.sample(x, z).light - peak) < openLight * 0.0001);
+  assert.ok(Math.abs(openLight - bankLight) < 1e-6);
+});
+
 test('texture updates preserve both fixed ticks across batched uploads and clear a reset', () => {
   const grid = { x0: 0, z0: 0, width: 37, height: 35, step: 0.24 };
   const water = createWaterSurface(grid, (_x,_z,bed) => Object.assign(bed,{depth:1,level:0,vx:0,vz:0}));

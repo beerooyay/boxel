@@ -129,7 +129,7 @@ export function createSwimWake(surface, levelAt, emitLight) {
           let sx=wet ? px : part.x, sz=wet ? pz : part.z;
           if (wet && part.wet) { sx=0.5*(px+part.x); sz=0.5*(pz+part.z); }
           const energy=pulse*(i===0 ? 0.28 : 1.05);
-          surface.stir(sx,sz,0.70*energy);
+          surface.stir(sx,sz,energy);
           emitLight(sx,sz,energy);
         }
       }
@@ -245,25 +245,11 @@ float wakeCrest(float distance, float width, float pixelMetres) {
   return (k*exp(-0.56*k*k)+0.30*(k+2.9)*exp(-0.74*(k+2.9)*(k+2.9))) * width*width/(filtered*filtered);
 }
 
-// The water just swept by a moving part has a soft centre and a short tail.
-// Each contribution approaches zero at its spatial and temporal bounds.
-float skinLight(float d2,float size,float force,float age) {
-  if (d2>=0.36 || age>=0.32 || force<=0.05) return 0.;
-  float span=0.11+1.4*size, radial=d2/(span*span);
-  float soft=(1.-smoothstep(0.20,0.36,d2))/(1.+radial*(2.+radial));
-  float youth=(1.-smoothstep(0.21,0.32,age))/(1.+6.*age);
-  float drive=force*smoothstep(0.05,0.36,force);
-  return soft*drive*youth*youth;
-}
-
-// xy bends the reflection; z is the shear that excites plankton at the live
-// waterline. Both use the same animated contacts and the same wet-patch bounds.
-vec3 swimmerDisturbance(vec2 p,vec2 drift,float level,float pixelMetres,bool luminous) {
-  if (any(lessThan(p,uWakeBounds.xy)) || any(greaterThan(p,uWakeBounds.zw))) return vec3(0.);
+vec2 swimmerSlope(vec2 p,vec2 drift,float level,float pixelMetres) {
+  if (any(lessThan(p,uWakeBounds.xy)) || any(greaterThan(p,uWakeBounds.zw))) return vec2(0.);
   float sameWater=1.-smoothstep(0.10,0.29,abs(level-uWakeLevel));
-  if (sameWater<=0.) return vec3(0.);
+  if (sameWater<=0.) return vec2(0.);
   vec2 slope=vec2(0.);
-  float contact=0.;
   if (uBow.w>0.004) {
     vec2 q=p-uBow.xy, f=uBowDirection, side=vec2(-f.y,f.x);
     float across=dot(q,side), along=dot(q,f);
@@ -275,8 +261,7 @@ vec3 swimmerDisturbance(vec2 p,vec2 drift,float level,float pixelMetres,bool lum
     float fade=1.-smoothstep(radius*1.1,radius*2.8,abs(across));
     if (fade>0. && abs(along-lip)<0.31) {
       vec2 normal=normalize(f+side*1.27*across/curve);
-      float crestDistance=dot(normal,f)*(along-lip);
-      float wave=wakeCrest(crestDistance,0.043+0.24*uBow.z,pixelMetres);
+      float wave=wakeCrest(dot(normal,f)*(along-lip),0.043+0.24*uBow.z,pixelMetres);
       slope+=normal*wave*uBow.w*0.67*fade;
     }
   }
@@ -284,12 +269,6 @@ vec3 swimmerDisturbance(vec2 p,vec2 drift,float level,float pixelMetres,bool lum
     int start=i*${SAMPLES};
     vec2 bestOffset=vec2(0.), bestSide=vec2(0.);
     float best=1.e6, width=0., load=0., feather=0., extent=0.;
-    vec4 skin=uWakePath[start];
-    float partLight=0.;
-    if (luminous && skin.w>0.) {
-      vec2 delta=p-skin.xy;
-      partLight=skinLight(dot(delta,delta),skin.w,skin.z,0.);
-    }
     for(int j=1;j<${SAMPLES};j++){
       vec4 a=uWakePath[start+j-1], b=uWakePath[start+j];
       if (min(a.w,b.w)<=0. || max(a.z,b.z)<0.004 || uWakeAges[j]>0.58) continue;
@@ -301,17 +280,15 @@ vec3 swimmerDisturbance(vec2 p,vec2 drift,float level,float pixelMetres,bool lum
       float u=clamp(raw,0.,1.);
       vec2 offset=p-mix(from,to,u);
       float d=dot(offset,offset);
-      float age=mix(ageA,ageB,u), size=mix(a.w,b.w,u), force=mix(a.z,b.z,u);
-      if (luminous && ageA<0.32 && d<0.36)
-        partLight=max(partLight,skinLight(d,size,force,age));
       if (d>=best) continue;
       best=d; bestOffset=offset; bestSide=vec2(-line.y,line.x)*inversesqrt(lengthSquared);
+      float age=mix(ageA,ageB,u);
+      float size=mix(a.w,b.w,u);
       extent=max(0.001,abs(raw-u)*sqrt(lengthSquared));
       width=(i==0 ? 0.057 : 0.028)+0.14*size;
       feather=max(0.,age)*(i==0 ? 0.82 : 0.44)+size*(i==0 ? 1.27 : 0.69);
-      load=force*(1.-smoothstep(0.24,0.51,age));
+      load=mix(a.z,b.z,u)*(1.-smoothstep(0.24,0.51,age));
     }
-    contact=max(contact,partLight*(i==0 ? 1. : 1.3));
     if (best>0.58 || load<0.004) continue;
     float transverse=dot(bestOffset,bestSide);
     float wing=abs(transverse)-feather;
@@ -319,6 +296,6 @@ vec3 swimmerDisturbance(vec2 p,vec2 drift,float level,float pixelMetres,bool lum
     float wave=wakeCrest(wing,width,pixelMetres);
     slope+=sign(transverse)*bestSide*(load*wave*taper*(i==0 ? 0.35 : 0.28));
   }
-  return sameWater*vec3(slope,contact);
+  return sameWater*slope;
 }
 `;

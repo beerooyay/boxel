@@ -95,10 +95,9 @@ Along the banks, wind waves turn toward the shallows and run up onto gravel betw
 Water contact reads the same animated skin as grass contact. A continuous bow wave splits ahead of the swimmer’s
 leading contact, and each immersed leg and tail leaves a smaller trail that follows its motion.
 The wake travels through ripples from wading animals, skimming sailwings and thrown stones, and reflects off rocks.
-At night, the water lights up where the swimmer’s body and paddling legs disturb the surface.
-A softer glow follows the outgoing ripples and drifts with the current. Run a curve through
-the meadow and the green or pink blades light up on both sides of your track. The wake widens
-and fades where you’ve passed.
+At night, each paddle stirs a soft patch of light that spreads along the ripples and drifts
+with the current. On land, a planted paw sends a brief ripple through the surrounding grass.
+The outer tufts catch the light as the blades nearest the paw fade back to their own colour.
 Brushed leaves light along their veins. Wet prints and scuffs still show on bare soil.
 From the summit, look for bright snow in sheltered gullies, dark rock ribs and patches of scrub below the scree. [Play at the waterfall](https://beerooyay.github.io/boxel/?falls)
 Cloud shadows cross the valley by

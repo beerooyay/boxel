@@ -18,7 +18,7 @@ import { loadLeafSprays, uploadLeafSprays, sprayGLSL, STRAP_ASPECT } from './lea
 import { barkTile, loadSurface, uploadSurface } from './surface-texture.js';
 import { galaxyFragment } from './galaxy.js';
 import { FieldTexture } from './field-texture.js';
-import { bakeMeadow, MEADOW_TILE, BLADE_HEIGHT_RANGE, CLUMP, clumpGLSL, meadowLodGLSL, SISTER_ONE, SISTER_TWO, GrassWake, grassWakeGLSL } from './meadow.js';
+import { bakeMeadow, MEADOW_TILE, BLADE_HEIGHT_RANGE, CLUMP, clumpGLSL, meadowLodGLSL, SISTER_ONE, SISTER_TWO, GrassPulses, grassPulseGLSL } from './meadow.js';
 import { BrushField } from './brush.js';
 import { waterBounds } from './water-view.js';
 import { stoneBed, stoneDrop, stoneSpacing } from './stone-bed.js';
@@ -1297,7 +1297,7 @@ uniform vec2 uGrassHeight; uniform int uBladeRows;
 const int uGrassFields=7;
 #else
 uniform int uGrassFields;
-${grassWakeGLSL}
+${grassPulseGLSL}
 #endif
 centroid out vec3 vWP; centroid out vec4 vGA; centroid out float vGlow; centroid out float vWet; centroid out vec3 vN; centroid out float vPatch;
 flat out vec4 vGrassColour; centroid out vec4 vAir; centroid out float vDry;
@@ -1462,7 +1462,7 @@ void main(){
 #endif
   }
 #endif
-  contactLight = max(contactLight,grassWakeLight(uGrassFields>>3,aG.xy,tuft));
+  contactLight = max(contactLight,grassPulseLight(uGrassFields>>3,aG.xy,tuft));
   vec3 face = cross(tangent, across);
   vN = normalize(-face + tangent * (0.48 + 0.41 * by) + across * (side * 0.88));
   vGA = vec4(by, aR.z, 2. * side, bow); vWP = p; vGlow = glow + contactLight; vWet = wet; vPatch = aR.y;
@@ -1770,13 +1770,13 @@ void main(){
     g+=stream*(downstream*0.028*cos(flow)+vec2(downstream.y,-downstream.x)*0.012*sin(flow*0.71));
     currentCap=0.065*stream*smoothstep(0.84,1.,sin(flow));
   }
-  vec3 wake=vec3(0.);
+  vec2 fineWake=vec2(0.);
 #ifdef SWIM_WAKE
-  wake=swimmerDisturbance(p,
-    downstream*stream*(.24+.64*smoothstep(.02,.57,depth))+WIND_DIR*.085*clamp(vGust,0.,1.7),level,pixelMetres,uNight>0.);
-  wake*=smoothstep(.012,.075,depth);
+  fineWake=swimmerSlope(p,
+    downstream*stream*(.24+.64*smoothstep(.02,.57,depth))+WIND_DIR*.085*clamp(vGust,0.,1.7),level,pixelMetres);
+  fineWake*=smoothstep(.012,.075,depth);
 #endif
-  g+=wake.xy;
+  g+=fineWake;
   vec3 N = normalize(vec3(-g.x, 1., -g.y));
   vec3 V = normalize(uCam - vWP); float NdV = clamp(dot(N, V), 0., 1.);
   float F = 0.022 + 0.978 * pow(1. - NdV, 5.);
@@ -1836,7 +1836,7 @@ void main(){
   // The two faces of a short ripple catch different parts of the sky. This
   // still reads at a steep chase-camera angle looking into dark water.
   vec2 skySlope=normalize(uSunDir.xz-0.56*V.xz+vec2(0.001,0.));
-  float tilt=dot(disturbance.yz+wake.xy,skySlope);
+  float tilt=dot(disturbance.yz+fineWake,skySlope);
   float skylight=1.-0.91*uNight, face=max(0.,tilt);
   col*=1.-0.29*skylight*smoothstep(0.,0.20,-tilt);
   col+=(0.19*refl+0.23*col+vec3(0.037,0.054,0.057))*(face/(face+0.15))*skylight;
@@ -1870,7 +1870,7 @@ void main(){
   if (uHDR < 0.5) transmission = pow(transmission,vec3(1./2.2));
   vec3 under = texture(uUnder, clamp(bend, 0.002, 0.998)).rgb * transmission;
   vec3 surface = mix(under,col,alpha);
-  if (uNight > 0. && (disturbance.a > 0. || wake.z > 0.)) {
+  if (uNight > 0. && disturbance.a > 0.) {
     // Lit plankton remain visible in a trough. Their wave's signed height
     // (metres) and moon-facing slope change the colour and intensity smoothly.
     float charge = disturbance.a;
@@ -1878,11 +1878,7 @@ void main(){
     float lift = 9.*disturbance.x + 0.65*tilt;
     float ridge = 0.5 + 0.5*lift/(0.38+abs(lift));
     vec3 plankton = mix(vec3(0.065,0.30,0.21),vec3(0.20,0.59,0.35),ridge);
-    vec3 afterglow = plankton*light*(0.85+3.95*ridge);
-    // Freshly sheared water flashes on the current stroke. The lower-intensity
-    // transported light takes over where the skin and bow have moved on.
-    vec3 fresh = plankton * wake.z * (0.21+0.16*ridge);
-    vec3 emission = tonemap((afterglow+fresh)*uNight*uNight);
+    vec3 emission = tonemap(plankton*light*(0.85+3.95*ridge)*uNight*uNight);
     // In the display-encoded fallback, keep headroom for reflected highlights.
     surface += uHDR > 0.5 ? emission : emission*(1.-clamp(surface,0.,1.));
   }
@@ -3440,13 +3436,13 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 const uploadSurfaceWaves = waterTexture(gl,surface,28);
 let simT = 0, denseUpload = null;
-const grassWake = new GrassWake(WORLD_HALF);
+const grassPulses = new GrassPulses(WORLD_HALF);
 const swimmerWake=createSwimWake(surface,waterLevel,(x,z,energy) => glowF.contact(x,z,energy));
 
 function setMode(m) {
   // Dense rows overwrite the whole image. All three layers can reuse the same staging buffer.
   denseUpload = m === DENSE ? (denseUpload ?? new Uint8Array(N * N)) : null;
-  mode = m; sailwings.reset(); surface.reset(); swimmerWake.reset(); grassWake.reset(); post.previous = null;
+  mode = m; sailwings.reset(); surface.reset(); swimmerWake.reset(); grassPulses.reset(); post.previous = null;
   acc = { frames: 0, t: 0, ms: 0, up: 0 }; wall = 0;
   for (const f of [glowF, groundF, wearF]) f.set(m);
 }
@@ -3458,6 +3454,7 @@ function footstep(x, z, inWater, wetFeet, run, depth = 0.35) {
     wetContact(x,z,load,0.58);
   } else {
     glowF.contact(x,z,0.95); wearF.deposit(x,z,0,run?0.3:0.2);
+    if (night>0) grassPulses.touch(x,z,simT);
     if (wetFeet>0) groundF.contact(x,z,0.70*wetFeet);
   }
 }
@@ -3850,7 +3847,7 @@ function stepPlayer(dt) {
   const dx = vx * dt + (player.vx - vx) * blend / rate, dz = vz * dt + (player.vz - vz) * blend / rate;
   player.vx += (vx - player.vx) * blend; player.vz += (vz - player.vz) * blend;
   const oldX = player.x, oldZ = player.z, oldY=player.y, wasGrounded = player.grounded;
-  const wasSwimming = player.swimming, wasOnSoil = wasGrounded && !player.onStone && level-ground<=0.015;
+  const wasSwimming = player.swimming;
   let target;
   if (wasGrounded || wasSwimming) {
     crossSlope(dx,dz,draft);
@@ -3865,10 +3862,7 @@ function stepPlayer(dt) {
     } else target=stoneTop(oldX,oldZ,ceiling,ground);
     if (advanceFlight(player,target,dt)) {
       const d=waterLevel(player.x,player.z)-target;
-      if (d<=0.015 && target<=H(player.x,player.z)+0.02) {
-        footstep(player.x,player.z,false,player.wet,true,d);
-        if (night>0 && Math.hypot(player.x-oldX,player.z-oldZ)<0.25*dt) grassWake.land(player.x,player.z,simT);
-      }
+      if (d<=0.015 && target<=H(player.x,player.z)+0.02) footstep(player.x,player.z,false,player.wet,true,d);
       player.stride=0;
     }
   }
@@ -3888,9 +3882,6 @@ function stepPlayer(dt) {
     wetContact(oldX+(player.x-oldX)*u,oldZ+(player.z-oldZ)*u,Math.min(1.2,0.45+0.16*(oldY-player.y)/dt),0.82);
   }
   const travel = Math.hypot(player.x-oldX, player.z-oldZ);
-  if (night>0 && wasOnSoil && player.grounded && !player.onStone && waterDepth<=0.015) {
-    grassWake.sweep(oldX,oldZ,player.x,player.z,simT,dt);
-  }
   const rise=player.y-oldY;
   const distance = player.swimming ? travel : wasGrounded && player.grounded ? Math.hypot(travel,rise) : 0;
   if (player.grounded && wasGrounded && travel>0.0001) {
@@ -4255,7 +4246,7 @@ function submitIndexedRuns(mesh,runs) {
   }
 }
 function meadowFields(tile) {
-  const waves = night>0 ? grassWake.tiles[tile]<<3 : 0;
+  const waves = night>0 ? grassPulses.tiles[tile]<<3 : 0;
   if(mode===DENSE) return waves | (night > 0 ? 7 : 6);
   return waves | (night > 0 && glowF.textureCache.tileBlocks[tile] ? 1 : 0) |
     (groundF.textureCache.tileBlocks[tile] ? 2 : 0) | (wearF.textureCache.tileBlocks[tile] ? 4 : 0);
@@ -4288,7 +4279,7 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   if (plants) { common(PLANT, eye, VP, mirror, t); plants.draw(planes, eye, mirror < 0 ? 0.72 : 1); }
   if (opts.grass) {
     common(GRASS, eye, VP, mirror, t);
-    if (grassWake.update(simT)) gl.uniform4fv(GRASS.u('uGrassWake[0]'),grassWake.segments);
+    if (grassPulses.update(simT)) gl.uniform4fv(GRASS.u('uGrassPulses[0]'),grassPulses.waves);
     if (bladeContact) {
       gl.uniform1i(GRASS.u('uContactEnabled'), Number(contactOn && Boolean(fox) && started && bladeContact.stats.roots > 0));
       gl.uniform1i(GRASS.u('uMarkContact'), Number(markContacts));

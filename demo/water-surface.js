@@ -152,24 +152,29 @@ export function createWaterSurface(grid, bedAt) {
     return true;
   }
   function chargeCell(k,amount) {
+    if (amount===0) return;
     excitation[k]=Math.min(1,excitation[k]+amount);
     const p=texel[k], row=Math.floor(p/width);
     active[(row>>4)*tileCols+((p%width)>>4)] |= 3;
   }
+  function chargeRow(k, amount, left, centre, right) {
+    chargeCell(west[k],amount*left);
+    chargeCell(k,amount*centre);
+    chargeCell(east[k],amount*right);
+  }
   function stir(x,z,amount) {
     const k=locate(x,z);
     if (!k || amount<=0) return;
-    // Deposit continuously between wet cell centres. At a bank the neighbour
-    // points to this cell, so its share remains on the contacted side.
+    // Quadratic B-spline weights share the charge across three cells on each
+    // axis. The local peak rounds off smoothly as the contact crosses a centre.
+    // Blocked neighbours return their share to the contacted reach.
     const pixel=texel[k];
     const fx=(x-x0)/step-(pixel%width+0.5);
     const fz=(z-z0)/step-(Math.floor(pixel/width)+0.5);
-    const side=(fx<0 ? west : east)[k], along=fz<0 ? north : south;
-    const u=Math.abs(fx), w=Math.abs(fz);
-    chargeCell(k,amount*(1-u)*(1-w));
-    chargeCell(side,amount*u*(1-w));
-    chargeCell(along[k],amount*(1-u)*w);
-    chargeCell(along[side],amount*u*w);
+    const left=0.5*(0.5-fx)**2, right=0.5*(0.5+fx)**2, centre=0.75-fx*fx;
+    chargeRow(north[k],amount*0.5*(0.5-fz)**2,left,centre,right);
+    chargeRow(k,amount*(0.75-fz*fz),left,centre,right);
+    chargeRow(south[k],amount*0.5*(0.5+fz)**2,left,centre,right);
   }
   function tick(windX, windZ, windAt) {
     currentLayer = 1 - currentLayer;
