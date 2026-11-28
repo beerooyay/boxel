@@ -74,6 +74,7 @@ export function highCanopyMesh(random, variant = 0) {
     const girth = tau * radii[1];
     const lobes = 3 + Math.floor(flares[0]*2.8), fluteTwist = (flares[1]-0.5)*1.6;
     const rings = [];
+    const lastRadius = join === true ? new Float64Array(sides+1).fill(Infinity) : null;
     let across, arc = 0;
     for (let k = 0; k < points.length; k++) {
       const p = points[k], next = points[Math.min(k + 1, points.length - 1)], prev = points[Math.max(k - 1, 0)];
@@ -95,9 +96,13 @@ export function highCanopyMesh(random, variant = 0) {
         const flute = buttress ? (0.5+0.5*Math.cos(lobes*theta+fluteTwist*k+0.55*Math.sin(theta+spin)))**2 : 0;
         const flare = buttress ? (1.48*Math.exp(-p[1]*12)+0.16*Math.exp(-p[1]*2.6))*flute*(0.7+0.5*ridge) : 0;
         // One broad rib turns around the limb; the wood swells on the
-        // outside of the crook and again where a lateral shoot draws sap.
+        // outside of the crook while each longitudinal ridge tapers to its tip.
         const rib = join === true ? (0.5+0.5*Math.cos(theta*2+spin+arc*11))**3 : 0;
-        const radius = radii[k] * (0.87 + 0.23 * ridge + flare + 0.23*rib);
+        let radius = radii[k] * (0.87 + 0.23 * ridge + flare + 0.23*rib);
+        if (lastRadius) {
+          radius=Math.min(radius,lastRadius[i]);
+          lastRadius[i]=radius;
+        }
         const surface = p.map((v,j) => v+radius*radial[j]);
         const slope = (radii[Math.max(0,k-1)]-radii[Math.min(k+1,radii.length-1)]) / Math.hypot(...next.map((v,j)=>v-prev[j]));
         let n=normalise(...radial.map((v,j)=>v+axis[j]*slope));
@@ -199,6 +204,7 @@ export function highCanopyMesh(random, variant = 0) {
     const mid = extend(root, angle, reach * 0.54, lift * 0.76 + 0.02);
     const tip = extend(mid, angle + turn, reach * 0.46, lift * 0.24 - 0.014);
     if (parent) {
+      heel = Math.min(heel,parent.radius*0.62);
       const collar=mix(root,mid,Math.min(0.46,parent.radius*2.2/Math.hypot(...mid.map((v,j)=>v-root[j]))));
       collar[1]+=0.24*parent.radius;
       wood([root,collar,mid,tip],[heel*1.45,heel*1.1,Math.min(heel,0.0034),0.0002],5,[],false,parent);
@@ -249,14 +255,13 @@ export function highCanopyMesh(random, variant = 0) {
     haunch[1] -= baseRadius*0.21;
     const shoulder = extend(collar,a-0.32*turn,reach*0.135,lift*(0.25+0.19*crook));
     const knots=[haunch,collar,shoulder,elbow,wrist,hand];
-    const widths=[1.22,0.94,0.82,0.76,0.44,0.0032/baseRadius];
-    const points=[base,haunch,collar], radii=[1.23,1.22,0.94].map(w=>w*baseRadius);
+    const widths=[1.32,1.15,0.84,0.52,0.28,0.0024/baseRadius];
+    const points=[base,haunch,collar], radii=[1.42,widths[0],widths[1]].map(w=>w*baseRadius);
     for(let k=1;k<knots.length-1;k++) {
       for(let step=1;step<=2;step++) {
         const u=step/2;
         points.push(curvePoint(knots[k-1],knots[k],knots[k+1],knots[Math.min(k+2,knots.length-1)],u));
-        // The shaft narrows between the two load-bearing side forks.
-        radii.push(baseRadius*(widths[k]*(1-u)+widths[k+1]*u-0.065*Math.sin(Math.PI*u)));
+        radii.push(baseRadius*(widths[k]*(1-u)+widths[k+1]*u));
       }
     }
     const branch=wood(points,radii,9,[0,2,4,6,8,10],false,true);
