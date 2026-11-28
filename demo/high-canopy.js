@@ -38,9 +38,9 @@ export function highCanopyMesh(random, variant = 0) {
   function mix(a, b, t) {
     return a.map((v, i) => v + t * (b[i] - v));
   }
-  function bendMid(a,b,c,d) {
-    // Midpoint of the tangent-continuous curve through the two inner knots.
-    return b.map((v,i)=>(9*(v+c[i])-a[i]-d[i])/16);
+  function curvePoint(a,b,c,d,t) {
+    // Cubic Hermite segment through successive woody growth nodes.
+    return b.map((v,i)=>v+(0.5*t)*((c[i]-a[i])+t*(2*a[i]-5*v+4*c[i]-d[i]+t*(3*v-a[i]-3*c[i]+d[i]))));
   }
   function extend(p, angle, reach, rise) {
     return [p[0] + Math.cos(angle) * reach, p[1] + rise, p[2] + Math.sin(angle) * reach];
@@ -94,7 +94,10 @@ export function highCanopyMesh(random, variant = 0) {
         // Broad, asymmetric buttresses twist into shallower ridges up the bole.
         const flute = buttress ? (0.5+0.5*Math.cos(lobes*theta+fluteTwist*k+0.55*Math.sin(theta+spin)))**2 : 0;
         const flare = buttress ? (1.48*Math.exp(-p[1]*12)+0.16*Math.exp(-p[1]*2.6))*flute*(0.7+0.5*ridge) : 0;
-        const radius = radii[k] * (0.87 + 0.23 * ridge + flare);
+        // One broad rib turns around the limb; the wood swells on the
+        // outside of the crook and again where a lateral shoot draws sap.
+        const rib = join === true ? (0.5+0.5*Math.cos(theta*2+spin+arc*11))**3 : 0;
+        const radius = radii[k] * (0.87 + 0.23 * ridge + flare + 0.23*rib);
         const surface = p.map((v,j) => v+radius*radial[j]);
         const slope = (radii[Math.max(0,k-1)]-radii[Math.min(k+1,radii.length-1)]) / Math.hypot(...next.map((v,j)=>v-prev[j]));
         let n=normalise(...radial.map((v,j)=>v+axis[j]*slope));
@@ -132,7 +135,7 @@ export function highCanopyMesh(random, variant = 0) {
         graft[id]=buttress ? 1 : blend;
       }
     }
-    if (buttress) {
+    if (buttress || join === true) {
       // Light the flutes using the actual tapered silhouette, including the UV seam.
       const at=(k,i,j)=>position[3*(start+k*ring+(i+sides)%sides)+j];
       for(let k=0;k<points.length;k++) for(let i=0;i<=sides;i++) {
@@ -140,7 +143,8 @@ export function highCanopyMesh(random, variant = 0) {
         const up=[0,1,2].map(j=>at(Math.min(points.length-1,k+1),i,j)-at(Math.max(0,k-1),i,j));
         const n=normalise(around[1]*up[2]-around[2]*up[1],around[2]*up[0]-around[0]*up[2],around[0]*up[1]-around[1]*up[0]);
         const offset=3*(start+k*ring+i);
-        for(let j=0;j<3;j++) normal[offset+j]=n[j];
+        const parentWeight=buttress ? 0 : graft[offset/3];
+        for(let j=0;j<3;j++) normal[offset+j]+= (n[j]-normal[offset+j])*(1-parentWeight);
       }
     }
     function connect(indices, lower, upper, facets) {
@@ -236,17 +240,29 @@ export function highCanopyMesh(random, variant = 0) {
     // A swollen collar grows out of the trunk into a load-bearing crook.
     // The branch rises close to the trunk, reaches sideways, then lifts its fork.
     const collar = extend(base, a-0.12*turn, reach*0.13, lift*0.26);
-    const elbow = extend(collar, a, reach*0.34, lift*(0.22+0.16*t));
-    const wrist = extend(elbow, a+turn*0.62, reach*0.29, lift*0.12);
-    const hand = extend(wrist, a+turn, reach*0.24, lift*0.31);
+    const crook = 0.65+0.35*Math.sin(a*2.7+variant);
+    const elbow = extend(collar, a+0.45*turn, reach*0.34, lift*(0.30+0.18*t));
+    const wrist = extend(elbow, a+turn*1.6, reach*0.29, -lift*0.19*crook);
+    const hand = extend(wrist, a+turn*0.7, reach*0.24, lift*0.38);
     const baseRadius = 0.030 - 0.014*t;
-    const haunch = mix(base, collar, 0.48);
+    const haunch = mix(base,collar,0.48);
     haunch[1] -= baseRadius*0.21;
-    const branch = wood([base, haunch, collar, bendMid(haunch,collar,elbow,wrist), elbow, bendMid(collar,elbow,wrist,hand), wrist, bendMid(elbow,wrist,hand,hand), hand],
-      [baseRadius*1.23, baseRadius*1.22, baseRadius*0.94, baseRadius*0.77, baseRadius*0.63, baseRadius*0.46, baseRadius*0.33, baseRadius*0.22, 0.0032], 9, [0,2,4,6,8],false,true);
-    shoot(elbow, a - 0.82, reach * 0.74, 0.055 + 0.075 * random(),0.0064,branch[4]);
-    shoot(wrist, a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random(),0.0064,branch[6]);
-    shoot(mix(wrist,hand,0.987), a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random(),0.0027,branch[8]);
+    const shoulder = extend(collar,a-0.32*turn,reach*0.135,lift*(0.25+0.19*crook));
+    const knots=[haunch,collar,shoulder,elbow,wrist,hand];
+    const widths=[1.22,0.94,0.82,0.76,0.44,0.0032/baseRadius];
+    const points=[base,haunch,collar], radii=[1.23,1.22,0.94].map(w=>w*baseRadius);
+    for(let k=1;k<knots.length-1;k++) {
+      for(let step=1;step<=2;step++) {
+        const u=step/2;
+        points.push(curvePoint(knots[k-1],knots[k],knots[k+1],knots[Math.min(k+2,knots.length-1)],u));
+        // The shaft narrows between the two load-bearing side forks.
+        radii.push(baseRadius*(widths[k]*(1-u)+widths[k+1]*u-0.065*Math.sin(Math.PI*u)));
+      }
+    }
+    const branch=wood(points,radii,9,[0,2,4,6,8,10],false,true);
+    shoot(elbow, a - 0.82, reach * 0.74, 0.055 + 0.075 * random(),0.0064,branch[6]);
+    shoot(wrist, a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random(),0.0064,branch[8]);
+    shoot(mix(wrist,hand,0.987), a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random(),0.0027,branch[10]);
   }
   for (let i = 0; i < 4; i++)
     shoot(spine(0.86 + i * 0.022), rotation + i * 1.55, 0.16 + 0.095 * random(), 0.07 + 0.065 * random());
