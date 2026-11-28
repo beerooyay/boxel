@@ -30,7 +30,7 @@ test('every primary branch starts inside its trunk and carries the parent bark i
     for(let i=0;i<tissue.length;i++) {
       if(tissue[i]>=-1.15 || blade[3*i+1]!==0 || blade[3*i+2]<0.1) continue;
       assert(insideTrunk(...position.subarray(3*i,3*i+3)));
-      assert(graft[4*i+3]>.99);
+      assert(graft[i]>.99);
       if(blade[3*i]===0) {
         starts++;
         assert(far.has(i+20),'the second collar ring survives the distant mesh');

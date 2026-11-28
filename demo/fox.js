@@ -21,6 +21,15 @@ export async function loadPlayerAnimal(gl, shader, species) {
       limbs.set(nodeIndex('IK' + end + 'Leg.' + side), limb);
     }
   }
+  const hipJoints = new Map();
+  if (species.id === 'Fox') for (const [side,sign] of [['L',1],['R',-1]]) {
+    hipJoints.set(nodeIndex('BackLeg.'+side),{sign, gain:1});
+    hipJoints.set(nodeIndex('BackUpperLeg.'+side),{sign, gain:-1.55});
+    hipJoints.set(nodeIndex('BackLowerLeg.'+side),{sign, gain:0.55});
+  }
+  // The paw targets are independently skinned. Fold the thigh and stifle
+  // in opposition so the haunch can change shape over a supporting paw.
+  let hipSwing=0, hipFold=0;
   const body = nodeIndex('Body');
   const jumpBase = clips.Gallop_Jump.tracks.find(t => t.index === body && !t.offset).values[2];
   rig.sample(pose, clips.Idle, 0);
@@ -77,6 +86,10 @@ export async function loadPlayerAnimal(gl, shader, species) {
     preload = push >= 0 ? Math.sin(Math.PI*push) : 0;
     rearExtension = push >= 0 ? 0.16*push*push : 0.16*earlyFlight**3;
     hindDrive = push >= 0 ? push*push : earlyFlight*earlyFlight;
+    const shift = gait === 'Idle' ? 0.032*Math.sin(cycle) : 0;
+    const hipTarget = shift + (swimming ? 0.08 : 0.16)*moving*Math.sin(cycle);
+    hipSwing += (hipTarget-hipSwing)*-Math.expm1(-20*dt);
+    hipFold = -0.42*preload+0.14*hindDrive-0.22*settle;
     const flex = moving*Math.sin(cycle)*(running ? 0.10 : 0.045);
     waistPitch += (flex-0.29*hindDrive+0.07*preload-waistPitch)*-Math.expm1(-32*dt);
     neckPitch += (-0.48*waistPitch-neckPitch)*-Math.expm1(-14*dt);
@@ -115,6 +128,8 @@ export async function loadPlayerAnimal(gl, shader, species) {
     else if (index === neck) steerBone(world[index], -steering*0.48);
     else if (index === tail) steerBone(world[index], tailLag*0.82);
     if (index === neck) pitchBone(world[index],neckPitch);
+    const hip = hipJoints.get(index);
+    if (hip) pitchBone(world[index],hip.gain*(hipFold+hip.sign*hipSwing));
     const limb = limbs.get(index);
     if (limb && !limb.front && hindDrive > 0) pitchBone(world[index],0.48*hindDrive,world[limb.shoulder]);
     if (limb && (preload > 0 || rearExtension > 0 || compression > 0 || Math.abs(pawOffset) > 0.0001)) {

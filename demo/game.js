@@ -629,9 +629,9 @@ vec3 brushBend(vec3 wp) {
 `;
 const CANOPY = program(WORLD_VS + BRUSH_VS + valleyAir + canopyShelter + `
 uniform int uTreeFields;
-in vec3 aPos, aNor, aStalk, aBlade; in float aTissue; in vec4 aSite, aHabit, aGraft; in vec2 aSlope;
+in vec3 aPos, aNor, aStalk, aBlade; in float aTissue; in vec4 aSite, aHabit; in float aGraft; in vec2 aSlope;
 centroid out vec2 vBlade; centroid out vec3 vWP, vNormal, vAcross;
-centroid out vec3 vGraft;
+centroid out vec4 vBarkSpace;
 flat out float vTissue, vHue; out float vCrown; out vec3 vField; out vec4 vAir;
 vec2 barkUV(vec3 ring) {
   float repeats=max(1.,floor(ring.z*aSite.w*aHabit.z/0.74+0.5));
@@ -653,7 +653,7 @@ void main(){
   stalk.xz = rot*stalk.xz*aHabit.z;
   vNormal=n; vNormal.xz=rot*n.xz/aHabit.z;
   vBlade=aBlade.xy;
-  vGraft=vec3(0.);
+  vBarkSpace=vec4(0.);
   float load=uWind>0. ? crownLoad(aSite.xz)*uWind : 0.;
   if (aTissue>=0.) {
     vec2 across=rot*vec2(-sin(aBlade.z),cos(aBlade.z));
@@ -681,7 +681,7 @@ void main(){
     vAcross=stalk;
     stalk=p;
     vBlade=barkUV(aBlade);
-    vGraft=vec3(barkUV(aGraft.xyz)*aGraft.w,aGraft.w);
+    vBarkSpace=vec4(aSite.xyz+p*aSite.w,aGraft);
   }
   p+=boughOffset(load,stalk.y,1.)*min(1.,length(stalk.xz)*3.4);
   float foot=1.-smoothstep(0.,0.18,aPos.y);
@@ -701,7 +701,7 @@ void main(){
   gl_Position=project(vWP);
 }`, sprayGLSL + `uniform float uClip; uniform bool uCoverage;
 centroid in vec2 vBlade; centroid in vec3 vWP, vNormal, vAcross;
-centroid in vec3 vGraft;
+centroid in vec4 vBarkSpace;
 flat in float vTissue, vHue; in float vCrown; in vec3 vField; in vec4 vAir; out vec4 o;
 uniform sampler2D uBarkColor, uBarkNormal;
 void main(){
@@ -735,17 +735,26 @@ void main(){
     float veins=smoothstep(0.78,0.98,tone);
     colour+=pigment*uNight*(0.035*veins+glowI(vField.x)*(veins+0.22*vBlade.x));
   }else{
-    vec3 fibre=mix(vAcross,vec3(0.,1.,0.),vGraft.z);
-    vec3 along=normalize(fibre-n*dot(n,fibre));
+    vec3 along=normalize(vAcross-n*dot(n,vAcross));
     vec3 across=cross(along,n);
     vec3 grain=texture(uBarkNormal,vBlade).xyz*2.-1.;
     vec3 bark=texture(uBarkColor,vBlade).rgb;
-    if(vGraft.z>0.002) {
-      vec2 parentUV=vGraft.xy/vGraft.z;
-      grain=mix(grain,texture(uBarkNormal,parentUV).xyz*2.-1.,vGraft.z);
-      bark=mix(bark,texture(uBarkColor,parentUV).rgb,vGraft.z);
+    vec3 relief=across*grain.x+along*grain.y;
+    // The trunk and collar share a metre-scaled solid projection. Even across
+    // their intersection a pixel at the same position sees the same bark.
+    if(vBarkSpace.w>0.001) {
+      vec3 p=vBarkSpace.xyz/0.74;
+      vec3 face=normalize(cross(dFdx(p),dFdy(p)));
+      vec3 w=pow(abs(face),vec3(2.)); w/=max(0.0001,w.x+w.y+w.z);
+      vec3 x=texture(uBarkNormal,p.zy).xyz*2.-1.;
+      vec3 y=texture(uBarkNormal,p.xz).xyz*2.-1.;
+      vec3 z=texture(uBarkNormal,p.xy).xyz*2.-1.;
+      vec3 detail=w.x*vec3(0.,x.y,x.x)+w.y*vec3(y.x,0.,y.y)+w.z*vec3(z.x,z.y,0.);
+      relief=mix(relief,detail-n*dot(n,detail),vBarkSpace.w);
+      vec3 projected=w.x*texture(uBarkColor,p.zy).rgb+w.y*texture(uBarkColor,p.xz).rgb+w.z*texture(uBarkColor,p.xy).rgb;
+      bark=mix(bark,projected,vBarkSpace.w);
     }
-    n=normalize(n*max(0.25,grain.z)+1.02*(across*grain.x+along*grain.y));
+    n=normalize(n+relief);
     float damp=vField.y;
     bark*=1.-0.29*damp;
     vec3 sun=uSunCol*directLight(vWP), sky=ambient(n)*contactLight(vWP);
@@ -3091,7 +3100,7 @@ function uploadForest(stands) {
       { loc:loc(CANOPY,'aNor'), size:3, data:mesh.normal },
       { loc:loc(CANOPY,'aBlade'), size:3, data:mesh.blade },
       { loc:loc(CANOPY,'aStalk'), size:3, data:mesh.stalk },
-      { loc:loc(CANOPY,'aGraft'), size:4, data:mesh.graft },
+      { loc:loc(CANOPY,'aGraft'), size:1, data:mesh.graft },
       { loc:loc(CANOPY,'aTissue'), size:1, data:mesh.tissue }, site, habit, slope,
     ];
     gl.bindVertexArray(null);
