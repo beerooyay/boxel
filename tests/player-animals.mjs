@@ -60,3 +60,29 @@ test('the fox releases its forepaws while the hind paws still support the launch
   }
   fox.dispose();
 });
+
+test('the walking fox bends its waist to both sides over a straight stride', async t => {
+  t.mock.method(globalThis, 'fetch', async url => new Response(await readFile(url)));
+  const fox = await loadPlayerAnimal(new Proxy({}, {get: () => () => {}}), {}, animalById('Fox'));
+  const positions = fox.contactSurfaces()[0].positions;
+  // Track the same flank vertices through the stride. A rigid sideways shift
+  // of the whole animal cancels when comparing the waist with the two ends.
+  const bands = [-0.32, 0, 0.25].map(z => {
+    const indices = [];
+    for (let i = 0; i < positions.length; i += 3) {
+      if (Math.abs(positions[i+2]-z)<0.09 && positions[i+1]>0.39 && positions[i+1]<0.67) indices.push(i);
+    }
+    assert(indices.length > 0);
+    return indices;
+  });
+  const bends = [];
+  for (let i = 0; i < 96; i++) {
+    fox.advance(1/60, 0.94/48, false, 0, -1, false, false, 0);
+    if (i < 48) continue;
+    fox.contactSurfaces();
+    const [hip, waist, chest] = bands.map(band => band.reduce((sum, j) => sum+positions[j], 0)/band.length);
+    bends.push(waist-(hip+chest)/2);
+  }
+  assert(Math.min(...bends)<-0.01 && Math.max(...bends)>0.01);
+  fox.dispose();
+});

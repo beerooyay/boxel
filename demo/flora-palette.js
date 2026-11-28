@@ -1,6 +1,10 @@
 // Artist-facing sRGB swatches. Materials and baked colony light use linear RGB.
 const swatches = {
-  LEAF: '#708B49',
+  MAPLE_WINE: '#6D3549',
+  MAPLE_COPPER: '#CB6234',
+  MAPLE_CORAL: '#CD6A5B',
+  MAPLE_ROSE: '#CB738E',
+  LEAF: '#698951',
   NEW_GROWTH: '#A8BF53',
   PRAIRIE_ROSE: '#F5B5C8',
   SEDGE: '#83AF89',
@@ -10,7 +14,7 @@ const swatches = {
   FERN: '#758D5A',
   GOLD: '#F3CB59',
   BLUE: '#568FDC',
-  EVERGREEN: '#506C40',
+  EVERGREEN: '#446844',
   BLOSSOM: '#FF9EC6',
   BLOSSOM_TIP: '#FFD4E1',
   HONEY: '#FFC358',
@@ -49,6 +53,7 @@ vec3 understoryPigment(float type, float hue) {
 }
 // A stand has a stable inherited hue. Exposure and moisture can modulate its value.
 vec3 crownPigment(float seed){
+  if (seed > 1.) return MAPLE_CORAL;
   if (seed < 0.78) return mix(LEAF,NEW_GROWTH,0.26+0.19*seed/0.78);
   if (seed < 0.85) return mix(PETAL_PINK,DUSK_ROSE,(seed-0.78)/0.07);
   if (seed < 0.91) return mix(EVERGREEN, LEAF, 0.22 * (seed - 0.85)/0.06);

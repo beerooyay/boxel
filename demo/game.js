@@ -739,7 +739,11 @@ void main(){
     float tone=spray.b, wood=1.-smoothstep(0.02,0.08,tone);
     vec3 pigment=crownPigment(vHue);
     float newLeaf=smoothstep(0.32,0.96,0.51*vCrown+0.32*tone+0.17*vBlade.x);
-    if(vHue>=0.95) pigment=mix(pigment,mix(APRICOT,GOLD,newLeaf),0.52);
+    if(vHue>1.) {
+      float flush=clamp(0.62*vCrown+0.26*vTissue+0.19*vBlade.x+vHue-1.24,0.,1.);
+      pigment=mix(mix(MAPLE_WINE,MAPLE_COPPER,smoothstep(0.12,0.59,flush)),
+                  mix(MAPLE_CORAL,MAPLE_ROSE,newLeaf),smoothstep(0.45,0.89,flush));
+    } else if(vHue>=0.95) pigment=mix(pigment,mix(APRICOT,GOLD,newLeaf),0.52);
     else if(vHue>=0.91) pigment=mix(pigment,mix(PETAL_PINK,BLOSSOM_TIP,newLeaf),0.39);
     else if(vHue<0.78) pigment=mix(pigment,NEW_GROWTH,0.21*newLeaf*newLeaf);
     float lightness=0.47+0.42*vCrown+0.18*vTissue;
@@ -777,6 +781,7 @@ void main(){
       vec3 projected=w.x*texture(uBarkColor,p.zy).rgb+w.y*texture(uBarkColor,p.xz).rgb+w.z*texture(uBarkColor,p.xy).rgb;
       bark=mix(bark,projected,vBarkSpace.w);
     }
+    if(vHue>1.) bark*=vec3(0.37,0.32,0.33);
     n=normalize(n+relief);
     float damp=vField.y;
     bark*=1.-0.29*damp;
@@ -2324,7 +2329,7 @@ function besideWalk(points, rand, inner = 1.8, width = 2.2) {
 }
 
 function scatter(near, fixed, meshes) {
-  // rocks: clusters with one big stone each, a broken field on the outcrop, monoliths on the rim, stones
+  // rocks: clusters with one big stone each, a broken field on the outcrop, low erratics on the rim, stones
   // in the shallows, pebbles on the shore
   // Keep the established shoreline across grass densities and quality settings.
   let r = rng(1306441690);
@@ -2381,7 +2386,7 @@ function scatter(near, fixed, meshes) {
     let x, z, e, k = 0;
     do { const a = r() * 6.28; e = 46 + r() * 14; x = Math.cos(a) * e; z = Math.sin(a) * e / 1.05; k++; } while ((H(x, z) > 13 || !inMap(x, z)) && k < 20);
     const w = 0.6 + r() * 0.4;
-    add(2, x, z, w, 2.4 + r() * 2.8, w * (0.8 + 0.3 * r()));
+    add(2, x, z, 1.45*w, w*(0.53+0.17*r()), w*(0.95+0.3*r()));
   }
 
   for (let q = 0; q < 26; q++) {

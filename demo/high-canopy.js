@@ -8,12 +8,14 @@ const habits = [
 // The broadleaf on an exposed bank reaches out of the wind. Use one of the
 // six existing templates so the same crown goes into shadows and reflections.
 const bankHabit = { fork: 0.34, spread: 0.58, lift: 0.40, lean: 0.64, taper: 0.73, shoulder: 0.21 };
+const mapleHabit = { fork:0.23, spread:0.71, lift:0.42, lean:0.27, taper:0.63, shoulder:0.19 };
 const rootSides = 12;
 export const matureHeight=5, matureTrunkScale=0.95;
-const treeSeeds = [9942, 2113, 8605, 981, 7139, 3029];
+const treeSeeds = [9942, 2113, 8605, 981, 7139, 3029, 4171];
 
 export function highCanopyMesh(random, variant = 0) {
-  const habit = variant === 3 ? bankHabit : habits[variant % habits.length],
+  const maple = variant === 6;
+  const habit = maple ? mapleHabit : variant === 3 ? bankHabit : habits[variant % habits.length],
     foliage = [];
   const position = [],
     normal = [],
@@ -49,7 +51,7 @@ export function highCanopyMesh(random, variant = 0) {
   // Each limb has its own axis. Broad root flutes die out before the trunk forks.
   const sockets=[];
   const collarUVs=new Set();
-  const throatRing=4; // Keep the trunk collar inside the first bend of each bough.
+  const throatRing=3; // Keep the trunk collar inside the first bend of each bough.
   const cutTriangles=new Set(), seamCopies=new Map();
   const trunkLevels=[0,0.09,0.25,0.42,0.63,0.8,0.94];
   const at=(array,id)=>array.slice(id*3,id*3+3);
@@ -83,7 +85,7 @@ export function highCanopyMesh(random, variant = 0) {
         const q=mix(at(position,target[j]),at(position,target[(j+1)%target.length]),u-j);
         const p=at(position,id), n=at(normal,id);
         const inward=centre.map((v,k)=>v-p[k]), radial=inward.reduce((s,v,k)=>s+v*n[k],0);
-        const tangent=inward.map((v,k)=>(v-radial*n[k])*1.6);
+        const tangent=inward.map((v,k)=>(v-radial*n[k])*(primary ? 0.85+0.34*Math.abs(axis[1]) : 1.24));
         const run=Math.hypot(...q.map((v,k)=>v-p[k]));
         const point=mix(p,q,t*t*(3-2*t)).map((v,k)=>v+t*(1-t)*((1-t)*tangent[k]-t*run*axis[k]));
         const endNormal=mix(at(normal,target[j]),at(normal,target[(j+1)%target.length]),u-j);
@@ -142,7 +144,7 @@ export function highCanopyMesh(random, variant = 0) {
     const girth = tau * radii[1];
     const lobes = 3 + Math.floor(flares[0]*2.8), fluteTwist = (flares[1]-0.5)*1.6;
     const rings = [];
-    const lastRadius = join === true ? new Float64Array(sides+1).fill(Infinity) : null;
+    const lastRadius = !buttress ? new Float64Array(sides+1).fill(Infinity) : null;
     let across, arc = 0;
     for (let k = 0; k < points.length; k++) {
       const p = points[k], next = points[Math.min(k + 1, points.length - 1)], prev = points[Math.max(k - 1, 0)];
@@ -166,9 +168,9 @@ export function highCanopyMesh(random, variant = 0) {
         // One broad rib turns around the limb; the wood swells on the
         // outside of the crook while each longitudinal ridge tapers to its tip.
         const rib = join === true ? (0.5+0.5*Math.cos(theta*2+spin+arc*11))**3 : 0;
-        let radius = radii[k] * (0.87 + 0.23 * ridge + flare + 0.23*rib);
+        let radius = radii[k] * (0.87 + 0.23 * ridge + flare + 0.057*rib);
         if (lastRadius) {
-          radius=Math.min(radius,lastRadius[i]);
+          radius=Math.min(radius,lastRadius[i]*0.997);
           lastRadius[i]=radius;
         }
         const surface = p.map((v,j) => v+radius*radial[j]);
@@ -242,7 +244,7 @@ export function highCanopyMesh(random, variant = 0) {
   function frond(root, angle, length, slope, droop, tone) {
     const c=Math.cos(angle), s=Math.sin(angle);
     const roll=(random()-0.5)*1.80, curl=(random()-0.5)*0.27;
-    const breadth=length*(0.47+0.12*random());
+    const breadth=length*(0.47+0.12*random())*(maple ? 0.78 : 1);
     const fold=0.43+0.26*tone, twist=curl*3.6;
     function point(t, side) {
       const lateral=length*curl*t*t+side*breadth;
@@ -268,7 +270,7 @@ export function highCanopyMesh(random, variant = 0) {
   }
 
   function shoot(root, angle, reach, lift, heel = 0.0064, parent = null) {
-    const turn = (random() - 0.5) * 0.86;
+    const turn = (random() - 0.5) * (maple ? 1.32 : 0.86);
     const mid = extend(root, angle, reach * 0.54, lift * 0.76 + 0.02);
     const tip = extend(mid, angle + turn, reach * 0.46, lift * 0.24 - 0.014);
     if (parent) {
@@ -293,7 +295,7 @@ export function highCanopyMesh(random, variant = 0) {
 
   const lean = habit.lean * (0.78 + 0.4 * random()),
     twist = (random() - 0.5) * 0.13;
-  const spine = (t) => [lean * t * t + 0.029 * Math.sin(t * 5.3), t, twist * t * t];
+  const spine = (t) => maple ? [lean*t+0.078*Math.sin(7.8*t),t,twist*t+0.065*Math.sin(5.7*t)] : [lean * t * t + 0.029 * Math.sin(t * 5.3), t, twist * t * t];
   wood(
     trunkLevels.map(spine),
     [0.065, 0.047, 0.04, 0.033, 0.024, 0.015, 0.004],
@@ -307,7 +309,9 @@ export function highCanopyMesh(random, variant = 0) {
   for (let i = 0; i < forks; i++) {
     const t = i / (forks - 1),
       a = rotation + i * 2.39996 + (random() - 0.5) * 0.72;
-    const base = spine(habit.fork + (0.81 - habit.fork) * t);
+    const lowLeader=maple && i<2;
+    const upright=lowLeader && i===1;
+    const base = spine(lowLeader ? (upright ? 0.145 : 0.065) : habit.fork + (0.81 - habit.fork) * t);
     const profile = 1 - habit.taper * t + habit.shoulder * Math.sin(Math.PI * t);
     const lee = habit === bankHabit ? 0.94 + 0.29*Math.cos(a) : 1;
     const reach = habit.spread * profile * (0.82 + 0.37 * random()) * lee;
@@ -315,23 +319,31 @@ export function highCanopyMesh(random, variant = 0) {
       turn = (random() - 0.5) * 1.0;
     // A swollen collar grows out of the trunk into a load-bearing crook.
     // The branch rises close to the trunk, reaches sideways, then lifts its fork.
-    const collar = extend(base, a-0.12*turn, reach*0.13, lift*0.26);
+    const collar = extend(base, a-0.12*turn, reach*(0.102+0.014*Math.cos(a)), lift*(0.18+0.045*Math.sin(a)));
     const crook = 0.65+0.35*Math.sin(a*2.7+variant);
-    const elbow = extend(collar, a+0.45*turn, reach*0.34, lift*(0.30+0.18*t));
-    const wrist = extend(elbow, a+turn*1.6, reach*0.29, -lift*0.19*crook);
-    const hand = extend(wrist, a+turn*0.7, reach*0.24, lift*0.38);
+    // Each scaffold takes its own path to the light. Old maples carry two
+    // heavier, low leaders; their last spans flatten into open tiers.
+    // Long stems share a stool, then separate into leaning and upright crowns.
+    const rise=lowLeader ? (upright ? 1.06 : 0.70) :
+      maple ? 0.36+0.15*Math.cos(a) : 0.26+0.18*t+0.21*Math.cos(a+variant);
+    const sideSweep=lowLeader ? (i===0 ? 0.43 : -0.34) : 0;
+    const sweep=maple ? 1.66 : 1.28+0.40*Math.sin(2*a);
+    const elbow = extend(collar, a+0.45*turn+sideSweep, reach*(upright ? 0.14 : 0.34), lift*rise);
+    const wristRise=lowLeader ? (upright ? 0.60 : 0.39) : maple ? 0.14+0.12*Math.sin(2*a) : 0.10-0.27*crook;
+    const wrist = extend(elbow, a+turn*sweep+0.35*sideSweep, reach*(upright ? 0.23 : 0.29), lift*wristRise);
+    const hand = extend(wrist, a+turn*0.7-sideSweep, reach*0.24, lift*(lowLeader ? 0.36 : maple ? 0.12 : 0.38));
     const upperScale = t>=0.5 ? 0.90 : 1;
-    const baseRadius = (0.030 - 0.014*t)*upperScale;
+    const baseRadius = (0.030 - 0.014*t)*upperScale*(lowLeader ? 1.65 : 1);
     const haunch = mix(base,collar,0.48);
     haunch[1] -= baseRadius*0.21;
-    const shoulder = extend(collar,a-0.32*turn,reach*0.135,lift*(0.25+0.19*crook));
+    const shoulder = extend(collar,a-0.32*turn,reach*0.135,lift*(0.10+rise*0.37));
     const knots=[haunch,collar,shoulder,elbow,wrist,hand];
-    const widths=[1.32,1.15,0.84,0.52,0.28,0.0024*upperScale/baseRadius];
+    const widths=[1.32,1.15,lowLeader ? 0.96 : 0.84,lowLeader ? 0.74 : 0.52,lowLeader ? 0.43 : 0.28,0.0024*upperScale/baseRadius];
     const points=[base,haunch,collar], radii=[1.42,widths[0],widths[1]].map(w=>w*baseRadius);
     // Relax sharp changes of direction over the neighbouring growth spans.
     // The roots of the shoots follow the rounded centreline in both LODs.
     const relaxed=knots.map((p,k)=>k<2 || k===knots.length-1 ? p :
-      mix(p,mix(knots[k-1],knots[k+1],0.5),0.26));
+      mix(p,mix(knots[k-1],knots[k+1],0.5),0.38));
     const coarseRings=[0,2];
     for(let k=1;k<relaxed.length-1;k++) {
       const steps=k<4 ? 3 : 2;
@@ -352,10 +364,10 @@ export function highCanopyMesh(random, variant = 0) {
   function growTrunk() {
     const trunkStart=tissue.length;
     const centres=sockets.map(s=>s.base[1]+(s.throat[1]-s.base[1])*0.46);
-    const edges=[centres[0]-(centres[1]-centres[0])*0.66];
+    const edges=[Math.max(0.018,centres[0]-(centres[1]-centres[0])*0.66)];
     for(let i=1;i<centres.length;i++) edges.push((centres[i]+centres[i-1])/2);
     edges.push((centres.at(-1)+0.94)/2);
-    const levels=[0,0.09,...edges,0.94];
+    const levels=[0,Math.min(0.09,edges[0]*0.65),...edges,0.94];
     const shared=[];
     function row(y) {
       let k=1;
@@ -373,6 +385,8 @@ export function highCanopyMesh(random, variant = 0) {
     const mod=i=>(i+rootSides)%rootSides;
     for(let k=1;k<levels.length;k++) {
       const upper=row(levels[k]), socket=sockets[k-3];
+      // A small, steep limb opens a narrower window in the trunk.
+      const span=socket && (socket.axis[1]>0.62 || socket.base[1]>0.60) ? 3 : 4;
       let start=-1;
       if(socket) {
         const mid=spine(centres[k-3]);
@@ -381,18 +395,18 @@ export function highCanopyMesh(random, variant = 0) {
         for(let j=0;j<rootSides;j++) {
           const p=mix(at(position,lower[j]),at(position,upper[j]),0.5);
           const score=((p[0]-mid[0])*dx+(p[2]-mid[2])*dz)/Math.hypot(p[0]-mid[0],p[2]-mid[2]);
-          if(score>best) { best=score; start=mod(j-2); }
+          if(score>best) { best=score; start=mod(j-Math.floor(span/2)); }
         }
       }
       for(let j=0;j<rootSides;j++) {
-        if(socket && mod(j-start)<4) continue;
+        if(socket && mod(j-start)<span) continue;
         const h=mod(j+1);
         shared.push(lower[j],lower[h],upper[j],lower[h],upper[h],upper[j]);
       }
       if(socket) {
         const rim=[];
-        for(let j=0;j<=4;j++) rim.push(lower[mod(start+j)]);
-        for(let j=4;j>=0;j--) rim.push(upper[mod(start+j)]);
+        for(let j=0;j<=span;j++) rim.push(lower[mod(start+j)]);
+        for(let j=span;j>=0;j--) rim.push(upper[mod(start+j)]);
         const throat=Array.from({length:socket.sides},(_,j)=>socket.first+j);
         collarPatch(shared,rim,throat,socket.axis,true);
         throat.forEach(id=>collarUVs.add(id));
@@ -528,7 +542,11 @@ export function forestStands(localTrees, uplandTrees, isletTree, noise, random, 
       form = 0;
       h *= 1.18;
     }
-    const variant = islet ? 3 : form + (r() < 0.5 ? 3 : 0);
+    const grove = Math.hypot((x-16)/15,(z-36)/12);
+    const maple = !islet && (h >= (Math.max(Math.abs(x),Math.abs(z))<65 ? 7.5 : 15) ||
+      (h>=3.4 && grove<1 && seed<0.80-0.35*grove));
+    if (maple) hue=1.1+0.12*seed;
+    const variant = maple ? 6 : islet ? 3 : form + (r() < 0.5 ? 3 : 0);
     const az = islet ? 2.73 : r() * 2 * Math.PI,
       spread = islet ? 1.23 : 0.86 + 0.38 * r();
     const ix = Math.floor(x / width),

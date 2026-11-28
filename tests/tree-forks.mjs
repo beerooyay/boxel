@@ -5,7 +5,7 @@ import { FieldTexture } from '../demo/field-texture.js';
 import { barkTile } from '../demo/surface-texture.js';
 
 test('both detail levels share the full cut edge between each primary limb and the trunk', () => {
-  for(let variant=0;variant<6;variant++) {
+  for(let variant=0;variant<7;variant++) {
     let seed=9942+variant;
     const mesh=highCanopyMesh(()=>((seed=(Math.imul(1664525,seed)+1013904223)>>>0)/2**32),variant);
     assert(mesh.normal.every(Number.isFinite));
@@ -42,7 +42,7 @@ test('both detail levels share the full cut edge between each primary limb and t
 });
 
 test('skyline meshes retain every leaf spray with two triangles and share the original vertex buffers', () => {
-  for(let variant=0;variant<6;variant++) {
+  for(let variant=0;variant<7;variant++) {
     let seed=9942+variant;
     const mesh=highCanopyMesh(()=>((seed=(Math.imul(1664525,seed)+1013904223)>>>0)/2**32),variant);
     let leafTriangles=0;
