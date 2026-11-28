@@ -12,13 +12,20 @@ export async function loadPlayerAnimal(gl, shader, species) {
   const pose = rest.map(n => n.slice()), blended = rest.map(n => n.slice()), from = rest.map(n => n.slice());
   const chest = nodeIndex('Torso'), neck = nodeIndex('Neck1'), tail = nodeIndex('Tail2');
   const frontFeet = [nodeIndex('IKFrontLeg.L'), nodeIndex('IKFrontLeg.R')];
-  const limbs = new Map();
+  const foxRig=species.id==='Fox';
+  const pelvis=nodeIndex('Back'), upperNeck=nodeIndex('Neck2');
+  const limbs = new Map(), pawEnds=new Map(), elbows=new Map();
   for (const [side, phase] of [['L', 0], ['R', Math.PI]]) {
     for (const front of [true, false]) {
       const end = front ? 'Front' : 'Back', shoulder = nodeIndex(end + 'Shoulder.' + side);
       const limb = { shoulder, front, diagonal: front === (side === 'L') ? 1 : -1, phase: phase + (front ? 0 : 0.80 * Math.PI) };
       limbs.set(shoulder, limb);
-      limbs.set(nodeIndex('IK' + end + 'Leg.' + side), limb);
+      const paw=nodeIndex('IK' + end + 'Leg.' + side);
+      limbs.set(paw, limb);
+      if(foxRig) {
+        pawEnds.set(paw,nodeIndex(end+'LowerLeg.'+side+'_end'));
+        if(front) elbows.set(nodeIndex('FrontLowerLeg.'+side),limb);
+      }
     }
   }
   const hipJoints = new Map();
@@ -38,7 +45,7 @@ export async function loadPlayerAnimal(gl, shader, species) {
   const shoulderHeight = heightOf('FrontShoulder.L');
   const head = heightOf('Head');
   const eyeHeight = nodeIndex('Head_end') < 0 ? head + 0.12*shoulderHeight : 0.78*head+0.22*heightOf('Head_end');
-  const draft = Math.min(eyeHeight * 0.72, shoulderHeight * 0.9);
+  const draft = Math.min(eyeHeight * (foxRig ? 0.80 : 0.72), shoulderHeight * (foxRig ? 1.03 : 0.9));
   const fore = rig.world[frontFeet[0]], hind = rig.world[nodeIndex('IKBackLeg.L')];
   const waterline = {
     centre: (fore[14] + hind[14]) * scale * 0.5,
@@ -87,9 +94,9 @@ export async function loadPlayerAnimal(gl, shader, species) {
     rearExtension = push >= 0 ? 0.16*push*push : 0.16*earlyFlight**3;
     hindDrive = push >= 0 ? push*push : earlyFlight*earlyFlight;
     const shift = gait === 'Idle' ? 0.032*Math.sin(cycle) : 0;
-    const hipTarget = shift + (swimming ? 0.08 : 0.16)*moving*Math.sin(cycle);
+    const hipTarget = shift + (swimming ? 0.28 : 0.16*moving)*Math.sin(cycle);
     hipSwing += (hipTarget-hipSwing)*-Math.expm1(-20*dt);
-    hipFold = -0.42*preload+0.14*hindDrive-0.22*settle;
+    hipFold = -0.58*preload+0.14*hindDrive-0.22*settle;
     const flex = moving*Math.sin(cycle)*(running ? 0.10 : 0.045);
     waistPitch += (flex-0.29*hindDrive+0.07*preload-waistPitch)*-Math.expm1(-32*dt);
     neckPitch += (-0.48*waistPitch-neckPitch)*-Math.expm1(-14*dt);
@@ -121,16 +128,24 @@ export async function loadPlayerAnimal(gl, shader, species) {
     m[14] += oz*(1-c)-oy*s;
   }
   function steer(index, world) {
+    // The pelvis follows the heading after the chest. Independent paw
+    // controls sit outside that hierarchy and receive the same pelvis turn.
+    const pelvisTurn=foxRig ? 0.48*tailLag : 0;
+    if (foxRig && (index===pelvis || pawEnds.has(index))) steerBone(world[index],pelvisTurn,world[pelvis]);
     if (index === chest || frontFeet.includes(index)) {
-      steerBone(world[index], -steering+waistYaw, world[chest]);
+      steerBone(world[index], -steering+waistYaw-pelvisTurn, world[chest]);
       pitchBone(world[index], waistPitch, world[chest]);
     }
     else if (index === neck) steerBone(world[index], -steering*0.48);
     else if (index === tail) steerBone(world[index], tailLag*0.82);
     if (index === neck) pitchBone(world[index],neckPitch);
+    const limb = limbs.get(index);
+    if (foxRig && index===upperNeck) pitchBone(world[index],0.09*swim);
+    const elbow=elbows.get(index);
+    if(foxRig && limb?.front && preload>0) pitchBone(world[index],-0.24*preload,world[limb.shoulder]);
+    if(elbow) pitchBone(world[index],0.46*preload+0.34*swim*Math.cos(time/clipFor(gait).duration*2*Math.PI+elbow.phase));
     const hip = hipJoints.get(index);
     if (hip) pitchBone(world[index],hip.gain*(hipFold+hip.sign*hipSwing));
-    const limb = limbs.get(index);
     if (limb && !limb.front && hindDrive > 0) pitchBone(world[index],0.48*hindDrive,world[limb.shoulder]);
     if (limb && (preload > 0 || rearExtension > 0 || compression > 0 || Math.abs(pawOffset) > 0.0001)) {
       // Compress both the leg chain and its separately weighted paw target.
@@ -139,14 +154,21 @@ export async function loadPlayerAnimal(gl, shader, species) {
       for (let k = 1; k < 12; k += 4) m[k] *= 1-flex;
       m[13] += (pivotY-m[13])*flex + limb.diagonal*pawOffset;
     }
-    if (swim + Math.abs(climb) < 0.001) return;
-    if (index === neck) pitchBone(world[index], -0.23*swim + 0.16*climb);
+    if (swim + Math.abs(climb) < 0.001 && !(foxRig && Math.abs(steering)>0.001)) return;
+    if (index === neck) pitchBone(world[index], (foxRig ? 0.12 : -0.23)*swim + 0.16*climb);
     if (limb) {
       const phase = time / clipFor(gait).duration * 2*Math.PI + limb.phase;
       const pull = Math.sin(phase), recovery = Math.max(0, Math.cos(phase));
-      const paddle = limb.front ? 0.13+0.66*pull-0.17*recovery : 0.30+0.45*pull;
+      const paddle = limb.front ? 0.13+0.66*pull-0.17*recovery : 0.30+(foxRig ? 0.76 : 0.45)*pull;
       const scramble = (limb.front ? -0.31 : 0.20) + 0.29*pull;
       pitchBone(world[index], swim*paddle+climb*scramble, world[limb.shoulder]);
+    }
+    // Fox paw controls are siblings of the body. The leg ends have already
+    // inherited the spine turn and the folded elbow or hock at this point.
+    const end=pawEnds.get(index);
+    if(end!==undefined) {
+      const weight=Math.min(1,swim+Math.abs(steering)*3);
+      for(let j=12;j<15;j++) world[index][j]+=(world[end][j]-world[index][j])*weight;
     }
   }
   function palette() {

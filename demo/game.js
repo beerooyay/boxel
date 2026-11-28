@@ -3848,7 +3848,7 @@ function updateFox(dt, ground, distance, alongBody, running) {
   // paw leaves a diagonal residual that the individual legs can take up.
   const diagonal = Math.max(-0.09*size,Math.min(0.09*size,(fl-fr-hl+hr)*0.25));
   const flying = !player.swimming && !player.grounded;
-  const pitch = flying ? 0.21*Math.tanh(player.vy/3) : player.swimming ? 0.065 : Math.atan(Math.max(-3.4,Math.min(3.4,(front-rear)/(2*span))));
+  const pitch = flying ? 0.21*Math.tanh(player.vy/3) : player.swimming ? (fox?.species.id==='Fox' ? 0.015 : 0.065) : Math.atan(Math.max(-3.4,Math.min(3.4,(front-rear)/(2*span))));
   const roll = flying ? 0 : player.swimming ? 0.026*Math.sin(2*Math.PI*player.stroke)
     : Math.atan(Math.max(-0.80,Math.min(0.80,(right-left)/(2*width))));
   foxPose.pitch += (pitch - foxPose.pitch) * ease;
@@ -3990,7 +3990,7 @@ function crossSlope(dx, dz, draft) {
   player.x=x+dx*fraction; player.z=z+dz*fraction;
 }
 
-const pushDuration = 0.10;
+const pushDuration = 0.15;
 let jumpBuffer = 0, pushTime = 0;
 function stepPlayer(dt) {
   if (jumpBuffer > 0) {
