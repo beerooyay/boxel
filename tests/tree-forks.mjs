@@ -4,39 +4,34 @@ import { forestStands, highCanopyMesh, treeFieldMask, treeFieldTiles } from '../
 import { FieldTexture } from '../demo/field-texture.js';
 import { barkTile } from '../demo/surface-texture.js';
 
-test('every primary branch starts inside its trunk and carries the parent bark into both detail levels', () => {
-  for (let variant=0;variant<6;variant++) {
+test('both detail levels share the full cut edge between each primary limb and the trunk', () => {
+  for(let variant=0;variant<6;variant++) {
     let seed=9942+variant;
-    const mesh=highCanopyMesh(() => ((seed=(Math.imul(1664525,seed)+1013904223)>>>0)/2**32),variant);
-    const {position,index,blade,tissue,graft}=mesh;
-    // Count triangle crossings towards +X through the six trunk segments.
-    function insideTrunk(x,y,z) {
-      let count=0;
-      for(let i=0;i<6*12*6;i+=3) {
-        const a=index[i]*3,b=index[i+1]*3,c=index[i+2]*3;
-        const by=position[b+1]-position[a+1],bz=position[b+2]-position[a+2];
-        const cy=position[c+1]-position[a+1],cz=position[c+2]-position[a+2];
-        const det=by*cz-bz*cy;
-        if(Math.abs(det)<1e-12) continue;
-        const py=y-position[a+1],pz=z-position[a+2];
-        const v=(py*cz-pz*cy)/det, w=(by*pz-bz*py)/det;
-        if(v<0 || w<0 || v+w>1) continue;
-        if(position[a]+v*(position[b]-position[a])+w*(position[c]-position[a])>x) count++;
+    const mesh=highCanopyMesh(()=>((seed=(Math.imul(1664525,seed)+1013904223)>>>0)/2**32),variant);
+    assert(mesh.normal.every(Number.isFinite));
+    for(const indices of [mesh.index.subarray(0,mesh.nearCount),mesh.index.subarray(mesh.nearCount)]) {
+      // Each throat vertex carries the limb circumference. The socket side
+      // uses solid bark with a fixed 0.2 reference girth. Count incident faces
+      // by index so coincident but disconnected surfaces cannot pass.
+      const girth=id=>mesh.blade[3*id+2];
+      const isSocket=id=>girth(id)===Math.fround(0.2) && mesh.graft[id]===1;
+      const edges=new Map();
+      for(let i=0;i<indices.length;i+=3) {
+        for(let k=0;k<3;k++) {
+          const a=indices[i+k], b=indices[i+(k+1)%3], c=indices[i+(k+2)%3];
+          if(mesh.graft[a]!==1 || mesh.graft[b]!==1 || girth(a)!==girth(b) || isSocket(a)) continue;
+          if(girth(a)===Math.fround(0.3) || girth(a)<0.10 || mesh.blade[3*a+1]!==mesh.blade[3*b+1]) continue;
+          const key=Math.min(a,b)*65536+Math.max(a,b);
+          const edge=edges.get(key)??{ faces:0, socket:false, winding:0 };
+          edge.faces++; edge.winding+=a<b ? 1 : -1;
+          edge.socket ||= isSocket(c);
+          edges.set(key,edge);
+        }
       }
-      return count%2===1;
+      const joins=[...edges.values()].filter(edge=>edge.socket);
+      assert(joins.length>=7*9);
+      assert(joins.every(edge=>edge.faces===2 && edge.winding===0));
     }
-    const far=new Set(index.subarray(mesh.nearCount));
-    let starts=0;
-    for(let i=0;i<tissue.length;i++) {
-      if(tissue[i]>=-1.15 || blade[3*i+1]!==0 || blade[3*i+2]<0.1) continue;
-      assert(insideTrunk(...position.subarray(3*i,3*i+3)));
-      assert(graft[i]>.99);
-      if(blade[3*i]===0) {
-        starts++;
-        assert(far.has(i+20),'the second collar ring survives the distant mesh');
-      }
-    }
-    assert(starts===7 || starts===8);
   }
 });
 

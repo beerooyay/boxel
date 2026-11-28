@@ -46,27 +46,80 @@ export function highCanopyMesh(random, variant = 0) {
     return [p[0] + Math.cos(angle) * reach, p[1] + rise, p[2] + Math.sin(angle) * reach];
   }
   // Each limb has its own axis. Broad root flutes die out before the trunk forks.
-  let trunkIndices = 0;
-  // Find the fluted trunk surface and its lighting normal at the fork.
-  function trunkSkin(p) {
-    const centre=spine(p[1]), dx=p[0]-centre[0], dz=p[2]-centre[2];
-    const r=Math.hypot(dx,dz), nx=dx/r, nz=dz/r;
-    for(let j=0;j<trunkIndices;j+=3) {
-      const id=near.slice(j,j+3);
-      const y=id.map(i=>position[i*3+1]-p[1]);
-      if(Math.min(...y)>0 || Math.max(...y)<0) continue;
-      const a=id.map(i=>(position[i*3]-centre[0])*nz-(position[i*3+2]-centre[2])*nx);
-      const det=(a[1]-a[0])*(y[2]-y[0])-(a[2]-a[0])*(y[1]-y[0]);
-      if(Math.abs(det)<1e-10) continue;
-      const b=(a[2]*y[0]-a[0]*y[2])/det, c=(a[0]*y[1]-a[1]*y[0])/det;
-      const w=[1-b-c,b,c];
-      if(Math.min(...w)<-1e-5) continue;
-      const at=(data,k)=>id.reduce((sum,i,h)=>sum+w[h]*data[i*3+k],0);
-      const radius=(at(position,0)-centre[0])*nx+(at(position,2)-centre[2])*nz;
-      if(radius<=0) continue;
-      return { centre,nx,nz,r,radius, normal:normalise(at(normal,0),at(normal,1),at(normal,2)) };
+  const sockets=[];
+  const throatRing=4; // Keep the trunk collar inside the first bend of each bough.
+  const cutTriangles=new Set(), seamCopies=new Map();
+  const trunkLevels=[0,0.09,0.25,0.42,0.63,0.8,0.94];
+  const at=(array,id)=>array.slice(id*3,id*3+3);
+  // Stitch closed loops of different resolutions without a cap or interior face.
+  function bridge(indices,lower,upper) {
+    let i=0,j=0;
+    while(i<lower.length || j<upper.length) {
+      const a=lower[i%lower.length], b=upper[j%upper.length];
+      if ((i+1)*upper.length <= (j+1)*lower.length) {
+        indices.push(a,lower[++i%lower.length],b);
+      } else indices.push(a,upper[++j%upper.length],b);
     }
-    return null;
+  }
+  function collarPatch(indices,rim,throat,axis) {
+    // Match the two loops by least travel without reversing winding.
+    let shift=0,best=Infinity;
+    for(let offset=0;offset<throat.length;offset++) {
+      let cost=0;
+      rim.forEach((id,i)=>{
+        const q=at(position,throat[(offset+Math.round(i*throat.length/rim.length))%throat.length]);
+        cost+=at(position,id).reduce((sum,v,j)=>sum+(v-q[j])**2,0);
+      });
+      if(cost<best) {best=cost;shift=offset;}
+    }
+    const target=throat.slice(shift).concat(throat.slice(0,shift));
+    const centre=rim.reduce((sum,id)=>sum.map((v,j)=>v+position[3*id+j]/rim.length),[0,0,0]);
+    let previous=rim;
+    for(const t of [0.28,0.62]) {
+      const loop=rim.map((id,i)=>{
+        const u=i*target.length/rim.length, j=Math.floor(u);
+        const q=mix(at(position,target[j]),at(position,target[(j+1)%target.length]),u-j);
+        const p=at(position,id), n=at(normal,id);
+        const inward=centre.map((v,k)=>v-p[k]), radial=inward.reduce((s,v,k)=>s+v*n[k],0);
+        const tangent=inward.map((v,k)=>(v-radial*n[k])*1.6);
+        const run=Math.hypot(...q.map((v,k)=>v-p[k]));
+        const point=mix(p,q,t*t*(3-2*t)).map((v,k)=>v+t*(1-t)*((1-t)*tangent[k]-t*run*axis[k]));
+        const endNormal=mix(at(normal,target[j]),at(normal,target[(j+1)%target.length]),u-j);
+        const index=vertex(point,normalise(...mix(n,endNormal,t)),-1-point[1],0,0,axis,0.2);
+        graft[index]=1; return index;
+      });
+      bridge(indices,previous,loop); previous=loop;
+    }
+    bridge(indices,previous,target);
+  }
+  // Open a window in the parent bough around a shoot. Its four sides can
+  // cross the cylindrical UV seam; use each side's actual edge indices.
+  function shootSocket(parent,shootStart,shootSides,axis) {
+    const {first,segments,nearBand,terminal,cap}=parent;
+    const atRing=(r,j)=>first+r*(segments+1)+(j+segments)%segments;
+    const target=Array.from({length:shootSides},(_,i)=>shootStart+i);
+    let rim=[];
+    if(terminal) {
+      for(let i=0;i<segments;i++) cutTriangles.add(cap+i*3);
+      rim=Array.from({length:segments},(_,j)=>atRing(0,j));
+    } else {
+      let closest=0,best=-Infinity;
+      for(let j=0;j<segments;j++) {
+        const p=at(position,atRing(0,j));
+        const score=p.reduce((sum,v,k)=>sum+(v-parent.p[k])*axis[k],0);
+        if(score>best) {best=score; closest=j;}
+      }
+      const start=closest-1;
+      for(let r=-1;r<1;r++) for(let j=0;j<2;j++) {
+        const face=nearBand+(r*segments+(start+j+segments)%segments)*6;
+        cutTriangles.add(face); cutTriangles.add(face+3);
+      }
+      for(const [r,j] of [[-1,0],[-1,1],[-1,2],[0,2],[1,2],[1,1],[1,0],[0,0]])
+        rim.push(atRing(r,start+j));
+    }
+    // A ring seam has duplicate UV vertices at identical positions.
+    for(const id of rim) graft[id]=1;
+    collarPatch(near,rim,target,axis);
   }
   function wood(points, radii, sides, farRings, buttress = false, join = false) {
     const start = tissue.length, ring = sides + 1, spin = random() * tau;
@@ -108,29 +161,7 @@ export function highCanopyMesh(random, variant = 0) {
         let n=normalise(...radial.map((v,j)=>v+axis[j]*slope));
         if (buttress && k===0) surface[1]=0;
         let blend=0;
-        if(join === true && k<4) {
-          // The lower edge sweeps down the parent. Bury the whole first ring
-          // so even the thinner forks and the coarse trunk enclose its end.
-          surface[1]-=radii[0]*Math.max(0,-radial[1])*0.34*Math.max(0,1-k/3);
-          const skin=trunkSkin(surface);
-          if(skin) {
-            let reach=skin.r/skin.radius;
-            if(k===0) reach=Math.min(0.64,reach);
-            else {
-              // A rounded union in the radial section: as the two surfaces
-              // meet, the collar takes the trunk tangent, then rolls outward.
-              const fillet=0.46;
-              const overlap=Math.max(0,fillet-Math.abs(reach-1));
-              reach=Math.max(0.993,reach)+overlap*overlap/(4*fillet);
-            }
-
-            surface[0]=skin.centre[0]+skin.nx*skin.radius*reach;
-            surface[2]=skin.centre[2]+skin.nz*skin.radius*reach;
-            const t=Math.max(0,Math.min(1,(reach-0.87)/1.55));
-            blend=1-t*t*(3-2*t);
-            n=normalise(...mix(n,skin.normal,blend*blend));
-          }
-        }
+        if(join === true) blend=k<=throatRing ? 1 : k===throatRing+1 ? 0.32 : 0;
         if (join && join !== true && k < 3) {
           // Wrap the twig shoulder around the parent limb in its own bark frame.
           const parent=join, d=surface.map((v,j)=>v-parent.p[j]);
@@ -144,7 +175,8 @@ export function highCanopyMesh(random, variant = 0) {
           n=normalise(...mix(n,radial,blend));
         }
         const id=vertex(surface,n,-1-p[1],i/sides,arc,axis,girth);
-        graft[id]=buttress ? 1 : blend;
+        graft[id]=buttress || (join && k===1) ? 1 : blend;
+        if(i===sides) seamCopies.set(id,id-sides);
       }
     }
     if (buttress || join === true) {
@@ -163,17 +195,30 @@ export function highCanopyMesh(random, variant = 0) {
       for (let j = 0; j < facets; j++) {
         const left = Math.round(j*sides/facets), right = Math.round((j+1)*sides/facets);
         const lo = start + lower*ring, hi = start + upper*ring;
-        indices.push(lo+left,lo+right,hi+left, lo+right,hi+right,hi+left);
+        // At the welded throat the bark uses solid projection, so the
+        // wraparound edge shares its vertex even at the cylindrical UV seam.
+        const end=join===true && lower===throatRing && right===sides ? lo : lo+right;
+        indices.push(lo+left,end,hi+left, end,hi+right,hi+left);
       }
     }
-    for (let k = 1; k < points.length; k++) connect(near,k-1,k,sides);
-    for (let k = 1; k < farRings.length; k++)
-      connect(far,farRings[k-1],farRings[k],buttress ? 7 : 4);
+    const bandStart=near.length;
+    for (let k = join===true ? throatRing+1 : join ? 2 : 1; k < points.length; k++) connect(near,k-1,k,sides);
+    for (let k = join===true ? 3 : 1; k < farRings.length; k++)
+      connect(far,join===true && k===3 ? throatRing : farRings[k-1],farRings[k],join===true ? sides : buttress ? 7 : 4);
+    if(join && join!==true) {
+      shootSocket(join,start+ring,sides,rings[1].axis);
+    }
     if (!farRings.length) return; // the terminal shoot already tapers to a point
     const last = points.length - 1, limb = normalise(...points[last].map((v,i) => v-points[last-1][i]));
     const tip = vertex(points[last].map((v,i) => v + limb[i]*radii[last]*1.8),
       limb, -1-points[last][1], 0.5, arc+radii[last], across, girth);
+    const cap=near.length;
+    if (join===true) rings.forEach((r,k)=>Object.assign(r,{first:start+k*ring,segments:sides,
+      nearBand:bandStart+(k-throatRing)*sides*6, terminal:k===last, cap}));
     for (let i = 0; i < sides; i++) near.push(start+last*ring+i,start+last*ring+i+1,tip);
+    if (join===true) for (let i=0;i<sides;i++) far.push(start+last*ring+i,start+last*ring+i+1,tip);
+    if (join===true) sockets.push({ base:points[0], throat:points[throatRing], axis:rings[throatRing].axis,
+      first:start+throatRing*ring, sides });
     return rings;
   }
 
@@ -234,11 +279,13 @@ export function highCanopyMesh(random, variant = 0) {
     twist = (random() - 0.5) * 0.13;
   const spine = (t) => [lean * t * t + 0.029 * Math.sin(t * 5.3), t, twist * t * t];
   wood(
-    [0, 0.09, 0.25, 0.42, 0.63, 0.8, 0.94].map(spine),
+    trunkLevels.map(spine),
     [0.065, 0.047, 0.04, 0.033, 0.024, 0.015, 0.004],
     rootSides, [0,1,3,5,6], true,
   );
-  trunkIndices=near.length-rootSides*3;
+  // Keep the root profile as a sampling cage. Replace its unbroken tube with
+  // cut panels after all attachment heights and directions are known.
+  near.length=far.length=0;
   const forks = 7 + Math.floor(2 * random()),
     rotation = tau * random();
   for (let i = 0; i < forks; i++) {
@@ -282,10 +329,93 @@ export function highCanopyMesh(random, variant = 0) {
     const outerFork=branch[coarseRings[3]], tipFork=branch[coarseRings[4]], tip=branch[coarseRings[5]];
     shoot(outerFork.p, a - 0.82, reach * 0.74, 0.055 + 0.075 * random(),0.0064,outerFork);
     shoot(tipFork.p, a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random(),0.0064,tipFork);
-    shoot(mix(tipFork.p,tip.p,0.987), a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random(),0.0027,tip);
+    shoot(tip.p, a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random(),0.0027,tip);
+  }
+  growTrunk();
+  function growTrunk() {
+    const trunkStart=tissue.length;
+    const centres=sockets.map(s=>s.base[1]+(s.throat[1]-s.base[1])*0.46);
+    const edges=[centres[0]-(centres[1]-centres[0])*0.66];
+    for(let i=1;i<centres.length;i++) edges.push((centres[i]+centres[i-1])/2);
+    edges.push((centres.at(-1)+0.94)/2);
+    const levels=[0,0.09,...edges,0.94];
+    const shared=[];
+    function row(y) {
+      let k=1;
+      while(trunkLevels[k]<y && k<trunkLevels.length-1) k++;
+      const t=(y-trunkLevels[k-1])/(trunkLevels[k]-trunkLevels[k-1]);
+      return Array.from({length:rootSides},(_,j)=>{
+        const lo=(k-1)*(rootSides+1)+j, hi=lo+rootSides+1;
+        const p=mix(at(position,lo),at(position,hi),t);
+        const id=vertex(p,normalise(...mix(at(normal,lo),at(normal,hi),t)),-1-y,j/rootSides,y,[0,1,0],0.3);
+        graft[id]=1;
+        return id;
+      });
+    }
+    let lower=row(0);
+    const mod=i=>(i+rootSides)%rootSides;
+    for(let k=1;k<levels.length;k++) {
+      const upper=row(levels[k]), socket=sockets[k-3];
+      let start=-1;
+      if(socket) {
+        const mid=spine(centres[k-3]);
+        const dx=socket.throat[0]-mid[0], dz=socket.throat[2]-mid[2];
+        let best=-Infinity;
+        for(let j=0;j<rootSides;j++) {
+          const p=mix(at(position,lower[j]),at(position,upper[j]),0.5);
+          const score=((p[0]-mid[0])*dx+(p[2]-mid[2])*dz)/Math.hypot(p[0]-mid[0],p[2]-mid[2]);
+          if(score>best) { best=score; start=mod(j-2); }
+        }
+      }
+      for(let j=0;j<rootSides;j++) {
+        if(socket && mod(j-start)<4) continue;
+        const h=mod(j+1);
+        shared.push(lower[j],lower[h],upper[j],lower[h],upper[h],upper[j]);
+      }
+      if(socket) {
+        const rim=[];
+        for(let j=0;j<=4;j++) rim.push(lower[mod(start+j)]);
+        for(let j=4;j>=0;j--) rim.push(upper[mod(start+j)]);
+        const throat=Array.from({length:socket.sides},(_,j)=>socket.first+j);
+        collarPatch(shared,rim,throat,socket.axis);
+      }
+      lower=upper;
+    }
+    const tip=trunkLevels.length*(rootSides+1);
+    for(let j=0;j<rootSides;j++) shared.push(lower[j],lower[mod(j+1)],tip);
+    // Area-weighted normals cross the actual socket boundary. Retain the
+    // branch's downstream normal at the throat, including its duplicated UV seam.
+    const sums=new Map();
+    for(let i=0;i<shared.length;i+=3) {
+      const ids=shared.slice(i,i+3),[a,b,c]=ids.map(id=>at(position,id));
+      const u=b.map((v,k)=>v-a[k]),v=c.map((x,k)=>x-a[k]);
+      const cross=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
+      for(const id of ids) {
+        if(id<trunkStart) continue;
+        const sum=sums.get(id)??[0,0,0];
+        for(let k=0;k<3;k++) sum[k]+=cross[k];
+        sums.set(id,sum);
+      }
+    }
+    for(const [id,sum] of sums) {
+      const n=normalise(...sum);
+      for(let k=0;k<3;k++) normal[id*3+k]=n[k];
+    }
+    near.push(...shared); far.push(...shared);
   }
   for (let i = 0; i < 4; i++)
     shoot(spine(0.86 + i * 0.022), rotation + i * 1.55, 0.16 + 0.095 * random(), 0.07 + 0.065 * random());
+  // Solid-projected bark has no UV cut. Reuse the same index on both
+  // sides of any socket that straddles the old cylindrical wrap.
+  for(const indices of [near,far]) for(let i=0;i<indices.length;i++) {
+    const source=seamCopies.get(indices[i]);
+    if(source!==undefined && graft[source]===1) indices[i]=source;
+  }
+  let kept=0;
+  for(let i=0;i<near.length;i+=3) if(!cutTriangles.has(i)) {
+    near[kept++]=near[i]; near[kept++]=near[i+1]; near[kept++]=near[i+2];
+  }
+  near.length=kept;
   let radius = 0,
     bottom = Infinity,
     top = -Infinity;

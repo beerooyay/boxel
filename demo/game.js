@@ -744,8 +744,7 @@ void main(){
     // their intersection a pixel at the same position sees the same bark.
     if(vBarkSpace.w>0.001) {
       vec3 p=vBarkSpace.xyz/0.74;
-      vec3 face=normalize(cross(dFdx(p),dFdy(p)));
-      vec3 w=pow(abs(face),vec3(2.)); w/=max(0.0001,w.x+w.y+w.z);
+      vec3 w=n*n; w/=max(0.0001,w.x+w.y+w.z);
       vec3 x=texture(uBarkNormal,p.zy).xyz*2.-1.;
       vec3 y=texture(uBarkNormal,p.xz).xyz*2.-1.;
       vec3 z=texture(uBarkNormal,p.xy).xyz*2.-1.;

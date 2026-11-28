@@ -121,7 +121,8 @@ test('valley, upland and island trees share an anchored crown at both viewing di
       stems.add(mesh.stalk.subarray(3*vertex,3*vertex+3).join(','));
     }
     assert.equal(stems.size,mesh.foliage.length/4);
-    for (const vertex of far) assert.ok(near.has(vertex));
+    // Distant wood closes the branch ends where the close mesh attaches shoots.
+    for (const vertex of far) if (mesh.tissue[vertex]>=0) assert.ok(near.has(vertex));
   }
 });
 
