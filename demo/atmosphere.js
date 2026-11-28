@@ -8,9 +8,10 @@ vec3 skyBase(vec3 d){
   // Low air takes the star's warmth on its side of the valley. At right
   // angles to the light the shorter blue wavelengths dominate the vault.
   vec3 horizon = vec3(0.29, 0.395, 0.54) + vec3(0.14, 0.085, 0.025) * s * s;
-  vec3 vault = mix(vec3(0.017, 0.093, 0.263), vec3(0.035, 0.133, 0.30), mu * mu);
-  vec3 c = mix(horizon, vault, smoothstep(-0.055, 0.38, h));
-  c = mix(c, vec3(0.009, 0.046, 0.148), smoothstep(0.16, 0.86, h));
+  vec3 vault = mix(vec3(0.045, 0.146, 0.295), vec3(0.072, 0.178, 0.33), mu * mu);
+  // Carry the pale horizon higher behind the summits before deepening overhead.
+  vec3 c = mix(horizon, vault, smoothstep(-0.055, 0.55, h));
+  c = mix(c, vec3(0.026, 0.078, 0.188), smoothstep(0.30, 0.98, h));
   // As the star sinks the day sky dims and cools, a band of fire lies along the horizon under it, and a rose belt
   // rises opposite. None of it shows while the star stands at its hand-set afternoon height or above.
   float low = 1. - smoothstep(0.03, 0.36, uStarDir.y);

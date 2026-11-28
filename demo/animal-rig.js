@@ -81,7 +81,7 @@ export function animalProgram(program, vertexHeader) {
   return program(vertexHeader + `
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNor;
-layout(location=4) in vec3 aColour;
+layout(location=4) in vec4 aColour;
 layout(location=2) in vec4 aWeights;
 layout(location=3) in uvec4 aJoints;
 uniform mat4 uBones[${MAX_JOINTS}];
@@ -90,11 +90,17 @@ uniform vec3 uAnimalOrigin;
 uniform float uAnimalScale, uAnimalWet, uAnimalWaterLevel, uNight;
 out vec3 vWP, vN, vFur;
 out vec2 vWaterLight;
+out vec3 vCoatPosition;
+flat out float vCoat;
 void main() {
   mat4 skin = uBones[aJoints.x] * aWeights.x + uBones[aJoints.y] * aWeights.y
             + uBones[aJoints.z] * aWeights.z + uBones[aJoints.w] * aWeights.w;
   vWP = uAnimalOrigin + uAnimalBasis * (skin * vec4(aPos, 1.)).xyz * uAnimalScale;
-  vFur = aColour;
+  vFur = aColour.rgb;
+  vCoat = aColour.a;
+  // Allow for the source rig's 100x armature transform. Bind-space
+  // markings move with the skin through every gait.
+  vCoatPosition = aPos * (100. * uAnimalScale);
   vN = uAnimalBasis * mat3(skin) * aNor;
   vWaterLight = vec2(0.);
   if (uNight > 0. && uMirror > 0. && uAnimalWet > 0.) {
@@ -110,12 +116,33 @@ void main() {
 }`, `
 in vec3 vWP, vN, vFur;
 in vec2 vWaterLight;
+in vec3 vCoatPosition;
+flat in float vCoat;
 uniform float uClip, uAnimalWet;
 out vec4 o;
 void main() {
   if (vWP.y < uClip) discard;
   vec3 N = normalize(vN), V = normalize(uCam-vWP);
-  vec3 color = pbr(vFur * mix(1., .7, uAnimalWet), mix(.88, .56, uAnimalWet), 0., N, V, vWP);
+  float facing = dot(N,uSunDir);
+  float edge = 1.-clamp(dot(N,V),0.,1.);
+  float sheen = edge*edge*edge*smoothstep(-0.25,0.60,-dot(V,uSunDir))*vCoat*(1.-uNight)*(1.-0.86*uAnimalWet);
+  float sun = facing>0. || sheen>0.001 ? directLight(vWP) : 0.;
+  vec3 pigment = vFur;
+  if (vCoat>0. && uNight<1.) {
+    // Longitudinal guard hairs follow the dorsal axis; break up their lay
+    // in small locks. Fade the grain when a lock is smaller than a pixel.
+    vec3 p = vCoatPosition;
+    float across = p.x + 0.68*p.z;
+    vec2 lay = vec2(105.*across, 16.*p.y);
+    float resolved = 1.-smoothstep(0.35,1.1,max(fwidth(lay.x),fwidth(lay.y)));
+    float lock = vnoise(vec2(18.*across,6.*p.y));
+    float hair = vnoise(lay + vec2(3.6*lock,0.));
+    pigment *= 1.+(1.-uNight)*(1.-0.75*uAnimalWet)*resolved*(0.14*(lock-0.5)+0.26*(hair-0.5));
+  }
+  vec3 color = pbr(pigment * mix(1., .7, uAnimalWet), mix(.88, .56, uAnimalWet), 0., N,V,vWP,sun,canopyCover(vWP));
+  // Light caught at a grazing angle gives the coat a soft edge. Wet hair
+  // lies flat, reducing the sheen as the animal wades or swims.
+  color += (0.06+0.20*pigment)*uSunCol*sun*sheen;
   // Grazing green light from the excited water catches the wet flanks and
   // paws. Keep the fur pigment and let the refracted scene carry it to the eye.
   float immersed = smoothstep(0.,0.055,vWaterLight.x);
@@ -153,13 +180,41 @@ function contactMesh(positions, joints, weights, triangles) {
   return { bind, joints: skinJoints, weights: skinWeights, indices, positions: new Float32Array(bind.length) };
 }
 
+// Give neighbouring coat faces a shared lighting normal while keeping the
+// breaks at sharply folded ears. Pigment boundaries can cross a smooth flank.
+function softenCoatNormals(positions, normals, colours) {
+  const groups = new Map();
+  for (let i=0; i<positions.length/3; i++) {
+    if (!colours[4*i+3]) continue;
+    const p = 3*i, key = positions[p]+','+positions[p+1]+','+positions[p+2];
+    const group = groups.get(key);
+    if (group) group.push(p);
+    else groups.set(key,[p]);
+  }
+  const authored = normals.slice();
+  for (const group of groups.values()) {
+    for (const p of group) {
+      const x = authored[p], y = authored[p+1], z = authored[p+2];
+      let sx=0, sy=0, sz=0;
+      for (const q of group) {
+        const alignment=x*authored[q]+y*authored[q+1]+z*authored[q+2];
+        const w=Math.max(0,Math.min(1,(alignment-0.45)*3));
+        sx+=w*authored[q]; sy+=w*authored[q+1]; sz+=w*authored[q+2];
+      }
+      const blend=0.85/(Math.hypot(sx,sy,sz)||1);
+      normals[p]=0.15*x+blend*sx; normals[p+1]=0.15*y+blend*sy; normals[p+2]=0.15*z+blend*sz;
+    }
+  }
+}
+
 // Merge the material groups once. Their colours travel with the vertices, so a
 // visible animal needs one indexed submission, including its eyes and antlers.
 function uploadAnimal(gl, model, parts, read, contact) {
   const total = parts.reduce((n, {primitive}) => n + model.accessors[primitive.attributes.POSITION].count, 0);
   if (total > 65535) throw Error('Animal exceeds the vertex index range');
-  const attributes = [3, 3, 4, 4, 3];
-  const arrays = attributes.map((n, slot) => slot === 3 ? new Uint8Array(n * total) : new Float32Array(n * total));
+  const attributes = [3, 3, 4, 4, 4];
+  const arrays = attributes.map((n, slot) => slot === 3 ? new Uint8Array(n * total)
+    : slot === 4 ? new Uint16Array(n * total) : new Float32Array(n * total));
   const [positions, normals, weights, joints, colours] = arrays;
   const indices = [], surfaces = [];
   let base = 0;
@@ -168,8 +223,13 @@ function uploadAnimal(gl, model, parts, read, contact) {
     const triangles = read(primitive.indices);
     positions.set(pos, 3 * base);
     normals.set(read(a.NORMAL), 3 * base);
-    const rgb = model.materials[primitive.material].pbrMetallicRoughness.baseColorFactor.slice(0, 3);
-    for (let i = base; i < base + n; i++) colours.set(rgb, 3 * i);
+    const material = model.materials[primitive.material];
+    const colour = material.pbrMetallicRoughness.baseColorFactor.slice(0,3).map(v=>Math.round(v*65535));
+    // The husky and stag exports retained Blender's generic material names.
+    const coat = /^(Main(?:_.*)?|Hair|Grey)$/.test(material.name) ||
+      (rigid<0 && (material.name==='Material' || (primitive.material===1 && material.name.startsWith('Material.'))));
+    colour.push(coat ? 65535 : 0);
+    for (let i = base; i < base + n; i++) colours.set(colour, 4 * i);
     if (rigid >= 0) {
       for (let i = base; i < base + n; i++) { weights[4*i] = 1; joints[4*i] = rigid; }
     } else {
@@ -180,6 +240,7 @@ function uploadAnimal(gl, model, parts, read, contact) {
     for (const i of triangles) indices.push(i + base);
     base += n;
   }
+  softenCoatNormals(positions,normals,colours);
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
   const buffers = [];
@@ -193,7 +254,7 @@ function uploadAnimal(gl, model, parts, read, contact) {
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(slot);
     if (slot === 3) gl.vertexAttribIPointer(slot, 4, gl.UNSIGNED_BYTE, 0, 0);
-    else gl.vertexAttribPointer(slot, attributes[slot], gl.FLOAT, false, 0, 0);
+    else gl.vertexAttribPointer(slot, attributes[slot], slot===4 ? gl.UNSIGNED_SHORT : gl.FLOAT, slot===4, 0, 0);
   });
   bindBuffer(gl.ELEMENT_ARRAY_BUFFER);
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, Uint16Array.from(indices), gl.STATIC_DRAW);

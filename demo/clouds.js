@@ -39,8 +39,8 @@ vec4 cloudColumn(vec3 origin, vec3 ray) {
 vec3 cloudLight(vec3 behind, vec3 clearSky, vec3 ray, vec4 col) {
   if (all(equal(col, vec4(0.)))) return behind;
   float dusk = 1. - smoothstep(0.025, 0.39, uStarDir.y);
-  vec3 ambientLight = mix(vec3(0.043, 0.079, 0.154), vec3(0.044, 0.061, 0.120), dusk);
-  vec3 topLight = mix(vec3(0.15, 0.19, 0.245), vec3(0.23, 0.15, 0.15), dusk);
+  vec3 ambientLight = mix(vec3(0.070, 0.107, 0.165), vec3(0.044, 0.061, 0.120), dusk);
+  vec3 topLight = mix(vec3(0.21, 0.225, 0.26), vec3(0.23, 0.15, 0.15), dusk);
   float forward = pow(max(dot(ray, uStarDir), 0.), 12.);
   vec3 direct = vec3(1.72, 1.265, 0.97) * uCloudTint * (1. + 0.8 * forward);
   // The atlas stores premultiplied light. Keeping it premultiplied all the

@@ -5,11 +5,14 @@ const habits = [
   { fork: 0.19, spread: 0.37, lift: 0.17, lean: 0.06, taper: 0.78, shoulder: 0.05 }, // upright
   { fork: 0.32, spread: 0.37, lift: 0.27, lean: 0.13, taper: 0.46, shoulder: 0.32 }, // rounded
 ];
+// The broadleaf on an exposed bank reaches out of the wind. Use one of the
+// six existing templates so the same crown goes into shadows and reflections.
+const bankHabit = { fork: 0.34, spread: 0.58, lift: 0.40, lean: 0.64, taper: 0.73, shoulder: 0.21 };
 const rootSides = 12;
 const treeSeeds = [9942, 2113, 8605, 981, 7139, 3029];
 
 export function highCanopyMesh(random, variant = 0) {
-  const habit = habits[variant % habits.length],
+  const habit = variant === 3 ? bankHabit : habits[variant % habits.length],
     foliage = [];
   const position = [],
     normal = [],
@@ -195,7 +198,8 @@ export function highCanopyMesh(random, variant = 0) {
       a = rotation + i * 2.39996 + (random() - 0.5) * 0.72;
     const base = spine(habit.fork + (0.81 - habit.fork) * t);
     const profile = 1 - habit.taper * t + habit.shoulder * Math.sin(Math.PI * t);
-    const reach = habit.spread * profile * (0.82 + 0.37 * random());
+    const lee = habit === bankHabit ? 0.94 + 0.29*Math.cos(a) : 1;
+    const reach = habit.spread * profile * (0.82 + 0.37 * random()) * lee;
     const lift = habit.lift * (1 - 0.53 * t) * (0.76 + 0.4 * random()),
       turn = (random() - 0.5) * 1.0;
     // A swollen collar grows out of the trunk into a load-bearing crook.
@@ -265,6 +269,7 @@ export function forestStands(localTrees, uplandTrees, isletTree, noise, random, 
     [-30, -3, 0.964],
     [10, -19, 0.929],
     [31, 3, 0.875],
+    [1, 31, 0.843, 3.4], // the rose crown overhanging the south landing
   ];
   function plant(x, y, z, h, seed, islet = false) {
     const r = random(Math.floor(seed * 1e8) ^ 0x6a73);
@@ -273,10 +278,10 @@ export function forestStands(localTrees, uplandTrees, isletTree, noise, random, 
     if (colour < 0.29) hue = 0.855 + 0.047 * r();
     else if (colour > 0.77) hue = 0.921 + 0.024 * r();
     else if (colour > 0.69) hue = 0.951 + 0.031 * r();
-    for (const [cx, cz, pigment] of accents) {
-      if ((x - cx) ** 2 + (z - cz) ** 2 < 90) hue = pigment + 0.009 * (seed - 0.5);
+    for (const [cx, cz, pigment, radius = 9.49] of accents) {
+      if ((x - cx) ** 2 + (z - cz) ** 2 < radius*radius) hue = pigment + 0.009 * (seed - 0.5);
     }
-    if (islet) hue = 0.41;
+    if (islet) hue = 0.08;
     let form = Math.floor(r() * 3);
     if (hue >= 0.85 && hue < 0.91) {
       form = 1;
@@ -286,10 +291,9 @@ export function forestStands(localTrees, uplandTrees, isletTree, noise, random, 
       form = 0;
       h *= 1.18;
     }
-    if (islet) form = 0;
-    const variant = form + (r() < 0.5 ? 3 : 0);
-    const az = islet ? 2.4 : r() * 2 * Math.PI,
-      spread = islet ? 1.35 : 0.86 + 0.38 * r();
+    const variant = islet ? 3 : form + (r() < 0.5 ? 3 : 0);
+    const az = islet ? 2.73 : r() * 2 * Math.PI,
+      spread = islet ? 1.23 : 0.86 + 0.38 * r();
     const ix = Math.floor(x / width),
       iz = Math.floor(z / width),
       key = [variant, ix, iz].join(',');

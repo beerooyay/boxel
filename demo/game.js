@@ -147,8 +147,11 @@ function H(x, z, footprint = 0, shapedBanks=true) {
     const rg = ridged(mx * 0.0035 + 2, mz * 0.0035 - 4, footprint * 0.009, 0.15);
     const crag = ridged(mx * 0.010 + 7, mz * 0.010 - 3, footprint * 0.032, 0.26);
     const foothills = sm(84, 170, range) * 5 * fbm(mx * 0.017, mz * 0.017, 3);
-    const shoulder = 12 * vnoise(mx * 0.0027 - 2.1, mz * 0.0027 + 4.7);
-    h += m * m * (23 + shoulder + 106 * rg + 11 * crag * crag * rg) + foothills;
+    const massif = vnoise(mx * 0.0027 - 2.1, mz * 0.0027 + 4.7);
+    // Give each outer massif its own prominence and narrow its summit. The
+    // lower saddles reveal the next ridge through the gap between peaks.
+    const prominence = sm(145,270,edgeDistance)*rg*((massif-0.44)*76 + (rg-0.60)*55);
+    h += m * m * (23 + 12*massif + 106 * rg + 11 * crag * crag * rg + prominence) + foothills;
   }
   const height = terrainHeight(x, z, h, shapedBanks);
   return plot < 8.0 ? height + (1.8-height)*(1-sm(5.6, 8.0, plot)) : height;
@@ -774,21 +777,26 @@ vec4 mountainSurface(vec3 dx, vec3 dy, float crag, float seam, float chute, inou
   vec3 bedding = (scan.r-0.5)*normalize(strike) + (scan.g-0.5)*normalize(dip);
   vec3 face = normalize(normal + 0.60 * (bedding - normal * dot(bedding,normal)));
   float bowl = vGround.z, altitude = vWP.y;
-  // The ridges shed snow onto their lee slopes. Increasing altitude lowers
-  // the amount of shelter needed to hold a continuous pack.
+  // Long-lived snow tongues follow the hollows below a cirque. Convex ribs
+  // stay exposed well above the first snow in a neighbouring gully.
   float lee = dot(geom.xz,WIND_DIR);
-  float shelter = 0.40*(0.5-crag) + 0.31*(0.5-seam) + 0.25*(0.5-chute) + 0.075*bowl + 0.045*lee;
-  float mantle = mix(geom.y,normal.y,0.50)-0.55 + clamp((altitude-60.)*0.0012,-0.020,0.07) + shelter;
+  float catchment = clamp(2.7*bowl+0.44*lee,-1.,1.);
+  float snowHeight = altitude+17.*catchment+11.*(0.5-crag)+4.*(0.5-seam);
+  float shelter = 0.28*(0.5-crag)+0.18*(0.5-seam)+0.08*(0.5-chute)+0.14*catchment;
+  float mantle = mix(geom.y,normal.y,0.26)-0.63+clamp((altitude-72.)*0.0016,-0.045,0.085)+shelter;
   float footprint = max(length(dx),length(dy));
-  float snowLine = smoothstep(29.,50.,altitude+5.*bowl+4.*lee+11.*(0.5-crag));
-  snow = snowLine*smoothstep(-0.040,0.043+min(0.040,0.018*footprint),mantle);
+  float snowLine = smoothstep(50.,74.,snowHeight);
+  snow = snowLine*smoothstep(-0.040,0.040+min(0.040,0.018*footprint),mantle);
 
-  float bedPhase = dot(vWP,vec3(0.021,0.148,-0.016)) + 2.0*seam + 1.15*crag;
+  float bedPhase = dot(vWP,vec3(0.026,0.098,-0.038)) + 0.49*seam + 0.78*crag;
   float bands = 0.5 + 0.5*cos(6.28318*bedPhase)*(1.-smoothstep(0.6,3.,footprint));
   float fracture = smoothstep(0.08,0.33,abs(seam-0.48)+0.24*chute);
   float spall = smoothstep(0.34,0.72,scan.b+0.22*chute-0.09);
   vec3 schist = mix(vec3(0.039,0.057,0.084),vec3(0.36,0.34,0.31),0.31*crag+0.49*chute+0.20*bands);
   schist *= (0.60+0.71*fracture)*(0.57+0.94*spall);
+  // Broken bedding planes run across the face. Scree and snow bury them at
+  // the toe of the wall; fine seams disappear with the projected footprint.
+  schist *= 1.-0.32*smoothstep(0.66,0.96,bands)*fracture;
   float apron = smoothstep(0.48,0.83,geom.y)*smoothstep(-0.13,0.37,0.30*bowl+0.63*chute-0.21);
   vec2 fanUV = vWP.xz*0.010 + vec2(0.18*crag,0.13*seam);
   vec4 blocks = textureGrad(uTrailMaterial,fanUV,0.010*dx.xz,0.010*dy.xz);
@@ -798,17 +806,19 @@ vec4 mountainSurface(vec3 dx, vec3 dy, float crag, float seam, float chute, inou
   vec3 relief = vec3(blocks.r-0.5,0.,blocks.g-0.5);
   face = normalize(face+apron*(0.34+1.25*stone)*(relief-face*dot(face,relief)));
   // Dark mats of scrub thin into separate colonies and end at the scree.
-  float heath = (1.-smoothstep(23.,51.,altitude+9.*crag-8.*bowl))*smoothstep(0.65,0.88,geom.y);
+  float heath = (1.-smoothstep(34.,61.,altitude+9.*crag-6.*catchment))*smoothstep(0.56,0.84,geom.y);
   float colony = smoothstep(0.26,0.69,0.40*seam+0.36*chute+0.24*blocks.a+0.16*bowl);
-  schist = mix(schist,mix(vec3(0.076,0.090,0.039),vec3(0.019,0.052,0.041),colony),heath*colony*(1.-stone));
+  schist = mix(schist,mix(vec3(0.080,0.098,0.051),vec3(0.031,0.067,0.045),colony),heath*(0.43+0.57*colony)*(1.-0.65*stone));
   // Coarse blocks break the edge of thin snow. Deeper drifts bury the blocks
   // and soften their normals while keeping the shape of the underlying bowl.
   float powder = smoothstep(-0.025,0.24,mantle+0.07*(chute-0.5));
   snow *= 1.-0.29*stone*apron*(1.-powder);
-  vec3 frost = mix(vec3(0.38,0.55,0.68),vec3(0.91,0.93,0.95),powder);
+  float openSnow = smoothstep(-0.13,0.54,dot(geom,uStarDir)-0.23*max(catchment,0.));
+  vec3 frost = mix(vec3(0.32,0.55,0.70),vec3(0.94,0.95,0.96),powder);
+  frost *= mix(vec3(1.),vec3(0.71,0.85,1.),(1.-openSnow)*clearAfternoon());
   // Wind exposes blue ice between deposits, even high on the shoulders.
   frost *= mix(0.76+0.31*scan.b+0.12*spall,1.,powder*(0.52+0.48*chute));
-  normal = normalize(mix(face,mix(normal,geom,0.21*powder),snow));
+  normal = normalize(mix(face,mix(normal,geom,0.64*powder),snow));
   return vec4(mix(schist,frost,snow),mix(0.78,mix(0.44,0.86,powder),snow));
 }
 vec3 lastAlpineLight(float snow,float nl,float sun){
@@ -944,6 +954,23 @@ void main(){
     float runnel = smoothstep(0.44, 0.80, flutes) * (1. - 0.66 * ledge);
     vec3 face = mix(vec3(0.078, 0.092, 0.103), vec3(0.38, 0.29, 0.20), ledge);
     face = mix(face, vec3(0.050, 0.074, 0.065), runnel * 0.80);
+    // Pale gneiss is exposed on the southeast face of the western switchbacks.
+    // Its dipping bands cross the hiking benches and taper out at the hill's foot.
+    vec2 spur = (p - vec2(-40., -26.)) / vec2(22., 15.);
+    float exposure = 1. - smoothstep(0.38, 1., dot(spur,spur));
+    if (exposure > 0.) {
+      const vec3 strike = vec3(0.15,0.08,-0.10), dip = vec3(0.042,0.27,0.06);
+      vec3 grain = textureGrad(uRockSurface, vec2(dot(vWP,strike),dot(vWP,dip)) + 0.17*flutes,
+        vec2(dot(terrainDx,strike),dot(terrainDx,dip)), vec2(dot(terrainDy,strike),dot(terrainDy,dip))).rgb;
+      vec3 bedding = (grain.r-0.5)*normalize(strike) + (grain.g-0.5)*normalize(dip);
+      float fault = bedHeight * 0.31 + lateral * 0.16 + lithology * 0.43;
+      float seam = (1. - smoothstep(0.035, 0.20, abs(fract(fault + 0.5) - 0.5))) * smoothstep(0.23, 0.63, flutes);
+      float pale = smoothstep(0.30,0.70,0.33*ledge+0.67*grain.b);
+      vec3 gneiss = mix(vec3(0.12,0.145,0.15),vec3(0.73,0.69,0.55),pale);
+      gneiss = mix(gneiss,vec3(0.76,0.73,0.58),0.82 * seam);
+      face = mix(face,gneiss*(1. - 0.27*runnel),exposure);
+      N=normalize(N+exposure*cliff*2.4*(bedding-N*dot(N,bedding)));
+    }
     // Water-dark runnels support cushions of moss on the shelves. Exposed ribs
     // stay bare and the hiking tread keeps its worn mineral surface.
     float shelf = smoothstep(0.21, 0.78, vN.y + 0.32 * flutes - 0.18 * ledge);
@@ -956,14 +983,19 @@ void main(){
   vec2 isle=p-vec2(${ISLET[0].toFixed(3)},${ISLET[1].toFixed(3)});
   float islandDist=length(vec2((isle.x+0.21*isle.y)/${ISLET_WIDTH},isle.y/${ISLET_DEPTH}));
   float islandStone=(1.-smoothstep(1.07,1.50,islandDist))*smoothstep(-0.35,0.28,y);
-  float mantleSoil = islandStone * smoothstep(0.42,0.93,vN.y);
+  float mantleSoil = islandStone * smoothstep(0.42,0.93,vN.y)*(1.-0.72*smoothstep(0.52,0.98,islandDist));
   if (islandStone>0.) {
-    // Short lenses of exposed shale interrupt the earth on eroded faces.
+    // Dipping stone beds surface along the shoulders. Moss catches the tops
+    // of shelves while wave-washed seams break up their shaded faces.
     float drift = (n1-0.5)*1.35 + (n2-0.5)*0.21;
-    float lens = vnoise(vec2(dot(p,vec2(0.67,-0.41))+n1, y*2.3 + drift));
-    float shale = smoothstep(0.31,0.74,lens + 0.19*(n3-0.5));
-    vec3 face = mix(vec3(0.091,0.069,0.056),vec3(0.29,0.24,0.19),shale);
-    alb = mix(alb, face*(0.80+0.40*n3), islandStone*(1.-0.7*mantleSoil));
+    float bed = 1.72*y + dot(isle,vec2(0.22,-0.13)) + drift;
+    float lens = vnoise(vec2(dot(isle,vec2(0.67,-0.41))+n1,bed));
+    float shale = smoothstep(0.27,0.76,lens+0.19*(n3-0.5));
+    float joint = (1.-smoothstep(0.02,0.15,abs(fract(bed+0.5)-0.5)))*smoothstep(0.27,0.64,lens);
+    vec3 face = mix(vec3(0.082,0.102,0.118),vec3(0.40,0.37,0.30),shale)*(1.-0.40*joint);
+    float moss = smoothstep(0.41,0.75,vN.y+0.22*(lens-0.5))*smoothstep(0.29,0.63,n2+0.22*shale);
+    face = mix(face,mix(vec3(0.083,0.114,0.044),vec3(0.26,0.30,0.10),n2),0.82*moss);
+    alb = mix(alb,face*(0.76+0.48*n3),islandStone*(1.-0.7*mantleSoil));
   }
   // The smaller offset, rotated soil patch neither copies the chip pattern nor
   // inherits its slope direction. Use explicit derivatives across the verge.
@@ -1728,16 +1760,19 @@ vec2 rainSlope(vec2 p, float pixelMetres){
   }
   return slope;
 }
-vec2 waveGrad(vec2 p, float pixelMetres){
+vec2 waveGrad(vec2 p, float pixelMetres, float clearLake){
   vec2 g = waterWave(p, uTime).yz;
   // Cross-winds shear the small surface trains into short, uneven crests.
   float shear = vnoise(p*0.31 + vec2(-0.12,0.09)*uTime) - 0.5;
-  g += vec2(0.8, 0.6) * cos(dot(p, vec2(0.8, 0.6)) * 1.3 + uTime * 1.1 + shear*2.6) * 0.016;
-  g += vec2(-0.5, 0.86) * cos(dot(p, vec2(-0.5, 0.86)) * 2.1 + uTime * 1.6 - shear*2.1) * 0.010;
-  g += vec2(0.2, -0.98) * cos(dot(p, vec2(0.2, -0.98)) * 3.7 + uTime * 2.2 + shear*3.3) * 0.006;
-  g += vec2(-0.9, -0.3) * cos(dot(p, vec2(-0.9, -0.3)) * 6.3 + uTime * 3.1 - shear*4.2) * 0.004;
-  // wind gust patches ("cat's paws"): the same rolling waves that move the grass roughen the water as they pass
+  // Sheltered water seen at a grazing angle resolves broad swells. Let the
+  // shorter creases soften with their projected footprint between gusts.
   float gusts = smoothstep(0.17, 1.3, vGust);
+  float shortWave = 1.-0.84*clearLake*(1.-gusts)*smoothstep(0.012,0.12,pixelMetres);
+  g += vec2(0.8, 0.6) * cos(dot(p, vec2(0.8, 0.6)) * 1.3 + uTime * 1.1 + shear*2.6) * (0.016*shortWave);
+  g += vec2(-0.5, 0.86) * cos(dot(p, vec2(-0.5, 0.86)) * 2.1 + uTime * 1.6 - shear*2.1) * (0.010*shortWave);
+  g += vec2(0.2, -0.98) * cos(dot(p, vec2(0.2, -0.98)) * 3.7 + uTime * 2.2 + shear*3.3) * (0.006*shortWave);
+  g += vec2(-0.9, -0.3) * cos(dot(p, vec2(-0.9, -0.3)) * 6.3 + uTime * 3.1 - shear*4.2) * (0.004*shortWave);
+  // wind gust patches ("cat's paws"): the same rolling waves that move the grass roughen the water as they pass
   float capillary = 1. - smoothstep(0.15, 0.49, pixelMetres);
   if (gusts * capillary > 0.) {
     g += WIND_DIR * cos(dot(p, WIND_DIR) * 9. - uTime * 5.3 + vnoise(p * 0.8) * 3.) * 0.048 * gusts * capillary;
@@ -1759,7 +1794,8 @@ void main(){
     rain = rainSlope(p, pixelMetres) * (1. - smoothstep(0.025, 0.065, pixelMetres));
   vec4 disturbance = surfaceAt(p);
   vec4 front=waterCrests(p,vDepth,vBedSlope,uTime,vGust);
-  vec2 g = waveGrad(p, pixelMetres) + rain + disturbance.yz + front.yz;
+  float clearLake = (1.-uNight)*(1.-uStorm)*(1.-stream);
+  vec2 g = waveGrad(p, pixelMetres, clearLake) + rain + disturbance.yz + front.yz;
   // This cross-stream coordinate follows the same bends as the wet grid.
   vec2 downstream = normalize(vec2(0.442*cos(p.y*0.13)+0.406*cos(p.y*0.29+0.8),1.));
   float currentCap=0.;
@@ -1799,13 +1835,17 @@ void main(){
   float cosWater = sqrt(0.4375 + 0.5625 * NdV * NdV);
   float rayDown = 0.75 * V.y + (cosWater - 0.75 * NdV) * N.y;
   float path = max(0., depth) / max(0.25, rayDown);
-  float through = exp(-path * mix(0.53, 0.69, stream));
+  float through = exp(-path * (mix(0.53, 0.69, stream) - 0.16*clearLake));
   float absorb = 1. - through;
   // Red light dies out fastest. T*(1-loss*(1-T)) blends one and two absorption
   // lengths per channel using one exponential. Scattering takes the complementary share.
-  const vec3 loss = vec3(0.78, 0., 0.16);
+  vec3 loss = vec3(0.78, 0., 0.16) + clearLake*vec3(0.21,0.,-0.15);
   float scatter = (1. - F) * absorb;
-  vec3 body = mix(vec3(0.046, 0.255, 0.184), vec3(0.008, 0.077, 0.117), absorb) * (1. + loss * through);
+  // The shoal returns more blue-green light from suspended minerals. The
+  // shallower it gets, the more of the actual sand and stones show through.
+  vec3 shoal = vec3(0.046, 0.255, 0.184) + clearLake*vec3(-0.008,0.072,0.138);
+  vec3 basin = vec3(0.008, 0.077, 0.117) + clearLake*vec3(-0.001,0.024,0.029);
+  vec3 body = mix(shoal, basin, absorb) * (1. + loss * through);
   float sun = directLight(vWP);
   body *= ambient(N) * 2.8 + uSunCol * sun * (0.12 + 0.14 * max(uSunDir.y, 0.));
   if (uNight > 0. && disturbance.a > 0.) {
@@ -2035,10 +2075,11 @@ function terrainFar() {
   // Take tangents from the actual mesh, wrapping at its angular seam; the skyline and its lighting
   // then resolve the same ridges. Each vertex needs only one terrain sample.
   const ringRatio = (1500 / innerRadius) ** (1 / rings);
+  const bowlRatio = ringRatio ** 3;
   for (let j = 0; j <= rings; j++) {
     const radius = innerRadius * ringRatio ** j;
-    const arcStep = 2 * radius * Math.sin(Math.PI / sectors);
-    const outwardStep = radius * (ringRatio - 1);
+    const bowlArc = 2 * radius * Math.sin(3 * Math.PI / sectors);
+    const bowlRun = radius * (bowlRatio - 1);
     for (let i = 0; i <= sectors; i++) {
       const vertex = j * stride + i;
       const left = 3 * (j * stride + (i + sectors - 1) % sectors), right = 3 * (j * stride + (i + 1) % sectors);
@@ -2048,10 +2089,15 @@ function terrainFar() {
       const nx = ay*bz-az*by, ny = az*bx-ax*bz, nz = ax*by-ay*bx;
       const scale = 32767 / Math.hypot(nx,ny,nz);
       const elevation = pos[vertex*3+1];
-      // Sum changes in slope along the two grid directions. A hollow stores
-      // snow, a convex rib sheds it. The inner radial interval is shorter.
-      const bowl = j === 0 || j === rings ? 0 : 0.5 * ((pos[right+1]+pos[left+1]-2*elevation)/arcStep +
-        ((pos[outer+1]-elevation)-ringRatio*(elevation-pos[inner+1]))/outwardStep);
+      // Sample the neighbouring shoulders for snow collection. A three-cell
+      // span measures a gully even when its floor contains small bumps.
+      let bowl = 0;
+      if (j >= 3 && j <= rings-3) {
+        const before = 3*(j*stride+(i+sectors-3)%sectors)+1, after = 3*(j*stride+(i+3)%sectors)+1;
+        const along = (pos[before]+pos[after]-2*elevation)/bowlArc;
+        const across = ((pos[3*(vertex+3*stride)+1]-elevation)-bowlRatio*(elevation-pos[3*(vertex-3*stride)+1]))/bowlRun;
+        bowl = 0.5*(along+across);
+      }
       const k = vertex*4;
       packedNormals[k] = Math.round(nx*scale);
       packedNormals[k+1] = Math.round(ny*scale);
@@ -2223,6 +2269,9 @@ function nearNy(near, x, z) {
 // Blades per square metre in a full stand. bakeMeadow thins distant tiles.
 const GRASS_DENSITY = touch ? 70 : TEST ? 64 : 150;
 const START = GRASS_LAB ? [PLOT.x-1.8, PLOT.z+2.5] : [8, 30], SHORE_CAM = [19, 26];
+function southLanding(x,z) {
+  return GRASS_LAB ? 0 : 1-sm(0.20,1.35,((x-11)/15)**2+((z-28)/8)**2);
+}
 const clearOf = (x, z, level=waterLevel(x,z), ground) => (!GRASS_LAB || plotDistance(x, z) >= 7.8) && trailCover(x, z) < 0.02 && (level === 0 || (ground ?? H(x,z)) > level + 0.2) && Math.hypot(x - START[0], z - START[1]) > 3.5 && Math.hypot(x - SHORE_CAM[0], z - SHORE_CAM[1]) > 3.5;
 const inMap = (x, z, m = 2) => Math.abs(x) < WORLD_HALF - m && Math.abs(z) < WORLD_HALF - m;
 
@@ -2299,11 +2348,29 @@ function scatter(near, fixed, meshes) {
     do { x = LAKE[0] + (r() * 2 - 1) * 30; z = LAKE[1] + (r() * 2 - 1) * 24; k++; } while ((lakeD(x, z) < 8.6 || lakeD(x, z) > 10.6) && k < 60);
     const s0 = 0.4 + r() * 0.9; add(q % 2, x, z, s0, s0 * 0.8, s0 * 1.1);
   }
-  for (let q = 0; q < (touch ? 900 : 1600); q++) {
+  // Part of the valley gravel collects in shallow bars a few metres
+  // offshore. Reserve those stones from the same small-rock budget.
+  const shoals = [[14.5,20.5],[0.1,20.3],[-9.4,28.0],[-27.8,21.2],[-22.9,3.5],[-16.5,-12.8],[12.1,-1.4]];
+  const barStones = 24, looseStones = (touch ? 900 : 1600) - shoals.length*barStones;
+  for (let q = 0; q < looseStones; q++) {
     let x, z, k = 0;
     if (q < 1000) do { x = LAKE[0] + (r() * 2 - 1) * 34; z = LAKE[1] + (r() * 2 - 1) * 28; k++; } while ((lakeD(x, z) < 9.6 || lakeD(x, z) > 12.4) && k < 60);
     else { x = (r() * 2 - 1) * (VALLEY_HALF - 2); z = (r() * 2 - 1) * (VALLEY_HALF - 2); }
     const s0 = 0.04 + Math.pow(r(), 2) * 0.18; add(3, x, z, s0, s0 * 0.7, s0 * (0.8 + 0.4 * r()));
+  }
+  const barRand = rng(36158);
+  for (const [cx,cz] of shoals) {
+    const gx=groundAt(cx+0.5,cz)-groundAt(cx-0.5,cz), gz=groundAt(cx,cz+0.5)-groundAt(cx,cz-0.5);
+    const grade=Math.max(0.001,Math.hypot(gx,gz)), tx=gz/grade, tz=-gx/grade;
+    for (let i=0;i<barStones;i++) {
+      const along=2*barRand()-1, across=(barRand()-barRand())*(1.55-0.75*Math.abs(along));
+      const x=cx+3.7*along*tx-across*tz, z=cz+3.7*along*tz+across*tx;
+      // Larger flakes at the heart of the bar give way to grit at its ends.
+      // Keep the top below the trough of the swell even at the shallow margin.
+      const size=0.075+0.46*barRand()**2*(1.-0.62*Math.abs(along));
+      if (-groundAt(x,z)<0.12+0.82*size) continue;
+      add(3,x,z,size,0.33*size,0.82*size,barRand);
+    }
   }
 
   // Exposed ribs on the lookout have a cap of blocky stone and a fan of smaller
@@ -2532,12 +2599,14 @@ function growRosettes(sc, near, leaves) {
       const a = r() * 2 * Math.PI, offset = 1.7 + 4.5 * r();
       const x = cx + Math.cos(a) * offset, z = cz + Math.sin(a) * offset;
       const underCrown = nearby.some(([tx,tz,,height]) => height && (x-tx)**2 + (z-tz)**2 < (0.63*height)**2);
-      const y = nearH(near, x, z), h = (0.63 + 0.99 * r()) * (plant ? 0.83 : 1.24) * (underCrown ? 1 : 0.47);
+      const y = nearH(near, x, z), fullSize = (0.63 + 0.99 * r()) * (plant ? 0.83 : 1.24) * (underCrown ? 1 : 0.47);
       if (!inMap(x, z) || y < waterLevel(x, z) + 0.12 || nearNy(near, x, z) < 0.84 ||
-          trailCover(x,z) > 0.12 || trailDistance(x, z) < 1.15 + h || Math.hypot(x - START[0], z - START[1]) < 1.9) continue;
+          trailCover(x,z) > 0.12 || trailDistance(x, z) < 1.15 + fullSize || Math.hypot(x - START[0], z - START[1]) < 1.9) continue;
       // Leave room around boulders and tree trunks for every crown to open.
-      if (nearby.some(([bx, bz, radius]) => (x - bx) ** 2 + (z - bz) ** 2 < (radius + 0.32 * h) ** 2)) continue;
-      const hue = warm ? 0.78 + 0.13 * r() : r() * 0.55, spin = r() * 6.2832;
+      if (nearby.some(([bx, bz, radius]) => (x - bx) ** 2 + (z - bz) ** 2 < (radius + 0.32 * fullSize) ** 2)) continue;
+      const landing = southLanding(x,z), h = fullSize*(1-0.47*landing);
+      const seed = r(), spin = r() * 6.2832;
+      const hue = landing>0.5 ? 0.87+0.025*seed : warm ? 0.78+0.13*seed : 0.55*seed;
       for (let j = 0; j < 21; j++) {
         // Three neighbouring fans grow from a single clump. Their outer leaves arch over the litter.
         const fan = spin + (j % 3) * 2.39996, rank = Math.floor(j / 3) - 3;
@@ -2680,6 +2749,9 @@ function plantScatter(sc, near, shelterAt) {
       }
     }
   }
+  // Established colonies here hug the exposed bank, including the waxy cups
+  // and their filaments. The same size reaches their shadows and light bake.
+  for (let i=0; i<P.length; i+=4) P[i+3] *= 1-0.47*southLanding(P[i],P[i+2]);
   return { P: new Float32Array(P), F: new Float32Array(F), S2: new Float32Array(S2) };
 }
 const VALLEY_MOTES = touch ? 520 : 840, MOTE_N = VALLEY_MOTES * 3;
@@ -2904,7 +2976,16 @@ function buildValley() {
   const rocks = stoneMeshes.map((mesh, k) => rockBatches(mesh, sc.rv[k], sc.rs[k], sc.beds[k]));
   Object.assign(near, terrainPatches(near.pos, NEAR.S, NEAR.S, false, fixed));
   const sx = ISLET[0]-1.15, sz = ISLET[1]+0.55;
-  const stands = forestStands(sc.trees, highSites.instances, [sx,nearH(near,sx,sz)-0.08,sz,4.35,0.7317], vnoise, rng,
+  // Wind-pruned crowns break the skyline at the switchbacks. Grow them on
+  // the shoulders between treads and keep the steep mineral faces exposed.
+  const canopySites = Array.from(sc.trees);
+  for (const [x,z,h] of [[-50.2,-25,2.8],[-48.4,-24.6,1.45],[-35.8,-29.2,2.8],[-33.8,-29.8,1.35],
+    [-29.2,-27.4,1.95],[-48.4,-16.6,2.4],[-35.8,-12.4,1.65],[-26.8,-19,1.2],[-43,-14.2,1.35]]) {
+    const y = nearH(near,x,z);
+    if (nearNy(near,x,z) > 0.74 && trailDistance(x,z) > 2.5 && !rockAt(x,y+0.12,z,0.22,boulderCells))
+      canopySites.push(x,y,z,vnoise(x*2.31,z*1.14),h);
+  }
+  const stands = forestStands(canopySites, highSites.instances, [sx,nearH(near,sx,sz)-0.08,sz,5.65,0.7317], vnoise, rng,
     (x,z) => Math.max(Math.abs(x),Math.abs(z)) < NEAR.half ? nearH(near,x,z) : H(x,z));
   const rosettes = { R: [], D: [], M: [], B: [] };
   growRosettes(sc,near,rosettes);
@@ -2928,8 +3009,15 @@ function buildValley() {
       const bench = ((x-19-0.62*(z-36)+warp)/6.8)**2 + ((z-36)/13)**2;
       const fen = ((x+30+warp)/9)**2 + ((z+6)/13)**2;
       const upper = ((x-riverX(z)-6+warp)/5.2)**2 + ((z+46)/12)**2;
-      const rose = GRASS_LAB ? 0 : (1-sm(0.30,1.38,Math.min(bench,fen,upper)+drift))*(1-0.33*damp);
-      writeMeadowColour(colours,k,0.60*stand+0.40*tuftBed,shade,damp,heath,rose);
+      // Wind keeps the south landing cropped. Rose tufts collect in two
+      // sheltered pockets; the silvery sedge between them opens onto the islet.
+      const landing = southLanding(x,z);
+      const westTufts = ((x-4+0.45*(z-31)+0.38*warp)/3.0)**2+((z-31)/5.4)**2;
+      const eastTufts = ((x-18-0.64*(z-28)+0.44*warp)/3.1)**2+((z-28)/4.0)**2;
+      const pockets = landing*(1-sm(0.05,1.1,Math.min(westTufts,eastTufts)+drift));
+      const broadRose = 1-sm(0.30,1.38,Math.min(bench,fen,upper)+drift);
+      const rose = GRASS_LAB ? 0 : Math.max(broadRose*(1-0.6*landing),pockets)*(1-0.33*damp);
+      writeMeadowColour(colours,k,0.60*stand+0.40*tuftBed,shade,Math.max(damp,0.76*landing),heath,rose);
       if (GRASS_LAB) {
         data[i] = 1;
         data[i+1] = 0.68 + 0.48*(1-sm(PLOT.z-2,PLOT.z+4,z)) + 0.17*tuftBed;
@@ -2967,7 +3055,7 @@ function buildValley() {
       const short = 0.72 + 0.16*tuftBed;
       const tall = 1.18 + 0.22*tuftBed + 0.11*stand;
       const meadow = Math.max(rose*0.95,opening*(0.46+0.54*stand));
-      data[i+1] = (short+(tall-short)*meadow)*(1-0.17*tread)*(1-0.20*heath);
+      data[i+1] = (short+(tall-short)*meadow)*(1-0.17*tread)*(1-0.20*heath)*(1-0.58*landing+0.12*pockets);
     },
   });
   const pl = plantScatter(sc, near, shelterAt);
@@ -3584,7 +3672,7 @@ function strike(r = stormRng, at = null) {
 }
 
 // ---------------------------------------------------------------- camera + player
-const player = { x: START[0], z: START[1], y: 0, yaw: 0.05, pitch: 0.06, vx: 0, vz: 0, vy: 0, grounded: true, onStone: false, swimming: false, scrambling: false, stroke: 0, flight: 0, stride: 0, bob: 0, foot: 1, wet: 0 };
+const player = { x: START[0], z: START[1], y: 0, yaw: GRASS_LAB ? 0.05 : -0.27, pitch: GRASS_LAB ? 0.06 : 0.18, vx: 0, vz: 0, vy: 0, grounded: true, onStone: false, swimming: false, scrambling: false, stroke: 0, flight: 0, stride: 0, bob: 0, foot: 1, wet: 0 };
 player.y = H(player.x, player.z);
 function readPreference(key) {
   try { return localStorage.getItem('tarn.' + key); } catch { return null; }

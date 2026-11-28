@@ -6,6 +6,7 @@ const swatches = {
   SEDGE: '#83AF89',
   STRAW: '#D6B878',
   PETAL_PINK: '#F0B5C7',
+  DUSK_ROSE: '#AD6683',
   FERN: '#758D5A',
   GOLD: '#F3CB59',
   BLUE: '#568FDC',
@@ -49,7 +50,7 @@ vec3 understoryPigment(float type, float hue) {
 // A stand has a stable inherited hue. Exposure and moisture can modulate its value.
 vec3 crownPigment(float seed){
   if (seed < 0.78) return mix(LEAF,NEW_GROWTH,0.26+0.19*seed/0.78);
-  if (seed < 0.85) return PETAL_PINK;
+  if (seed < 0.85) return mix(PETAL_PINK,DUSK_ROSE,(seed-0.78)/0.07);
   if (seed < 0.91) return mix(EVERGREEN, LEAF, 0.22 * (seed - 0.85)/0.06);
   if (seed < 0.95) return mix(BLOSSOM, BLOSSOM_TIP, 0.72 * (seed - 0.91)/0.04);
   if (seed < 0.985) return mix(HONEY, APRICOT, (seed - 0.95)/0.035);

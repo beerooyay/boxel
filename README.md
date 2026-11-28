@@ -86,12 +86,14 @@ Choose first or third person there, or press **P** to switch while moving. Tarn 
 An animal paddles when its paws lose the bottom and plants its feet again in the shallows. Hold a direction to
 scramble up steep terrain and over boulders. A deer grazes in the pink meadow above the shore, a stag walks beyond the hillside grove,
 and nine more animals range from the headwaters to the southern pastures.
-The forest uses six native broadleaf shapes across 1,233 tree sites. [Tree and flora census](docs/flora-audit.md)
+From the south landing, a rose canopy frames the wind-bent broadleaf on the islet.
+Six native tree shapes grow throughout the basin and the surrounding uplands. [Tree and flora census](docs/flora-audit.md)
 A separate Boxel field spreads and dissipates gusts in a moving air mass. The hills shelter the lee.
 Grass, crowns, sailwings, the sound of wind and rough patches on the water sample the same fronts.
 Grass and low leaves part as you pass. Follow the river upstream from the lake to a 2.7-metre waterfall.
 Water splits between mossy shale shoulders. Low spray rises where each chute hits the pool.
 Along the banks, wind waves turn toward the shallows and run up onto gravel between pockets of sedge.
+In daylight, submerged gravel bars show through the blue-green water. The far trees reflect between gusts.
 Water contact reads the same animated skin as grass contact. A continuous bow wave splits ahead of the swimmer’s
 leading contact, and each immersed leg and tail leaves a smaller trail that follows its motion.
 The wake travels through ripples from wading animals, skimming sailwings and thrown stones, and reflects off rocks.
