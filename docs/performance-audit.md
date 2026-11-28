@@ -190,3 +190,37 @@ Both builds made 50 same-origin resource requests. Uncompressed local response b
 ### Public night swim
 
 We verified that the public page loaded all four runtime modules from `083cde8`, then swam at night for 75 seconds at 2560 × 1600 using normal controls and the game's own clock. The fox covered 133.2 m, reached 18 waypoints and was moving in water for all 4,501 measured frame intervals. Browser callbacks measured 16.7 ms at p95 and 16.8 ms at p99, with zero intervals over 25 ms. The game held HDR, 4× MSAA, full resolution and full grass density throughout. This records browser scheduling on one M4 Max. The public RGBA8 fallback also completed a swim, and desktop WebKit completed a jump using touch controls.
+
+## Forest forks and mountain stands
+
+The desktop valley has 1,236 planted broadleaf trees. Another 1,602 conifers now grow on the background mountain mesh. The touch layout generates 820 mountain conifers. Each distant conifer has two crossed whorls, four opaque triangles in total. All share one vertex buffer and one instanced draw per rendered scene, including a reflection when the game renders one. Desktop placement occupies 25,632 bytes on the GPU plus 144 bytes for the shared crown. The conifers use the valley's daylight and atmospheric perspective. They have no individual shadow pass, wind animation, collision or Boxel field allocation.
+
+For the native broadleaf trees, “large” means an instance height of at least 5 m. Those trunks have 5% less circumference. The upper half of each crown's branch attachments has 10% thinner limbs. Trunk narrowing tapers through the collar. The photographed bark now travels along the curve with a common length around each cross section. The existing normal map supplies extra relief within walking distance, which changes how grooves catch grazing light. The major flutes and junctions are geometry. Fine fissures are surface shading.
+
+### Frame measurements
+
+Chrome 158.0.8127.88 on Apple M4 Max, ANGLE Metal, 1280 × 768, HDR, 4× MSAA and uncapped rendering. The existing frame benchmark ran the revision under test, parent 12ec683 twice, then the revision under test again. Each route included 48 warm-up frames, 180 measured frames and 36 GPU queries per run. Entries average the two run medians or p95s. CPU measures the frame callback, including any driver waits. The swim included forward paddling, sprint and a turn. [Benchmark harness](../bench/performance.cjs)
+
+| Route | Previous GPU median | Updated GPU median | Previous → updated GPU p95 | Previous → updated CPU median |
+|---|---:|---:|---:|---:|
+| Wooded shore | 12.60 ms | 11.45 ms | 14.38 → 13.61 ms | 5.95 → 5.45 ms |
+| Summit | 15.21 ms | 13.94 ms | 17.69 → 16.98 ms | 7.10 → 6.40 ms |
+| Moving swim | 3.57 ms | 3.60 ms | 5.02 → 6.41 ms | 2.40 → 2.60 ms |
+
+The median GPU savings were 9.1% at shore and 8.4% at the summit. Summit p95 still crossed the 16.67 ms budget for 60 Hz. The moving-swim median was similar and its slower frames regressed. These are whole-frame results on one desktop GPU. Touch-emulated Chrome rendered the summit with 48,912 grass roots and zero WebGL errors. Physical phone frame times remain unmeasured.
+
+### What scales
+
+| Work | Measured scope and scaling |
+|---|---|
+| Direct lighting | Substituting full visibility for the direct-light shadow and cloud lookup reduced the baseline shore frame from 12.83 to 9.29 ms. Many materials share this lookup, so its cost grows with shaded pixels and overlap. Ambient light, surface shading and shadow-map preparation still ran. |
+| Forest and leaves | Omitting the canopy draw in the main and reflected scenes gave 10.44 ms. That draw includes wood and attached leaf sprays. Omitting the separate loose-foliage draw gave 12.65 ms. The normal scene reports 267,497 leaf sprays and loose pieces. Overlapping alpha-tested leaves still perform texture and coverage work. |
+| Grass | Omitting the grass draw gave 11.18 ms. Of 5,554,344 placed roots, the shore route drew 88,516. Cost follows visible roots, the number of blade segments and siblings at that distance, and screen coverage. The desktop understory also has 41,682 plant pieces. |
+| Wind | Setting the shared wind strength to zero gave 12.62 ms. This checks calm-weather rendering. Wind field updates and some shader arithmetic still run, so it is a partial measurement. The moving gust field uses a 64 × 64 grid and vegetation samples it at the appropriate scale. |
+| Boxel | Existing sparse occupancy masks let foliage skip glow and moisture reads where no active field reaches a root. The canopy shader now bypasses the field-coordinate check for an entirely inactive draw and skips the shelter lookup on wood. The remote conifers add zero simulation cells. A separate solver speedup was not measured in this pass. |
+
+The diagnostic numbers above are whole-frame GPU medians from one omission run per feature against the parent. Two full shore controls measured 12.51 and 13.16 ms. Removing draws also changes occlusion and pixel coverage. The savings overlap and should not be added.
+
+The six interactive tree shapes use 4,381–5,068 triangles up close and 1,954–2,276 at middle distance. At skyline distance each uses 718–840 triangles. Every spray survives as a pair of triangles, and the main limbs reuse existing vertices. This removes about 63% of the former distant triangle count. Shadows continue to use the middle mesh. Narrowing trunks alone saves no triangles.
+
+The separate mountain crowns add 6,408 desktop triangles per scene. In an additional off/on/on/off comparison of the ridge draw on the development build, summit GPU medians ranged from 13.65 to 13.83 ms. Shore varied more, from 8.67 to 11.32 ms. That spread prevents a reliable isolated millisecond cost. The full-build comparison above includes the mountains.

@@ -23,7 +23,7 @@ import { BrushField } from './brush.js';
 import { waterBounds } from './water-view.js';
 import { stoneBed, stoneDrop, stoneSpacing } from './stone-bed.js';
 import { coarsePatch } from './terrain-lod.js';
-import { forestStands, highCanopySites, treeFieldMask, treeFieldTiles } from './high-canopy.js';
+import { matureHeight, matureTrunkScale, forestStands, highCanopySites, treeFieldMask, treeFieldTiles } from './high-canopy.js';
 import { createSailwings } from './fauna.js';
 import { cloudSky, createClouds } from './clouds.js';
 import { bakeCanopy, valleyAir, canopyShelter } from './atmosphere.js';
@@ -627,6 +627,22 @@ vec3 brushBend(vec3 wp) {
   return vec3(bend.x, -max(0.42 * length(bend), 0.68 * press), bend.y) * reach;
 }
 `;
+// Distant conifer crowns share one opaque silhouette and never enter the
+// valley interaction fields. Air and daylight still match the terrain.
+const RIDGE_TREES = program(WORLD_VS + valleyAir + `
+in vec3 aCrown; in vec4 aSite;
+out vec4 vAir; out float vLight;
+void main(){
+  vec3 wp=aSite.xyz+aCrown*aSite.w;
+  vAir=airAt(wp);
+  vLight=0.32+0.46*aCrown.y+0.19*aCrown.x;
+  gl_Position=project(wp);
+}`, `in vec4 vAir; in float vLight; out vec4 o;
+void main(){
+  vec3 leaf=mix(vec3(0.036,0.067,0.057),vec3(0.11,0.16,0.083),vLight);
+  vec3 lit=leaf*(ambient(vec3(0.,1.,0.))*2.2+uSunCol*(0.13+0.42*vLight)*max(uSunDir.y,0.));
+  o=vec4(tonemap(lit*vAir.a+vAir.rgb),0.);
+}`);
 const CANOPY = program(WORLD_VS + BRUSH_VS + valleyAir + canopyShelter + `
 uniform int uTreeFields;
 in vec3 aPos, aNor, aStalk, aBlade; in float aTissue; in vec4 aSite, aHabit; in float aGraft; in vec2 aSlope;
@@ -649,6 +665,11 @@ void main(){
   n.x/=footWidth;
   n.y-=n.x*p.x*(2.*rib*h/0.18);
   p.x*=footWidth;
+  // Negative wood tissue carries the trunk share across the fork. Scaling
+  // instance space preserves the separate silhouettes of saplings and crowns.
+  float bole=1.-step(${matureHeight.toFixed(1)},aSite.w)*${(1-matureTrunkScale).toFixed(2)}*max(0.,-1.-aTissue);
+  p.xz*=bole;
+  n.xz/=bole;
   p.xz = rot*p.xz*aHabit.z;
   stalk.xz = rot*stalk.xz*aHabit.z;
   vNormal=n; vNormal.xz=rot*n.xz/aHabit.z;
@@ -692,8 +713,8 @@ void main(){
   vCrown=clamp((aPos.y-0.25)*0.64+1.04*length(aPos.xz),0.,1.);
   vec2 uv=fieldUV(aSite.xz);
   vAir=airAt(vWP);
-  vField=vec3(0.,uSheet,canopyCover(vWP));
-  if (all(lessThanEqual(abs(uv-0.5),vec2(0.5)))) {
+  vField=vec3(0.,uSheet,aTissue>=0. ? canopyCover(vWP) : 0.);
+  if (uTreeFields!=0 && all(lessThanEqual(abs(uv-0.5),vec2(0.5)))) {
     if ((uTreeFields&1)!=0) vField.x=textureLod(uGlow,uv,0.).r;
     float localWet=(uTreeFields&2)!=0 ? textureLod(uGround,uv,0.).r : 0.;
     vField.y=min(1.,localWet+uSheet);
@@ -737,9 +758,12 @@ void main(){
   }else{
     vec3 along=normalize(vAcross-n*dot(n,vAcross));
     vec3 across=cross(along,n);
-    vec3 grain=texture(uBarkNormal,vBlade).xyz*2.-1.;
-    vec3 bark=texture(uBarkColor,vBlade).rgb;
-    vec3 relief=across*grain.x+along*grain.y;
+    vec3 bark=vec3(0.), relief=vec3(0.);
+    if(vBarkSpace.w<1.) {
+      vec3 grain=texture(uBarkNormal,vBlade).xyz*2.-1.;
+      bark=texture(uBarkColor,vBlade).rgb;
+      relief=across*grain.x+along*grain.y;
+    }
     // The trunk and collar share a metre-scaled solid projection. Even across
     // their intersection a pixel at the same position sees the same bark.
     if(vBarkSpace.w>0.001) {
@@ -753,7 +777,10 @@ void main(){
       vec3 projected=w.x*texture(uBarkColor,p.zy).rgb+w.y*texture(uBarkColor,p.xz).rgb+w.z*texture(uBarkColor,p.xy).rgb;
       bark=mix(bark,projected,vBarkSpace.w);
     }
-    n=normalize(n+relief);
+    // Increase fine relief only at walking distance. Reuse the normal map
+    // so grazed ridges catch the moving light without tessellating the bark.
+    float nearGrain=1.-smoothstep(2.,9.,length(uCam-vWP));
+    n=normalize(n+relief*(1.+0.24*nearGrain));
     float damp=vField.y;
     bark*=1.-0.29*damp;
     vec3 sun=uSunCol*directLight(vWP), sky=ambient(n)*contactLight(vWP);
@@ -2122,7 +2149,7 @@ function terrainFar() {
       packedNormals[k+3] = Math.round(32767*Math.max(-1,Math.min(1,bowl)));
     }
   }
-  return { pos, packedNormals, ...terrainPatches(pos, sectors, rings, true) };
+  return { pos, packedNormals, sectors, ...terrainPatches(pos, sectors, rings, true) };
 }
 function waterMesh(terrain) {
   const cols = 256, rows = 352, stride = cols + 1, tileCells = 16;
@@ -2946,7 +2973,37 @@ function outsideView(planes, tile, width, depth = width) {
 const loc = (p, n) => gl.getAttribLocation(p, n);
 const highSites = highCanopySites(H, vnoise, rng(914), VALLEY_HALF, trailCover, waterLevel);
 const { near, wm, surface, boulderCells, sc, rocks, forest, leaves, grass, plants, coilView, lanternView, sailwings, wildlife, heightRange } = buildValley();
-const far = uploadTerrain(terrainFar());
+const far = (() => {
+  const mesh=terrainFar(), terrain=uploadTerrain(mesh);
+  terrain.trees=uploadRidgeTrees(mesh);
+  return terrain;
+})();
+function uploadRidgeTrees(mesh) {
+  const random=rng(40119), sites=[];
+  const sectors=mesh.sectors, stride=sectors+1;
+  for(let id=0;id+stride+1<mesh.pos.length/3;id++) {
+    if(id%stride===sectors || random()>0.22) continue;
+    const k=3*id, x=mesh.pos[k], y=mesh.pos[k+1], z=mesh.pos[k+2];
+    if(Math.max(Math.abs(x),Math.abs(z))<NEAR.half+8 || Math.hypot(x,z)>520 ||
+       y<8 || y>80 || mesh.packedNormals[id*4+1]<21500) continue;
+    const grove=vnoise(x*0.044,z*0.044);
+    if(grove<0.46 || y>32+42*grove) continue;
+    // Barycentric placement on the rendered ring triangle keeps every root grounded.
+    let a=random(), b=random();
+    if(a+b>1) { a=1-a; b=1-b; }
+    for(let j=k;j<k+3;j++) sites.push(mesh.pos[j]+a*(mesh.pos[j+3]-mesh.pos[j])+b*(mesh.pos[j+3*stride]-mesh.pos[j]));
+    sites[sites.length-2]-=0.24;
+    sites.push(2.4+3.1*random());
+  }
+  // Two interlocking whorls, each crossed in world space for oblique views.
+  const crown=[];
+  for(const [base,tip,radius] of [[0,0.76,0.31],[0.33,1,0.23]]) {
+    crown.push(-radius,base,0, 0,tip,0, radius,base,0, 0,base,-radius, 0,tip,0, 0,base,radius);
+  }
+  return {count:sites.length/4,vao:vao([
+    {loc:loc(RIDGE_TREES,'aCrown'),size:3,data:Float32Array.from(crown)},
+    {loc:loc(RIDGE_TREES,'aSite'),size:4,data:Float32Array.from(sites),div:1}])};
+}
 function uploadTerrain(mesh) {
   // Placement reads the original valley normals. The GPU only needs 16-bit
   // directions and one signed component for the mountain's hollow or spur.
@@ -3103,16 +3160,18 @@ function uploadForest(stands) {
       { loc:loc(CANOPY,'aTissue'), size:1, data:mesh.tissue }, site, habit, slope,
     ];
     gl.bindVertexArray(null);
-    const indices = uploadBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.index);
+    const levels = new Uint16Array(mesh.index.length+mesh.skylineIndex.length);
+    levels.set(mesh.index); levels.set(mesh.skylineIndex,mesh.index.length);
+    const indices = uploadBuffer(gl.ELEMENT_ARRAY_BUFFER, levels);
     const tiles = stands.tiles.filter(tile => tile.variant===variant);
     for (const tile of tiles) tile.vao = vao(attrs,indices,tile.start);
     const count = tiles.reduce((sum,tile) => sum+tile.count, 0);
-    return {tiles, count, shoots:count*mesh.foliage.length/4, near:mesh.nearCount, far:mesh.farCount};
+    return {tiles, count, shoots:count*mesh.foliage.length/4, counts:[mesh.skylineIndex.length,mesh.farCount,mesh.nearCount], offsets:[mesh.index.length*2,mesh.nearCount*2,0]};
   });
   return { groups, fieldTiles:treeFieldTiles(stands.sites,WORLD_HALF,MEADOW_TILE),
     count:stands.sites.length/4, shoots:groups.reduce((sum,group) => sum+group.shoots, 0) };
 }
-function drawTreeRun(group, firstTile, count, close, shade) {
+function drawTreeRun(group, firstTile, count, level, shade) {
   if (shade) {
     const glow=glowF.textureCache, ground=groundF.textureCache;
     // A shared mask never divides a draw. A run with any live root samples
@@ -3125,8 +3184,8 @@ function drawTreeRun(group, firstTile, count, close, shade) {
     }
   }
   gl.bindVertexArray(firstTile.vao);
-  gl.drawElementsInstanced(gl.TRIANGLES, close ? group.near : group.far, gl.UNSIGNED_SHORT,
-    close ? 0 : group.near * Uint16Array.BYTES_PER_ELEMENT, count);
+  gl.drawElementsInstanced(gl.TRIANGLES, group.counts[level], gl.UNSIGNED_SHORT,
+    group.offsets[level], count);
 }
 function drawForest(planes, mirror, eye, slice = 0, slices = 1) {
   const distance = mirror < 0 ? 5 : 13;
@@ -3134,18 +3193,20 @@ function drawForest(planes, mirror, eye, slice = 0, slices = 1) {
     const group=forest.groups[i];
     if (!group.count) continue;
     if (!planes) {
-      drawTreeRun(group, group.tiles[0], group.count, false);
+      drawTreeRun(group, group.tiles[0], group.count, 1);
       continue;
     }
     // Adjacent visible tiles share the mesh and contiguous instance attributes.
     // Submit a run with its first VAO while keeping the original culling bounds.
-    let first = null, count = 0, detailed = false;
+    let first = null, count = 0, detailed = 0;
     for (const tile of group.tiles) {
       if (outsideView(planes,tile,tile.width,tile.depth)) continue;
       const dx=Math.max(tile.x0-eye[0],0,eye[0]-tile.x0-tile.width);
       const dz=Math.max(tile.z0-eye[2],0,eye[2]-tile.z0-tile.depth);
       const detailReach = distance + 0.85*tile.pad;
-      const close = dx*dx+dz*dz < detailReach*detailReach;
+      const distance2=dx*dx+dz*dz;
+      const skylineReach=48+3.5*tile.pad;
+      const close = distance2<detailReach*detailReach ? 2 : distance2<skylineReach*skylineReach ? 1 : 0;
       if (first && (first.start+count !== tile.start || close !== detailed)) {
         drawTreeRun(group,first,count,detailed,true);
         first = null;
@@ -4398,6 +4459,9 @@ function drawScene(eye, b, VP, mirror, t, opts) {
   }
   if (opts.avatar) drawFox(eye, VP, mirror, t);
   wildlife?.draw(planes, eye, t, p => common(p, eye, VP, mirror, t));
+  common(RIDGE_TREES,eye,VP,mirror,t);
+  gl.bindVertexArray(far.trees.vao);
+  gl.drawArraysInstanced(gl.TRIANGLES,0,12,far.trees.count);
   const coverage = mirror > 0 && Boolean(post.ms) && !opts.crop;
   if (coverage) { gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE); gl.colorMask(true,true,true,false); }
   common(CANOPY, eye, VP, mirror, t);
@@ -5022,7 +5086,7 @@ function scripted(m, frames = 900, view = 'shore') {
       chase.arm = 3.55; swimmerWake.reset(); post.previous = null;
     }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), animal: fox?.species.id, gait: fox?.gait, started, wildlife: wildlife?.state() ?? [],
     ...(GRASS_LAB && { grassLab: { occupied: contactOn ? contactGrid.occupied : 0, contactMs: bladeContact.stats.cpuMs, activeRoots: bladeContact.stats.roots, uploadBytes: bladeContact.stats.uploadBytes, coupled, markContacts, stillGrass, contactOn, view: labView } }),
-    blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, oaks: 0, trees: forest.count, leaves: leaves.count + forest.shoots, plants: plants?.count ?? 0, grassDrawn } }) };
+    blocks: layers().map((l) => l.stats().blocks), instances: { grass: grass.count, oaks: 0, ridgeTrees:far.trees.count, trees: forest.count, leaves: leaves.count + forest.shoots, plants: plants?.count ?? 0, grassDrawn } }) };
   if (qs.has('falls')) window.__game.look('falls');
   else if(qs.has('oak')) {
     const [x,z]=[23.12,36.43];

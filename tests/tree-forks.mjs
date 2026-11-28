@@ -41,6 +41,21 @@ test('both detail levels share the full cut edge between each primary limb and t
   }
 });
 
+test('skyline meshes retain every leaf spray with two triangles and share the original vertex buffers', () => {
+  for(let variant=0;variant<6;variant++) {
+    let seed=9942+variant;
+    const mesh=highCanopyMesh(()=>((seed=(Math.imul(1664525,seed)+1013904223)>>>0)/2**32),variant);
+    let leafTriangles=0;
+    for(let i=0;i<mesh.skylineIndex.length;i+=3) {
+      const ids=mesh.skylineIndex.subarray(i,i+3);
+      assert(ids.every(id=>id<mesh.tissue.length));
+      if(mesh.tissue[ids[0]]>=0) leafTriangles++;
+    }
+    assert.equal(leafTriangles,mesh.foliage.length/2);
+    assert(mesh.skylineIndex.length<0.4*mesh.farCount);
+  }
+});
+
 test('a failed bark download still has ridged colour and non-flat lighting normals', () => {
   const colour=barkTile(false), normal=barkTile(true);
   assert.equal(colour.bytes.length,normal.bytes.length);
