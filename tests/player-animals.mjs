@@ -36,3 +36,27 @@ test('every selectable animal has a usable eye, flotation depth and moving limbs
     animal.dispose();
   }
 });
+
+test('the fox releases its forepaws while the hind paws still support the launch', async t => {
+  t.mock.method(globalThis, 'fetch', async url => new Response(await readFile(url)));
+  const fox = await loadPlayerAnimal(new Proxy({}, {get: () => () => {}}), {}, animalById('Fox'));
+  function soles() {
+    let fore = Infinity, hind = Infinity;
+    for (const {positions} of fox.contactSurfaces()) {
+      for (let i = 0; i < positions.length; i += 3) {
+        const y = positions[i+1], z = positions[i+2];
+        if (z > 0.17) fore = Math.min(fore,y);
+        if (z < -0.12 && z > -0.50) hind = Math.min(hind,y);
+      }
+    }
+    return {fore,hind};
+  }
+  const rest = soles();
+  for (let i = 0; i < 6; i++) {
+    fox.advance(1/60,0,false,0,-1,false,false,0,0,0,0,i/6);
+    const {fore,hind} = soles();
+    assert(Math.abs(hind-rest.hind) < 0.025,'hind paw stays within reach of the ground');
+    if (i === 5) assert(fore-hind > 0.045,'forepaws release before the hind push');
+  }
+  fox.dispose();
+});

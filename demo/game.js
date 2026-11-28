@@ -640,9 +640,18 @@ vec2 barkUV(vec3 ring) {
 void main(){
   mat2 rot=mat2(aHabit.x,aHabit.y,-aHabit.y,aHabit.x);
   vec3 p=aPos, stalk=aStalk;
+  // Vary the footprint in the tree's own frame. The compression eases to
+  // zero below the first fork, leaving the crown and its bounds in place.
+  float h=clamp(1.-p.y/0.18,0.,1.);
+  float rib=0.23*fract(dot(aSite.xz,vec2(0.75488,0.56984)));
+  float footWidth=1.-rib*h*h;
+  vec3 n=aNor;
+  n.x/=footWidth;
+  n.y-=n.x*p.x*(2.*rib*h/0.18);
+  p.x*=footWidth;
   p.xz = rot*p.xz*aHabit.z;
   stalk.xz = rot*stalk.xz*aHabit.z;
-  vNormal=aNor; vNormal.xz=rot*aNor.xz/aHabit.z;
+  vNormal=n; vNormal.xz=rot*n.xz/aHabit.z;
   vBlade=aBlade.xy;
   vGraft=vec3(0.);
   float load=uWind>0. ? crownLoad(aSite.xz)*uWind : 0.;
@@ -3788,7 +3797,7 @@ function updateFox(dt, ground, distance, alongBody, running) {
   const stride = Math.max(distance, Math.abs(foxPose.turn)*0.33) * (reverse ? -1 : 1);
   const phase = player.grounded || player.swimming ? -1 : Math.min(0.94, 0.24 + 0.70*player.flight/jumpDuration);
   const grade = player.grounded ? Math.max(-1, Math.min(1, (front-rear)/(2*span))) * sm(0.1,0.6,distance/dt) : 0;
-  fox?.advance(dt,stride,running && distance/dt>2,foxPose.bend,phase,player.swimming,player.scrambling,player.stroke,grade,diagonal,settle);
+  fox?.advance(dt,stride,running && distance/dt>2,foxPose.bend,phase,player.swimming,player.scrambling,player.stroke,grade,diagonal,settle, pushTime > 0 ? 1-pushTime/pushDuration : -1);
 }
 
 function foxCamera(dt = 0) {
@@ -3915,11 +3924,17 @@ function crossSlope(dx, dz, draft) {
   player.x=x+dx*fraction; player.z=z+dz*fraction;
 }
 
-let jumpBuffer = 0;
+const pushDuration = 0.10;
+let jumpBuffer = 0, pushTime = 0;
 function stepPlayer(dt) {
   if (jumpBuffer > 0) {
-    if (player.swimming || requestJump(player)) jumpBuffer = 0;
+    if (player.swimming) jumpBuffer = 0;
+    else if (player.grounded) { pushTime = pushDuration; jumpBuffer = 0; }
     else jumpBuffer -= dt;
+  }
+  if (pushTime > 0) {
+    pushTime = player.grounded ? Math.max(0,pushTime-dt) : 0;
+    if (pushTime === 0 && player.grounded) requestJump(player);
   }
   let mx = controller.input.x, mz = controller.input.forward;
   if (keys.KeyW || keys.ArrowUp) mz += 1; if (keys.KeyS || keys.ArrowDown) mz -= 1;
@@ -4021,7 +4036,8 @@ function stepPlayer(dt) {
 
 function jump() {
   if (!started || menu.open || capture?.viewing || player.swimming) return;
-  if (!requestJump(player) && player.vy < 0) jumpBuffer = 0.12;
+  if (player.grounded) { if (pushTime === 0) pushTime = pushDuration; }
+  else if (player.vy < 0) jumpBuffer = 0.12;
 }
 
 function throwStone() {
@@ -4993,7 +5009,7 @@ function scripted(m, frames = 900, view = 'shore') {
         player.y=level-fox.draft; player.swimming=true; player.grounded=false;
       }
       foxPose.yaw = player.yaw; foxPose.reverseYaw = null; foxPose.pitch = foxPose.roll = 0;
-      jumpBuffer = 0; foxPose.impact = 0; foxPose.landingTime = 1;
+      jumpBuffer = pushTime = 0; foxPose.impact = 0; foxPose.landingTime = 1;
       foxPose.height = chase.height = player.swimming ? player.y : terrain;
       chase.arm = 3.55; swimmerWake.reset(); post.previous = null;
     }, soak: (amount) => { groundF.rain(amount); sheet = groundF.sheet; }, strike: (x, z) => { strike(rng(7), [x, z]); flash = 1; boltLight = 1; }, hdr: HDR, get samples() { return sceneSamples; }, scripted, setMode, H, ready: true, engine: engine.kind, state: () => ({ player: { ...player }, pose: { ...foxPose }, camera: playerCamera(0), thirdPerson: Boolean(fox && thirdPerson), animal: fox?.species.id, gait: fox?.gait, started, wildlife: wildlife?.state() ?? [],

@@ -42,9 +42,10 @@ export async function loadPlayerAnimal(gl, shader, species) {
   let steering = 0, tailLag = 0, bakedLift = 0, fromLift = 0;
   let swim = 0, climb = 0, swimPhase = 0;
   let pawOffset = 0, compression = 0;
+  let waistPitch = 0, neckPitch = 0, waistYaw = 0, hindDrive = 0, preload = 0, rearExtension = 0;
   function isStride(g) { return g !== 'Idle' && g !== 'Gallop_Jump'; }
   function clipFor(g) { return clips[g === 'Swim' || g === 'Scramble' ? 'Walk' : g]; }
-  function advance(dt, distance, running, turning, jumpPhase, swimming, scrambling, stroke, grade = Number(scrambling), diagonal = 0, settle = 0) {
+  function advance(dt, distance, running, turning, jumpPhase, swimming, scrambling, stroke, grade = Number(scrambling), diagonal = 0, settle = 0, push = -1) {
     pawOffset += (diagonal/scale-pawOffset) * -Math.expm1(-24*dt);
     compression = settle * 0.10;
     const next = swimming ? 'Swim' : jumpPhase >= 0 ? 'Gallop_Jump' : scrambling ? 'Scramble'
@@ -70,6 +71,16 @@ export async function loadPlayerAnimal(gl, shader, species) {
     swim += (Number(swimming)-swim) * -Math.expm1(-9*dt);
     climb += (grade-climb) * -Math.expm1(-12*dt);
     fade = Math.min(1, fade + dt / (jumpPhase >= 0 ? 0.09 : 0.14));
+    const cycle = time / clip.duration * Math.PI*2;
+    const moving = isStride(gait) ? Math.min(1,Math.abs(distance)/(dt*1.7)) : 0;
+    const earlyFlight = jumpPhase >= 0 ? Math.max(0,1-(jumpPhase-0.24)/0.23) : 0;
+    preload = push >= 0 ? Math.sin(Math.PI*push) : 0;
+    rearExtension = push >= 0 ? 0.16*push*push : 0.16*earlyFlight**3;
+    hindDrive = push >= 0 ? push*push : earlyFlight*earlyFlight;
+    const flex = moving*Math.sin(cycle)*(running ? 0.10 : 0.045);
+    waistPitch += (flex-0.29*hindDrive+0.07*preload-waistPitch)*-Math.expm1(-32*dt);
+    neckPitch += (-0.48*waistPitch-neckPitch)*-Math.expm1(-14*dt);
+    waistYaw += (0.055*moving*Math.sin(cycle+0.8)-waistYaw)*-Math.expm1(-18*dt);
     dirty = true;
   }
   // Rotate in the asset's upright frame. Its joints have different bind axes,
@@ -97,15 +108,21 @@ export async function loadPlayerAnimal(gl, shader, species) {
     m[14] += oz*(1-c)-oy*s;
   }
   function steer(index, world) {
-    if (index === chest || frontFeet.includes(index)) steerBone(world[index], -steering, world[chest]);
+    if (index === chest || frontFeet.includes(index)) {
+      steerBone(world[index], -steering+waistYaw, world[chest]);
+      pitchBone(world[index], waistPitch, world[chest]);
+    }
     else if (index === neck) steerBone(world[index], -steering*0.48);
     else if (index === tail) steerBone(world[index], tailLag*0.82);
+    if (index === neck) pitchBone(world[index],neckPitch);
     const limb = limbs.get(index);
-    if (limb && (compression > 0 || Math.abs(pawOffset) > 0.0001)) {
+    if (limb && !limb.front && hindDrive > 0) pitchBone(world[index],0.48*hindDrive,world[limb.shoulder]);
+    if (limb && (preload > 0 || rearExtension > 0 || compression > 0 || Math.abs(pawOffset) > 0.0001)) {
       // Compress both the leg chain and its separately weighted paw target.
       const m = world[index], pivotY = world[limb.shoulder][13];
-      for (let k = 1; k < 12; k += 4) m[k] *= 1-compression;
-      m[13] += (pivotY-m[13])*compression + limb.diagonal*pawOffset;
+      const flex = compression + preload*(limb.front ? 0.25 : 0.18) - (limb.front ? 0 : rearExtension);
+      for (let k = 1; k < 12; k += 4) m[k] *= 1-flex;
+      m[13] += (pivotY-m[13])*flex + limb.diagonal*pawOffset;
     }
     if (swim + Math.abs(climb) < 0.001) return;
     if (index === neck) pitchBone(world[index], -0.23*swim + 0.16*climb);
@@ -126,7 +143,7 @@ export async function loadPlayerAnimal(gl, shader, species) {
     }
     // World physics supplies the jump arc; keep the authored leg motion.
     bakedLift = fromLift*(1-weight) + (gait === 'Gallop_Jump' ? (pose[body][2]-jumpBase)*100 : 0)*weight;
-    rig.apply(fade < 1 ? blended : pose, steer, bakedLift + compression*shoulderHeight/scale);
+    rig.apply(fade < 1 ? blended : pose, steer, bakedLift + (compression+0.19*preload)*shoulderHeight/scale);
     dirty = false;
     contactDirty = true;
   }

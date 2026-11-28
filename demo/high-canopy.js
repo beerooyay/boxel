@@ -38,6 +38,10 @@ export function highCanopyMesh(random, variant = 0) {
   function mix(a, b, t) {
     return a.map((v, i) => v + t * (b[i] - v));
   }
+  function bendMid(a,b,c,d) {
+    // Midpoint of the tangent-continuous curve through the two inner knots.
+    return b.map((v,i)=>(9*(v+c[i])-a[i]-d[i])/16);
+  }
   function extend(p, angle, reach, rise) {
     return [p[0] + Math.cos(angle) * reach, p[1] + rise, p[2] + Math.sin(angle) * reach];
   }
@@ -70,8 +74,10 @@ export function highCanopyMesh(random, variant = 0) {
     const start = tissue.length, ring = sides + 1, spin = random() * tau;
     const flares = Array.from({ length: sides }, () => 0.18 + 0.82 * random());
     const girth = tau * radii[1];
+    const lobes = 3 + Math.floor(flares[0]*2.8), fluteTwist = (flares[1]-0.5)*1.6;
+    const rings = [];
     let across, arc = 0;
-    const seam = join ? trunkSkin(points[2])?.u ?? 0 : 0;
+    const seam = join === true ? trunkSkin(points[2])?.u ?? 0 : 0;
     for (let k = 0; k < points.length; k++) {
       const p = points[k], next = points[Math.min(k + 1, points.length - 1)], prev = points[Math.max(k - 1, 0)];
       const axis = normalise(...next.map((v, i) => v - prev[i]));
@@ -83,26 +89,29 @@ export function highCanopyMesh(random, variant = 0) {
       across = normalise(...across.map((v,j) => v - axial * axis[j]));
       const [x,y,z] = axis, [a,b,c] = across;
       const binormal = [y*c-z*b, z*a-x*c, x*b-y*a];
+      rings.push({ p, axis, across, binormal, radius:radii[k], spin, arc, girth });
       for (let i = 0; i <= sides; i++) {
         const theta = spin + (i % sides) * tau / sides;
         const radial = across.map((v,j) => v * Math.cos(theta) + binormal[j] * Math.sin(theta));
         const ridge = flares[i % sides];
-        const flare = buttress && k < 2 ? (k === 0 ? 1.48 : 0.28) * ridge ** 2 : 0;
+        // Broad, asymmetric buttresses twist into shallower ridges up the bole.
+        const flute = buttress ? (0.5+0.5*Math.cos(lobes*theta+fluteTwist*k+0.55*Math.sin(theta+spin)))**2 : 0;
+        const flare = buttress ? (1.48*Math.exp(-p[1]*12)+0.16*Math.exp(-p[1]*2.6))*flute*(0.7+0.5*ridge) : 0;
         const radius = radii[k] * (0.87 + 0.23 * ridge + flare);
         const surface = p.map((v,j) => v+radius*radial[j]);
         const slope = (radii[Math.max(0,k-1)]-radii[Math.min(k+1,radii.length-1)]) / Math.hypot(...next.map((v,j)=>v-prev[j]));
         let n=normalise(...radial.map((v,j)=>v+axis[j]*slope));
         if (buttress && k===0) surface[1]=0;
         let skin, blend=0;
-        if(join && k<4) {
+        if(join === true && k<4) {
           // The lower edge sweeps down the parent. Bury the whole first ring
           // so even the thinner forks and the coarse trunk enclose its end.
-          surface[1]-=radii[0]*Math.max(0,-radial[1])*(k===0?0.95:k===1?0.60:k===2?0.18:0);
+          surface[1]-=radii[0]*Math.max(0,-radial[1])*(k===0?1.55:k===1?1.15:k===2?0.35:0);
           skin=trunkSkin(surface);
           if(skin) {
             let reach=skin.r/skin.radius;
             if(k===0) reach=Math.min(0.64,reach);
-            else if(k===1) reach=0.82+0.56*reach;
+            else if(k===1) reach=0.96+0.14*reach;
             surface[0]=skin.centre[0]+skin.nx*skin.radius*reach;
             surface[2]=skin.centre[2]+skin.nz*skin.radius*reach;
             const t=Math.max(0,Math.min(1,(reach-0.87)/1.55));
@@ -110,11 +119,36 @@ export function highCanopyMesh(random, variant = 0) {
             n=normalise(...mix(n,skin.normal,blend));
           }
         }
+        if (join && join !== true && k < 3) {
+          // Wrap the twig shoulder around the parent limb in its own bark frame.
+          const parent=join, d=surface.map((v,j)=>v-parent.p[j]);
+          const dot=v=>d.reduce((sum,n,j)=>sum+n*v[j],0);
+          const along=dot(parent.axis), angle=Math.atan2(dot(parent.binormal),dot(parent.across));
+          const radial=parent.across.map((v,j)=>v*Math.cos(angle)+parent.binormal[j]*Math.sin(angle));
+          const u=(angle-parent.spin)/tau;
+          skin={ u:u-Math.round(u-seam), v:parent.arc+along, girth:parent.girth };
+          const distance=Math.hypot(dot(parent.across),dot(parent.binormal));
+          const reach=k===0 ? Math.min(distance,0.58*parent.radius) : distance;
+          for(let j=0;j<3;j++) surface[j]=parent.p[j]+along*parent.axis[j]+radial[j]*reach;
+          blend=(1-Math.min(1,Math.max(0,(reach/parent.radius-0.72)/1.6)))**2;
+          n=normalise(...mix(n,radial,blend));
+        }
         const id=vertex(surface,n,-1-p[1],i/sides,arc,axis,girth);
         if(blend) {
           graft[4*id]=skin.u+Math.round(seam-skin.u); graft[4*id+1]=skin.v;
           graft[4*id+2]=skin.girth; graft[4*id+3]=blend;
         }
+      }
+    }
+    if (buttress) {
+      // Light the flutes using the actual tapered silhouette, including the UV seam.
+      const at=(k,i,j)=>position[3*(start+k*ring+(i+sides)%sides)+j];
+      for(let k=0;k<points.length;k++) for(let i=0;i<=sides;i++) {
+        const around=[0,1,2].map(j=>at(k,i+1,j)-at(k,i-1,j));
+        const up=[0,1,2].map(j=>at(Math.min(points.length-1,k+1),i,j)-at(Math.max(0,k-1),i,j));
+        const n=normalise(around[1]*up[2]-around[2]*up[1],around[2]*up[0]-around[0]*up[2],around[0]*up[1]-around[1]*up[0]);
+        const offset=3*(start+k*ring+i);
+        for(let j=0;j<3;j++) normal[offset+j]=n[j];
       }
     }
     function connect(indices, lower, upper, facets) {
@@ -132,6 +166,7 @@ export function highCanopyMesh(random, variant = 0) {
     const tip = vertex(points[last].map((v,i) => v + limb[i]*radii[last]*1.8),
       limb, -1-points[last][1], 0.5, arc+radii[last], across, girth);
     for (let i = 0; i < sides; i++) near.push(start+last*ring+i,start+last*ring+i+1,tip);
+    return rings;
   }
 
   // Both levels fold along the woody midrib. A twig can carry leaves all
@@ -163,11 +198,15 @@ export function highCanopyMesh(random, variant = 0) {
     );
   }
 
-  function shoot(root, angle, reach, lift, heel = 0.0064) {
+  function shoot(root, angle, reach, lift, heel = 0.0064, parent = null) {
     const turn = (random() - 0.5) * 0.86;
     const mid = extend(root, angle, reach * 0.54, lift * 0.76 + 0.02);
     const tip = extend(mid, angle + turn, reach * 0.46, lift * 0.24 - 0.014);
-    wood([root, mid, tip], [heel, Math.min(heel,0.0034), 0.0002], 4, []);
+    if (parent) {
+      const collar=mix(root,mid,Math.min(0.46,parent.radius*2.2/Math.hypot(...mid.map((v,j)=>v-root[j]))));
+      collar[1]+=0.24*parent.radius;
+      wood([root,collar,mid,tip],[heel*1.45,heel*1.1,Math.min(heel,0.0034),0.0002],5,[],false,parent);
+    } else wood([root,mid,tip],[heel,Math.min(heel,0.0034),0.0002],4,[]);
     const pairs = 3 + Math.floor(2 * random()),
       tone = random();
     for (let j = 0; j < 2 * pairs; j++) {
@@ -211,11 +250,11 @@ export function highCanopyMesh(random, variant = 0) {
     const baseRadius = 0.030 - 0.014*t;
     const haunch = mix(base, collar, 0.48);
     haunch[1] -= baseRadius*0.21;
-    wood([base, haunch, collar, mix(collar,elbow,0.55), elbow, wrist, hand],
-      [baseRadius*1.23, baseRadius*1.22, baseRadius*0.94, baseRadius*0.77, baseRadius*0.63, baseRadius*0.33, 0.0032], 9, [0,2,4,6],false,true);
-    shoot(elbow, a - 0.82, reach * 0.74, 0.055 + 0.075 * random());
-    shoot(wrist, a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random());
-    shoot(mix(wrist,hand,0.987), a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random(),0.0027);
+    const branch = wood([base, haunch, collar, bendMid(haunch,collar,elbow,wrist), elbow, bendMid(collar,elbow,wrist,hand), wrist, bendMid(elbow,wrist,hand,hand), hand],
+      [baseRadius*1.23, baseRadius*1.22, baseRadius*0.94, baseRadius*0.77, baseRadius*0.63, baseRadius*0.46, baseRadius*0.33, baseRadius*0.22, 0.0032], 9, [0,2,4,6,8],false,true);
+    shoot(elbow, a - 0.82, reach * 0.74, 0.055 + 0.075 * random(),0.0064,branch[4]);
+    shoot(wrist, a + turn + 0.89, reach * 0.69, 0.034 + 0.08 * random(),0.0064,branch[6]);
+    shoot(mix(wrist,hand,0.987), a + turn, 0.15 + 0.055 * random(), 0.015 - 0.066 * random(),0.0027,branch[8]);
   }
   for (let i = 0; i < 4; i++)
     shoot(spine(0.86 + i * 0.022), rotation + i * 1.55, 0.16 + 0.095 * random(), 0.07 + 0.065 * random());
