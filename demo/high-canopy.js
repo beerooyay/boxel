@@ -47,6 +47,7 @@ export function highCanopyMesh(random, variant = 0) {
   }
   // Each limb has its own axis. Broad root flutes die out before the trunk forks.
   const sockets=[];
+  const collarUVs=new Set();
   const throatRing=4; // Keep the trunk collar inside the first bend of each bough.
   const cutTriangles=new Set(), seamCopies=new Map();
   const trunkLevels=[0,0.09,0.25,0.42,0.63,0.8,0.94];
@@ -61,7 +62,7 @@ export function highCanopyMesh(random, variant = 0) {
       } else indices.push(a,upper[++j%upper.length],b);
     }
   }
-  function collarPatch(indices,rim,throat,axis) {
+  function collarPatch(indices,rim,throat,axis,primary=false) {
     // Match the two loops by least travel without reversing winding.
     let shift=0,best=Infinity;
     for(let offset=0;offset<throat.length;offset++) {
@@ -86,7 +87,18 @@ export function highCanopyMesh(random, variant = 0) {
         const point=mix(p,q,t*t*(3-2*t)).map((v,k)=>v+t*(1-t)*((1-t)*tangent[k]-t*run*axis[k]));
         const endNormal=mix(at(normal,target[j]),at(normal,target[(j+1)%target.length]),u-j);
         const index=vertex(point,normalise(...mix(n,endNormal,t)),-1-point[1],0,0,axis,0.2);
-        graft[index]=1; return index;
+        graft[index]=1;
+        if(primary) {
+          // Continue the branch chart back into the collar so its grain can
+          // appear as soon as the surface turns away from the trunk.
+          const v=3*target[j];
+          blade[3*index]=(blade[v]+(u-j)/target.length)%1;
+          blade[3*index+1]=blade[v+1]+point.reduce((sum,x,k)=>sum+(x-q[k])*axis[k],0);
+          blade[3*index+2]=blade[v+2];
+          graft[index]=t<0.3 ? 1 : 0.72;
+          collarUVs.add(index);
+        }
+        return index;
       });
       bridge(indices,previous,loop); previous=loop;
     }
@@ -161,7 +173,7 @@ export function highCanopyMesh(random, variant = 0) {
         let n=normalise(...radial.map((v,j)=>v+axis[j]*slope));
         if (buttress && k===0) surface[1]=0;
         let blend=0;
-        if(join === true) blend=k<=throatRing ? 1 : k===throatRing+1 ? 0.32 : 0;
+        if(join === true) blend=k<throatRing ? 1 : k===throatRing ? 0.32 : k===throatRing+1 ? 0.10 : 0;
         if (join && join !== true && k < 3) {
           // Wrap the twig shoulder around the parent limb in its own bark frame.
           const parent=join, d=surface.map((v,j)=>v-parent.p[j]);
@@ -195,10 +207,7 @@ export function highCanopyMesh(random, variant = 0) {
       for (let j = 0; j < facets; j++) {
         const left = Math.round(j*sides/facets), right = Math.round((j+1)*sides/facets);
         const lo = start + lower*ring, hi = start + upper*ring;
-        // At the welded throat the bark uses solid projection, so the
-        // wraparound edge shares its vertex even at the cylindrical UV seam.
-        const end=join===true && lower===throatRing && right===sides ? lo : lo+right;
-        indices.push(lo+left,end,hi+left, end,hi+right,hi+left);
+        indices.push(lo+left,lo+right,hi+left, lo+right,hi+right,hi+left);
       }
     }
     const bandStart=near.length;
@@ -377,7 +386,8 @@ export function highCanopyMesh(random, variant = 0) {
         for(let j=0;j<=4;j++) rim.push(lower[mod(start+j)]);
         for(let j=4;j>=0;j--) rim.push(upper[mod(start+j)]);
         const throat=Array.from({length:socket.sides},(_,j)=>socket.first+j);
-        collarPatch(shared,rim,throat,socket.axis);
+        collarPatch(shared,rim,throat,socket.axis,true);
+        throat.forEach(id=>collarUVs.add(id));
       }
       lower=upper;
     }
@@ -416,6 +426,27 @@ export function highCanopyMesh(random, variant = 0) {
     near[kept++]=near[i]; near[kept++]=near[i+1]; near[kept++]=near[i+2];
   }
   near.length=kept;
+  // Unwrap only textured collar triangles spanning the cylindrical cut.
+  // Seam twins retain identical positions and smoothed normals at both LODs.
+  const wrapped=new Map();
+  for(const indices of [near,far]) for(let i=0;i<indices.length;i+=3) {
+    const a=indices[i],b=indices[i+1],c=indices[i+2];
+    if(!collarUVs.has(a) && !collarUVs.has(b) && !collarUVs.has(c)) continue;
+    if(graft[a]===1 && graft[b]===1 && graft[c]===1) continue;
+    const u=blade[3*a],v=blade[3*b],w=blade[3*c];
+    if(Math.max(u,v,w)-Math.min(u,v,w)<=0.5) continue;
+    for(let k=i;k<i+3;k++) {
+      const id=indices[k];
+      if(blade[3*id]>=0.5) continue;
+      if(!wrapped.has(id)) {
+        const twin=vertex(at(position,id),at(normal,id),tissue[id],blade[3*id]+1,
+          blade[3*id+1],at(stalk,id),blade[3*id+2]);
+        graft[twin]=graft[id];
+        wrapped.set(id,twin);
+      }
+      indices[k]=wrapped.get(id);
+    }
+  }
   let radius = 0,
     bottom = Infinity,
     top = -Infinity;

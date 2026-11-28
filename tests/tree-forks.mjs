@@ -10,20 +10,26 @@ test('both detail levels share the full cut edge between each primary limb and t
     const mesh=highCanopyMesh(()=>((seed=(Math.imul(1664525,seed)+1013904223)>>>0)/2**32),variant);
     assert(mesh.normal.every(Number.isFinite));
     for(const indices of [mesh.index.subarray(0,mesh.nearCount),mesh.index.subarray(mesh.nearCount)]) {
-      // Each throat vertex carries the limb circumference. The socket side
-      // uses solid bark with a fixed 0.2 reference girth. Count incident faces
-      // by index so coincident but disconnected surfaces cannot pass.
+      // Only unwrap the bark chart's U=1 twin onto its U=0 edge.
+      const seam=new Map(), original=new Map();
+      for(const id of indices) if(mesh.blade[3*id]===0)
+        original.set(mesh.position.subarray(3*id,3*id+3).join(','),id);
+      for(const id of indices) if(mesh.blade[3*id]===1) {
+        const root=original.get(mesh.position.subarray(3*id,3*id+3).join(','));
+        if(root!==undefined) seam.set(id,root);
+      }
       const girth=id=>mesh.blade[3*id+2];
-      const isSocket=id=>girth(id)===Math.fround(0.2) && mesh.graft[id]===1;
+      const isSocket=id=>mesh.graft[id]===Math.fround(0.72);
       const edges=new Map();
       for(let i=0;i<indices.length;i+=3) {
         for(let k=0;k<3;k++) {
           const a=indices[i+k], b=indices[i+(k+1)%3], c=indices[i+(k+2)%3];
-          if(mesh.graft[a]!==1 || mesh.graft[b]!==1 || girth(a)!==girth(b) || isSocket(a)) continue;
+          if(mesh.graft[a]!==Math.fround(0.32) || mesh.graft[b]!==mesh.graft[a] || girth(a)!==girth(b)) continue;
           if(girth(a)===Math.fround(0.3) || girth(a)<0.10 || mesh.blade[3*a+1]!==mesh.blade[3*b+1]) continue;
-          const key=Math.min(a,b)*65536+Math.max(a,b);
+          const left=seam.get(a)??a, right=seam.get(b)??b;
+          const key=Math.min(left,right)*65536+Math.max(left,right);
           const edge=edges.get(key)??{ faces:0, socket:false, winding:0 };
-          edge.faces++; edge.winding+=a<b ? 1 : -1;
+          edge.faces++; edge.winding+=left<right ? 1 : -1;
           edge.socket ||= isSocket(c);
           edges.set(key,edge);
         }
