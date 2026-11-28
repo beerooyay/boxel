@@ -19,12 +19,12 @@ test('both detail levels share the full cut edge between each primary limb and t
         if(root!==undefined) seam.set(id,root);
       }
       const girth=id=>mesh.blade[3*id+2];
-      const isSocket=id=>mesh.graft[id]===Math.fround(0.72);
+      const isSocket=id=>mesh.graft[id]===Math.fround(0.025);
       const edges=new Map();
       for(let i=0;i<indices.length;i+=3) {
         for(let k=0;k<3;k++) {
           const a=indices[i+k], b=indices[i+(k+1)%3], c=indices[i+(k+2)%3];
-          if(mesh.graft[a]!==Math.fround(0.32) || mesh.graft[b]!==mesh.graft[a] || girth(a)!==girth(b)) continue;
+          if(mesh.graft[a]!==0 || mesh.graft[b]!==mesh.graft[a] || girth(a)!==girth(b)) continue;
           if(girth(a)===Math.fround(0.3) || girth(a)<0.10 || mesh.blade[3*a+1]!==mesh.blade[3*b+1]) continue;
           const left=seam.get(a)??a, right=seam.get(b)??b;
           const key=Math.min(left,right)*65536+Math.max(left,right);

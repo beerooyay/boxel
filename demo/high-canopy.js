@@ -76,7 +76,7 @@ export function highCanopyMesh(random, variant = 0) {
     const target=throat.slice(shift).concat(throat.slice(0,shift));
     const centre=rim.reduce((sum,id)=>sum.map((v,j)=>v+position[3*id+j]/rim.length),[0,0,0]);
     let previous=rim;
-    for(const t of [0.28,0.62]) {
+    for(const t of (primary ? [0.08,0.28,0.62] : [0.28,0.62])) {
       const loop=rim.map((id,i)=>{
         const u=i*target.length/rim.length, j=Math.floor(u);
         const q=mix(at(position,target[j]),at(position,target[(j+1)%target.length]),u-j);
@@ -95,7 +95,9 @@ export function highCanopyMesh(random, variant = 0) {
           blade[3*index]=(blade[v]+(u-j)/target.length)%1;
           blade[3*index+1]=blade[v+1]+point.reduce((sum,x,k)=>sum+(x-q[k])*axis[k],0);
           blade[3*index+2]=blade[v+2];
-          graft[index]=t<0.3 ? 1 : 0.72;
+          // Keep upright grain only at the trunk lip. Across the visible
+          // shoulder both bark colour and relief follow the limb chart.
+          graft[index]=t===0.08 ? 1 : t===0.28 ? 0.15 : 0.025;
           collarUVs.add(index);
         }
         return index;
@@ -173,7 +175,7 @@ export function highCanopyMesh(random, variant = 0) {
         let n=normalise(...radial.map((v,j)=>v+axis[j]*slope));
         if (buttress && k===0) surface[1]=0;
         let blend=0;
-        if(join === true) blend=k<throatRing ? 1 : k===throatRing ? 0.32 : k===throatRing+1 ? 0.10 : 0;
+        if(join === true) blend=k<throatRing ? 1 : 0;
         if (join && join !== true && k < 3) {
           // Wrap the twig shoulder around the parent limb in its own bark frame.
           const parent=join, d=surface.map((v,j)=>v-parent.p[j]);
